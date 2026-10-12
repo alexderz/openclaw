@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Initialize the context-free root before lazy imports can run inside an admitted turn.
+import "./shared/async-work-scope.js";
 import { existsSync } from "node:fs";
 // Re-exports the OpenClaw CLI entry point for package execution.
 // Package executable entrypoint that forwards to the CLI bootstrap.

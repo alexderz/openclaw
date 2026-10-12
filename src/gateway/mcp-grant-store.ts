@@ -20,6 +20,8 @@ import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-polic
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import type { PluginHookChannelContext } from "../plugins/hook-types.js";
+import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import type { PluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.types.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
 import type { SkillWorkshopRunOptions } from "../skills/workshop/types.js";
@@ -126,6 +128,8 @@ type McpLoopbackToolAuth = {
 };
 
 type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
+  /** Only this admitted grant may restore its minting request scope. */
+  requestScope?: PluginRuntimeGatewayRequestScope;
   runtimeOwnerToken: string;
   /** Exact host admission retained outside the child-visible request context. */
   admittedRunContext?: AdmittedRunContext;
@@ -263,6 +267,7 @@ export function mintMcpLoopbackClientGrant(
     throw new Error("mintMcpLoopbackClientGrant: runtimeOwnerToken is required");
   }
   const grant: StoredMcpLoopbackClientGrant = {
+    requestScope: getPluginRuntimeGatewayRequestScope(),
     token: crypto.randomBytes(32).toString("hex"),
     context: structuredClone({ ...params.context, sessionKey }),
     runtimeOwnerToken,
@@ -470,6 +475,7 @@ export function resolveMcpLoopbackClientGrant(params: {
       context: McpLoopbackRequestContext;
       captureKey: string;
       admittedRunContext: AdmittedRunContext;
+      requestScope?: PluginRuntimeGatewayRequestScope;
       messageActionTurnCapability?: string;
       mintCronRequesterGrant?: (signal?: AbortSignal) => CronCreatorAuthorityGrant;
       cronAuthorityCheck?: () => boolean;
@@ -512,6 +518,7 @@ export function resolveMcpLoopbackClientGrant(params: {
     context: structuredClone(grant.context),
     captureKey: grant.activeCaptureKey,
     admittedRunContext,
+    requestScope: grant.requestScope,
     ...(grant.messageActionTurnCapability
       ? { messageActionTurnCapability: grant.messageActionTurnCapability }
       : {}),
