@@ -137,7 +137,9 @@ export function installClaudeCliRuntimeHarness() {
     await withinTest(Promise.race([receipts.waitFor(readyPath, "ready"), settled]), signal);
   }
 
-  return { createContext, createLiveSession, fixtureReadyBeforeSettlement };
+  const waitForReceipt = (file: string, value: string) => receipts.waitFor(file, value);
+
+  return { createContext, createLiveSession, fixtureReadyBeforeSettlement, waitForReceipt };
 }
 
 export async function collect(context: CliBackendExecuteContext) {

@@ -2,13 +2,13 @@ import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 export function readReplayedTaskId(
   message: Record<string, unknown>,
-  inputUuid: string,
+  submittedInputUuids: ReadonlySet<string>,
 ): string | undefined {
   if (
     message.type !== "user" ||
     message.isReplay !== true ||
     message.parent_tool_use_id !== null ||
-    message.uuid === inputUuid ||
+    (typeof message.uuid === "string" && submittedInputUuids.has(message.uuid)) ||
     !isRecord(message.message)
   ) {
     return undefined;

@@ -20,6 +20,8 @@ describe("Claude native task ownership", () => {
       controller: new AbortController(), events: new PassThrough({ objectMode: true }),
       foregroundTaskIds: new Set(), foregroundBashToolUseIds: new Set(),
       pendingBackgroundTaskIds: new Set(), taskNotifications: new Map(),
+      submittedInputUuids: new Set(["input-1"]), promptInputUuid: "input-1",
+      promptSubmitted: true, injectedInputs: new Map(),
     };
     const session = {
       currentTurn: turn, hasInputLifecycle: false, closed: false,
@@ -71,6 +73,8 @@ describe("Claude native task ownership", () => {
       controller: new AbortController(), events,
       foregroundTaskIds: new Set(), foregroundBashToolUseIds: new Set(),
       pendingBackgroundTaskIds: new Set(), taskNotifications: new Map(),
+      submittedInputUuids: new Set(["input-1"]), promptInputUuid: "input-1",
+      promptSubmitted: true, injectedInputs: new Map(),
     };
     const session = {
       currentTurn: turn, hasInputLifecycle: false, closed: false,

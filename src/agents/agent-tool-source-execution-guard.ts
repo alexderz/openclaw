@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
+import {
+  composeSessionSourceAssertion,
+  runWithSessionSourceScope,
+  type SessionSourceAssertion,
+} from "../config/sessions/session-source-authority.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { copyAgentToolMetadata } from "./agent-tool-metadata.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
@@ -78,6 +82,14 @@ export function captureAgentToolSourceExecutionGuard(signal?: AbortSignal): () =
     assertBudgetCurrent?.();
     assertSource();
   });
+}
+
+/** Prepare storage authority for one effect; its final callback checks the retained receipt. */
+export function runWithAgentToolSourceExecutionScope<T>(
+  source: SessionSourceAssertion | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  return runWithSessionSourceScope(source, run, { checkAfter: false });
 }
 
 const SOURCE_EXECUTION_GUARD = Symbol.for("openclaw.agentToolSourceExecutionGuard");
