@@ -3,7 +3,7 @@ import type { ChatHistoryPageParams } from "../config/sessions/session-history-t
 import type { WorkerTaskChannel } from "../infra/worker-task-server.js";
 import { readProcessHeldCliHistoryInWorker } from "./cli-session-history.process-held.js";
 import { readChatHistoryPageKernel } from "./server-methods/chat-history-page-kernel.js";
-import type { SessionTranscriptPageReader } from "./session-transcript-read-kernel.js";
+import type { SessionTranscriptPageReader } from "./session-transcript-read.types.js";
 
 vi.mock("./cli-session-history.ts", () => ({
   prepareCliSessionHistoryReader: vi.fn(async () => undefined),

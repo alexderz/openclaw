@@ -7,9 +7,9 @@ it("exposes an owner-backed read-only inventory without closing terminal admissi
   expect(manager.inspectAgentSessionWork).toBeTypeOf("function");
   const owner = {
     kind: "agent" as const,
-    sessionKey: "agent:main:subagent:promotion",
-    sessionId: "session-promotion",
-    lifecycleRevision: "1",
+    agentSessionKey: "agent:main:subagent:promotion",
+    agentSessionId: "session-promotion",
+    agentId: "main",
   };
   expect(manager.inspectAgentSessionWork(owner)).toBe(false);
 });

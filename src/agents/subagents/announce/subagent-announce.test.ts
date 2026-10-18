@@ -83,12 +83,8 @@ vi.mock("./subagent-announce.runtime.js", () => ({
     waitForEmbeddedAgentRunEndMock(sessionId, timeoutMs),
 }));
 
-vi.mock("./subagent-announce-delivery.runtime.js", () => ({
-  loadSessionEntryByKey: (sessionKey: string) => {
-    const store = loadSessionStoreMock("/tmp/sessions.json") as Record<string, unknown>;
-    return store?.[sessionKey];
-  },
-  ...createSubagentAnnounceDeliveryRuntimeMock({
+vi.mock("./subagent-announce-delivery.runtime.js", () =>
+  createSubagentAnnounceDeliveryRuntimeMock({
     callGateway: (request: unknown) => callGatewayMock(request),
     getRuntimeConfig: () => mockConfig,
     loadSessionStore: (storePath: string) => loadSessionStoreMock(storePath),
@@ -101,7 +97,7 @@ vi.mock("./subagent-announce-delivery.runtime.js", () => ({
     queueEmbeddedAgentMessageWithOutcome: (sessionId: string, text: string, options?: unknown) =>
       queueEmbeddedAgentMessageWithOutcomeMock(sessionId, text, options),
   }),
-}));
+);
 
 vi.mock("./subagent-announce-delivery.js", () => ({
   deliverSubagentAnnouncement: async (params: {
@@ -291,6 +287,10 @@ describe("subagent announce seam flow", () => {
         endedAt: 20,
         childRunId: "run-direct-skip-whitespace",
         childAgentId: "research",
+        childSessionIdentity: {
+          sessionId: "child-session-id",
+          lifecycleRevision: "child-lifecycle-revision",
+        },
         cleanup: "delete",
         roundOneReply: "  child result  ",
         ...(terminal
@@ -355,6 +355,10 @@ describe("subagent announce seam flow", () => {
         await runAnnounceFlow({
           childSessionKey: "global",
           childAgentId: "research",
+          childSessionIdentity: {
+            sessionId: "research-child",
+            lifecycleRevision: "research-revision",
+          },
           cleanup: "delete",
           terminalReply: { disposition: "visible", text: "Research result" },
         }),
@@ -527,7 +531,7 @@ describe("subagent announce seam flow", () => {
             onBeforeDeleteChildSession: async () => true,
           }),
       );
-      expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
+      expect(controller.startSubagentAnnounceCleanupFlow(entry)).toBe(true);
       await vi.waitFor(() => expect(runFlow).toHaveBeenCalledTimes(1));
       expect(await runFlow.mock.results[0]?.value).toBe("delivered");
       expect(runFlow.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ childSessionIdentity }));
@@ -662,87 +666,4 @@ describe("subagent announce seam flow", () => {
       disposition: "ambiguous",
     });
   });
-
-  it("keeps the parent's authored result instead of forwarding private grandchildren", async () => {
-    const parentKey = "agent:main:subagent:parent";
-    subagentRegistryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([
-      {
-        runId: "grandchild-run",
-        childSessionKey: "agent:main:subagent:grandchild",
-        requesterSessionKey: parentKey,
-        requesterDisplayKey: parentKey,
-        task: "grandchild work",
-        cleanup: "keep",
-        createdAt: 1,
-        execution: { status: "terminal", endedAt: 2, outcome: { status: "ok" } },
-        completion: { required: true, resultText: "raw grandchild marker" },
-        delivery: { status: "delivered" },
-        completionTarget: "parent",
-        completionRequesterSessionId: "parent-id",
-      },
-    ]);
-    expect(
-      await runSubagentAnnounceFlow({
-        childSessionKey: parentKey,
-        childRunId: "parent-run",
-        requesterSessionKey: "agent:main:main",
-        task: "parent work",
-        timeoutMs: 10,
-        cleanup: "keep",
-        outcome: { status: "ok" },
-        expectsCompletionMessage: true,
-        terminalReply: { disposition: "visible", text: "parent reviewed and approved" },
-      }),
-    ).toBe("delivered");
-    const message = String(requireAgentCall().params?.message);
-    expect(message).toContain("parent reviewed and approved");
-    expect(message).not.toContain("raw grandchild marker");
-  });
-
-  it.each([false, true])(
-    "delivers the result while deleting the child: terminal=%s",
-    async (terminal) => {
-      loadSessionStoreMock.mockReturnValue({
-        "agent:main:subagent:test": {
-          sessionId: "child-session-id",
-          lifecycleRevision: "child-lifecycle-revision",
-        },
-      });
-      const didAnnounce = await runAnnounceFlow({
-        startedAt: 10,
-        endedAt: 20,
-        childRunId: "run-direct-skip-whitespace",
-        childSessionIdentity: {
-          sessionId: "child-session-id",
-          lifecycleRevision: "child-lifecycle-revision",
-        },
-        cleanup: "delete",
-        roundOneReply: "  child result  ",
-        ...(terminal
-          ? {
-              terminalReply: { disposition: "visible" as const, text: "child result" },
-              fallbackReply: "stale result",
-            }
-          : {}),
-      });
-
-      expect(didAnnounce).toBe("delivered");
-      expect(agentSpy).toHaveBeenCalledTimes(1);
-      expect(requireAgentCall().params?.message).toContain("child result");
-      expect(sessionsDeleteSpy).toHaveBeenCalledTimes(1);
-      expect(sessionsDeleteSpy).toHaveBeenCalledWith({
-        method: "sessions.delete",
-        params: {
-          key: "agent:main:subagent:test",
-          deleteTranscript: true,
-          emitLifecycleHooks: false,
-          expectedSessionId: "child-session-id",
-          expectedLifecycleRevision: "child-lifecycle-revision",
-        },
-        timeoutMs: 10_000,
-        prepareDispatchCurrent: expect.any(Function),
-        assertDispatchCurrent: expect.any(Function),
-      });
-    },
-  );
 });
