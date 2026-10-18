@@ -164,7 +164,8 @@ function waitForBrokerChildCompletion(child: ChildProcess): Promise<void> {
     child.once("exit", onExit);
     child.on("error", onError);
     child.once("disconnect", onDisconnect);
-    for (const stream of child.stdio) {
+    // Failed native spawn (EMFILE/ENFILE) may expose neither PID nor stdio.
+    for (const stream of child.stdio ?? []) {
       if (!stream || stream.closed) {
         continue;
       }
