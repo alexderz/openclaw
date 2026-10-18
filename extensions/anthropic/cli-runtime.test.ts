@@ -300,7 +300,12 @@ describe("Claude native stdio boundary", () => {
     await expect(access(path.join(context.cwd, "fixture.pid"))).rejects.toThrow();
   });
 
-  it.each(["background-success", "background-agent-subagent-bash"])(
+  it.each([
+    "background-success",
+    "background-agent-subagent-bash",
+    "background-agent-resumed",
+    "background-agent-requeued",
+  ])(
     "keeps an interim result open until native background agents report their final answer (%s)",
     async (scenario) => {
       const liveSession = createLiveSession();
@@ -317,7 +322,7 @@ describe("Claude native stdio boundary", () => {
             continue;
           }
           results.push(record);
-          if (results.length === 1) {
+          if (results.length === 1 || record.result === "resumed") {
             expect(record).toHaveProperty("openclaw_interim_result", true);
             expect(liveSession.current()?.isIdle()).toBe(false);
             release.resolve(decision);
@@ -329,7 +334,7 @@ describe("Claude native stdio boundary", () => {
       } finally {
         release.resolve(decision);
       }
-      expect(results).toHaveLength(2);
+      expect(results).toHaveLength(scenario.startsWith("background-agent-r") ? 3 : 2);
       expect(liveSession.current()?.isIdle()).toBe(true);
     },
   );

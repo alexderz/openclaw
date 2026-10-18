@@ -378,7 +378,7 @@ async function runPreparedCliAgentOwned(
       ? (sourceReplyMirror.visibleText ?? "")
       : output.text.trim();
     if (
-      (!output.text.trim() || isSilentReplyPayloadText(output.text)) &&
+      !output.text.trim() &&
       resolveSourceReplyDelivery(output) === "missing" &&
       !output.toolMediaUrls?.length &&
       !output.yielded &&

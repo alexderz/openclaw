@@ -98,6 +98,8 @@ export async function prepareCliSessionHistoryReader(
       offset: params.offset,
       readOnly: true,
       deferProfileDisplay: true,
+      // Worker-side eligibility needs no label lookup; host projection refreshes names.
+      resolveCronJobName: () => undefined,
     });
     if (tail.rawMessages.length) {
       return undefined;

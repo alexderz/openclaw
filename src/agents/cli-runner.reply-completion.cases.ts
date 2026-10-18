@@ -111,7 +111,7 @@ export function registerCliReplyCompletionTests({
   );
 
   it.each([SILENT_REPLY_TOKEN, JSON.stringify({ action: SILENT_REPLY_TOKEN })])(
-    "rejects silent CLI output %j when a final reply is required",
+    "preserves intentional silent CLI output %j for terminal reply custody",
     async (text) => {
       supervisorSpawnMock.mockResolvedValueOnce(makeManagedRun({ stdout: text }));
       const context = createContext({
@@ -121,10 +121,7 @@ export function registerCliReplyCompletionTests({
         inputProvenance: { kind: "inter_session", sourceTool: "sessions_spawn" },
       });
 
-      await expect(run(context)).rejects.toMatchObject({
-        name: "FailoverError",
-        reason: "empty_response",
-      });
+      await expect(run(context)).resolves.toBeDefined();
       expect(supervisorSpawnMock).toHaveBeenCalledOnce();
     },
   );

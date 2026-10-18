@@ -1,0 +1,66 @@
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import { PassThrough } from "node:stream";
+import ts from "typescript";
+import { describe, expect, it } from "vitest";
+
+// Exercise the authoritative worker helper without starting the worker's IPC server.
+const source = fs.readFileSync(new URL("./worker.ts", import.meta.url), "utf8");
+const start = source.indexOf("function waitForBrokerChildCompletion(");
+const end = source.indexOf("async function launch(", start);
+const code = ts.transpileModule(source.slice(start, end), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+}).outputText;
+const waitForCompletion = new Function(code + "; return waitForBrokerChildCompletion;")() as (
+  child: EventEmitter,
+) => Promise<void>;
+function child(connected = true, stdio: PassThrough[] = []) {
+  return Object.assign(new EventEmitter(), {
+    pid: 42 as number | undefined,
+    connected,
+    exitCode: null,
+    signalCode: null,
+    stdio,
+  });
+}
+
+describe("spawn broker native retirement receipts", () => {
+  it("joins exit and disconnect even without aggregate close", async () => {
+    const native = child();
+    let done = false;
+    const completion = waitForCompletion(native).then(() => {
+      done = true;
+    });
+    native.emit("disconnect");
+    await Promise.resolve();
+    expect(done).toBe(false);
+    native.emit("exit", 0, null);
+    await completion;
+    expect(done).toBe(true);
+    expect(native.listenerCount("error")).toBe(0);
+  });
+  it("retains open stdio after exit and ignores live-PID errors", async () => {
+    const pipe = new PassThrough();
+    const native = child(false, [pipe]);
+    let done = false;
+    const completion = waitForCompletion(native).then(() => {
+      done = true;
+    });
+    native.emit("error", new Error("signal failed"));
+    await Promise.resolve();
+    expect(done).toBe(false);
+    native.emit("exit", null, "SIGKILL");
+    await Promise.resolve();
+    expect(done).toBe(false);
+    pipe.destroy();
+    await completion;
+    expect(done).toBe(true);
+  });
+  it("settles failed spawn without a native PID", async () => {
+    const native = child(false);
+    native.pid = undefined;
+    const completion = waitForCompletion(native);
+    native.emit("error", new Error("ENOENT"));
+    await completion;
+  });
+});
