@@ -377,8 +377,10 @@ async function runPreparedCliAgentOwned(
     const assistantText = sourceReplyMirror.delivered
       ? (sourceReplyMirror.visibleText ?? "")
       : output.text.trim();
+    // Optional synthetic turns may stay silent. Required turns need real delivery,
+    // a yield, or accepted announcing-child custody; NO_REPLY alone is not a receipt.
     if (
-      !output.text.trim() &&
+      (!output.text.trim() || isSilentReplyPayloadText(output.text)) &&
       resolveSourceReplyDelivery(output) === "missing" &&
       !output.toolMediaUrls?.length &&
       !output.yielded &&

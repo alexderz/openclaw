@@ -14,7 +14,7 @@ const code = ts.transpileModule(source.slice(start, end), {
 const waitForCompletion = new Function(code + "; return waitForBrokerChildCompletion;")() as (
   child: EventEmitter,
 ) => Promise<void>;
-function child(connected = true, stdio: PassThrough[] = []) {
+function child(connected = true, stdio: PassThrough[] | undefined = []) {
   return Object.assign(new EventEmitter(), {
     pid: 42 as number | undefined,
     connected,
@@ -56,6 +56,28 @@ describe("spawn broker native retirement receipts", () => {
     await completion;
     expect(done).toBe(true);
   });
+  it.each(["EMFILE", "ENFILE"])(
+    "preserves %s failed-spawn errors without stdio",
+    async (errorCode) => {
+      const native = child(false);
+      native.pid = undefined;
+      native.stdio = undefined;
+      const originalError = Object.assign(new Error(errorCode), { code: errorCode });
+      const completion = waitForCompletion(native);
+      const errorReceipt = new Promise<Error>((resolve) => {
+        native.once("error", resolve);
+      });
+      // Mirror launch: wait for native completion, then rethrow the original spawn error.
+      const failedLaunch = Promise.all([completion, errorReceipt]).then(([, error]) => {
+        throw error;
+      });
+      native.emit("error", originalError);
+      await expect(failedLaunch).rejects.toBe(originalError);
+      expect(native.listenerCount("exit")).toBe(0);
+      expect(native.listenerCount("disconnect")).toBe(0);
+      expect(native.listenerCount("error")).toBe(0);
+    },
+  );
   it("settles failed spawn without a native PID", async () => {
     const native = child(false);
     native.pid = undefined;
