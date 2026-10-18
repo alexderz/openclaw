@@ -300,15 +300,24 @@ describe("Claude native stdio boundary", () => {
     await expect(access(path.join(context.cwd, "fixture.pid"))).rejects.toThrow();
   });
 
-  it.each(["background-success", "background-agent-subagent-bash"])(
+  it.each([
+    "background-success",
+    "background-agent-subagent-bash",
+    "background-agent-resumed",
+    "background-agent-requeued",
+  ])(
     "keeps an interim result open until native background agents report their final answer (%s)",
     async (scenario) => {
       const liveSession = createLiveSession();
       const release = createDeferred<CliBackendToolPermissionResult>();
+      const resumedRelease = createDeferred<CliBackendToolPermissionResult>();
       const decision = { behavior: "deny" as const, message: "Fixture released." };
+      let permissionRequests = 0;
       const context = await createContext(scenario, {
         liveSession,
-        requestToolPermission: () => release.promise,
+        // The fixture holds each later stream segment until the host has observed its interim result.
+        requestToolPermission: () =>
+          ++permissionRequests === 1 ? release.promise : resumedRelease.promise,
       });
       const results: Record<string, unknown>[] = [];
       try {
@@ -317,10 +326,10 @@ describe("Claude native stdio boundary", () => {
             continue;
           }
           results.push(record);
-          if (results.length === 1) {
+          if (results.length === 1 || record.result === "resumed") {
             expect(record).toHaveProperty("openclaw_interim_result", true);
             expect(liveSession.current()?.isIdle()).toBe(false);
-            release.resolve(decision);
+            (results.length === 1 ? release : resumedRelease).resolve(decision);
           } else {
             expect(resultDetail([record]).finalBackgroundAnswer).toBe(true);
             expect(record).not.toHaveProperty("openclaw_interim_result");
@@ -328,8 +337,9 @@ describe("Claude native stdio boundary", () => {
         }
       } finally {
         release.resolve(decision);
+        resumedRelease.resolve(decision);
       }
-      expect(results).toHaveLength(2);
+      expect(results).toHaveLength(scenario.startsWith("background-agent-r") ? 3 : 2);
       expect(liveSession.current()?.isIdle()).toBe(true);
     },
   );

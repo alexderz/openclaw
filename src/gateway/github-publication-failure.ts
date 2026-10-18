@@ -81,12 +81,20 @@ export class GitHubPublicationSessionChangedError extends GitHubPublicationKnown
 }
 
 export class GitHubPublicationRequesterUnavailableError extends GitHubPublicationKnownFailure {
-  constructor() {
+  /**
+   * `cause` is set only when an identity read failed for a reason that does not prove the
+   * requester ended (for example a profile catalog that is not ready); a recovery consumer
+   * must then retry instead of recording a terminal ending.
+   */
+  constructor(options?: { cause?: unknown }) {
     super("The original GitHub publication requester is no longer authorized.", {
       code: "identity_changed",
       nextAction:
         "Review any recorded or unconfirmed GitHub effects, then request publication again from an authorized session. Saved work and existing pull requests are retained.",
     });
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
   }
 }
 

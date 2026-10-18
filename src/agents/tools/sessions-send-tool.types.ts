@@ -3,6 +3,7 @@ import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
 
 export type SessionsSendToolOptions = {
+  sessionEffectiveAdmission?: import("../../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   workerPlacement?: boolean;
   agentId?: string;
   agentSessionKey?: string;

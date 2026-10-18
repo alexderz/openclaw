@@ -210,7 +210,9 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     skillsSnapshot: params.skillsSnapshot,
     runtimeToolAllowlist: effectiveToolsAllow,
   });
+  const sessionEffectiveAdmission = attempt.admittedRunContext.sessionEffectiveAdmission;
   const runtimeCapabilityProfile = resolveConversationCapabilityProfile({
+    sessionEffectiveAdmission,
     ...buildConversationContext(),
     agentId: attempt.sandboxAgentId ?? params.setup.sessionAgentId,
     conversationToolPolicy: attempt.conversationToolPolicy,
@@ -278,6 +280,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
       [];
     if (shouldConstructTools) {
       const codingToolOptions: OpenClawCodingToolsOptions = {
+        sessionEffectiveAdmission,
         agentId: params.setup.sessionAgentId,
         ...buildConversationContext(),
         exec: {

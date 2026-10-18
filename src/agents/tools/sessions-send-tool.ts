@@ -35,6 +35,7 @@ import { bindRequesterYieldCronAuthority } from "../cron-creator-authority-conte
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import { RESTART_RECOVERY_INTERRUPTION_NOTE } from "../restart-recovery-prompt.js";
 import { isTerminalAgentWaitTimeout, waitForAgentRunReply } from "../run-wait.js";
+import { isOrdinarySessionEffectiveAdmission } from "../session-effective-admission.js";
 import { isSubagentSessionFromEntry } from "../subagents/spawn/subagent-depth-policy.js";
 import {
   describeSessionsSendTool,
@@ -385,16 +386,21 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
               lifecycleRevision: requesterContinuationSession.lifecycleRevision ?? null,
             }
           : undefined;
-      const requesterIsSubagent = isSubagentSessionFromEntry(
-        requesterSession.canonicalKey,
-        requesterSessionEntry,
-        readAcpSessionMetaForEntry({
-          sessionKey: requesterSession.canonicalKey,
-          agentId: requesterSession.agentId,
-          cfg,
-          entry: requesterSessionEntry,
-        }),
-      );
+      const requesterIsSubagent =
+        !isOrdinarySessionEffectiveAdmission(
+          opts?.sessionEffectiveAdmission,
+          opts?.agentSessionId ?? requesterSessionEntry?.sessionId,
+        ) &&
+        isSubagentSessionFromEntry(
+          requesterSession.canonicalKey,
+          requesterSessionEntry,
+          readAcpSessionMetaForEntry({
+            sessionKey: requesterSession.canonicalKey,
+            agentId: requesterSession.agentId,
+            cfg,
+            entry: requesterSessionEntry,
+          }),
+        );
       const timeoutMs = finiteSecondsToTimerSafeMilliseconds(timeoutSeconds) ?? 0;
       const replyTimeoutMs = timeoutSeconds === 0 ? 30_000 : timeoutMs;
       const idempotencyKey = opts?.idempotencyKey ?? crypto.randomUUID();

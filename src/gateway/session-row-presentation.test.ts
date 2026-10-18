@@ -29,7 +29,7 @@ import type { GatewayWsClient } from "./server/ws-types.js";
 import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { canReceiveSessionEvent } from "./session-sharing.js";
-import { rolePolicyConfig, sharingPolicyClient } from "./session-sharing.test-utils.js";
+import { rolePolicyConfig, roleClient, sharingPolicyClient } from "./session-sharing.test-utils.js";
 import { listProjectedSessions } from "./session-utils-list.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -609,6 +609,174 @@ it("preserves selected account across role changes but rejects a changed merge i
       expect(afterMerge).not.toHaveBeenCalled();
     } finally {
       release();
+    }
+  });
+});
+
+it("keeps promotion capability per viewer for the same durable delegated row", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = rolePolicyConfig();
+    const writer = roleClient("write", "promotion-writer");
+    const reader = roleClient("view", "promotion-reader");
+    const key = "agent:main:dashboard:promotion";
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: key },
+      {
+        sessionId: "promotion",
+        updatedAt: 1,
+        lifecycleRevision: "before",
+        spawnDepth: 1,
+        spawnedBy: "agent:main:dashboard:parent",
+        createdActor: {
+          type: "human",
+          source: "profile",
+          id: writer.authenticatedUserProfile!.profileId,
+        },
+      },
+    );
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    try {
+      const allowed = prepareProjectedSessionPresentation(projection, writer).snapshot({
+        agentId: "main",
+        key,
+      }).row?.promotion;
+      const denied = prepareProjectedSessionPresentation(projection, reader).snapshot({
+        agentId: "main",
+        key,
+      }).row?.promotion;
+      expect(allowed).toMatchObject({
+        canPromote: true,
+        effectiveClass: "delegated",
+        capabilities: { sessionsSend: "unknown" },
+      });
+      expect(denied).toMatchObject({ canPromote: false, effectiveClass: "delegated" });
+      expect(allowed).not.toBe(denied);
+      const list = await listProjectedSessions({ projection, opts: {}, client: reader });
+      expect(list.sessions.find((row) => row.key === key)?.promotion?.canPromote).toBe(false);
+    } finally {
+      await projection.dispose();
+    }
+  });
+});
+
+it("projects pending cancellation only to the viewer who may still mutate the target", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = rolePolicyConfig();
+    const writer = roleClient("write", "pending-writer");
+    const reader = roleClient("view", "pending-reader");
+    const key = "agent:main:dashboard:pending";
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: key },
+      {
+        sessionId: "pending",
+        updatedAt: 1,
+        lifecycleRevision: "before",
+        spawnDepth: 1,
+        spawnedBy: "agent:main:dashboard:parent",
+        createdActor: {
+          type: "human",
+          source: "profile",
+          id: writer.authenticatedUserProfile!.profileId,
+        },
+        sessionPromotion: {
+          version: 1,
+          state: "pending",
+          requestId: "original-intent",
+          acceptedAt: 1,
+          boundary: "settlement-or-fresh-human-input",
+          target: { agentId: "main", key, sessionId: "pending", fromLifecycleRevision: "before" },
+          requester: {
+            version: 1,
+            actor: { kind: "operator", profileId: writer.authenticatedUserProfile!.profileId },
+            scopes: ["operator.sessions.write"],
+            grant: null,
+          },
+        },
+      },
+    );
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    try {
+      const read = (client: typeof writer) =>
+        prepareProjectedSessionPresentation(projection, client).snapshot({
+          agentId: "main",
+          key,
+        }).row?.promotion;
+      expect(read(writer)).toMatchObject({
+        promotionState: "pending",
+        canPromote: false,
+        canCancel: true,
+        pendingRequestId: "original-intent",
+        effectiveClass: "delegated",
+      });
+      const denied = read(reader);
+      expect(denied).toMatchObject({ promotionState: "pending", canCancel: false });
+      expect(denied).not.toHaveProperty("pendingRequestId");
+      expect(JSON.stringify(denied)).not.toContain(writer.authenticatedUserProfile!.profileId);
+    } finally {
+      await projection.dispose();
+    }
+  });
+});
+
+it("projects the activated ordinary class only to the requesting human's own view", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = rolePolicyConfig();
+    const writer = roleClient("write", "promotion-writer");
+    const reader = roleClient("view", "promotion-reader");
+    const key = "agent:main:dashboard:promoted";
+    const target = {
+      agentId: "main",
+      key,
+      sessionId: "promoted",
+      fromLifecycleRevision: "before",
+    };
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: key },
+      {
+        sessionId: "promoted",
+        updatedAt: 1,
+        lifecycleRevision: "after",
+        spawnDepth: 1,
+        spawnedBy: "agent:main:dashboard:parent",
+        createdActor: {
+          type: "human",
+          source: "profile",
+          id: writer.authenticatedUserProfile!.profileId,
+        },
+        sessionPromotion: {
+          version: 1,
+          state: "activated",
+          requestId: "request",
+          acceptedAt: 1,
+          boundary: "settlement-or-fresh-human-input",
+          profileId: writer.authenticatedUserProfile!.profileId,
+          target,
+          toLifecycleRevision: "after",
+          activatedAt: 2,
+        },
+      },
+    );
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    try {
+      const own = prepareProjectedSessionPresentation(projection, writer).snapshot({
+        agentId: "main",
+        key,
+      }).row?.promotion;
+      const other = prepareProjectedSessionPresentation(projection, reader).snapshot({
+        agentId: "main",
+        key,
+      }).row?.promotion;
+      expect(own).toMatchObject({
+        effectiveClass: "ordinary",
+        classScope: "requesting-human-direct-turns",
+        promotionState: "activated",
+      });
+      expect(other).toMatchObject({
+        effectiveClass: "delegated",
+        classScope: "requesting-human-direct-turns",
+      });
+    } finally {
+      await projection.dispose();
     }
   });
 });

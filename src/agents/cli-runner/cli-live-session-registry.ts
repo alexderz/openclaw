@@ -4,6 +4,7 @@ import type {
   CliBackendLiveSessionCloseReason,
   CliBackendLiveSessionHandle,
 } from "../../plugins/cli-backend.types.js";
+import { notifySessionWorkSettled } from "../../sessions/session-work-settlement.js";
 import { runCliCleanup } from "./cleanup.js";
 import { createCliRunCurrentAssertion } from "./execution-target.js";
 import { createCliFailoverError } from "./exit-error.js";
@@ -21,6 +22,7 @@ type CliLiveSessionOwner = {
 };
 
 type CliLiveSessionRecord = {
+  identity: Pick<CliLiveSessionOwner, "sessionKey" | "sessionId">;
   handle: CliBackendLiveSessionHandle;
   owner: PreparedCliRunContext["preparedBackend"];
   approvalGrants: Set<string>;
@@ -34,7 +36,24 @@ type CliLiveSessionRecord = {
 };
 
 const liveSessions = new Map<string, CliLiveSessionRecord>();
-const retiredSessionCleanup = new Map<string, Promise<void>>();
+const retiredSessionCleanup = new Map<
+  string,
+  { identity: CliLiveSessionRecord["identity"]; promise: Promise<void> }
+>();
+
+/** Process custody includes retired handles until exit AND runtime cleanup settle. */
+export function hasCliSessionLifecycleCustody(
+  target: Pick<CliLiveSessionOwner, "sessionKey" | "sessionId">,
+): boolean {
+  if (!target.sessionKey) {
+    return false;
+  }
+  return [...liveSessions.values(), ...retiredSessionCleanup.values()].some(
+    ({ identity }) =>
+      identity.sessionKey === target.sessionKey &&
+      (!target.sessionId || identity.sessionId === target.sessionId),
+  );
+}
 const retiringSessionHandles = new WeakSet<CliBackendLiveSessionHandle>();
 
 function buildCliLiveRegistryKey(owner: CliLiveSessionOwner): string {
@@ -105,7 +124,7 @@ export async function restartCliLiveSession(
     async () => {
       assertActive();
       await context.preparedBackend.closeLiveSession?.("restart");
-      await pendingCleanup;
+      await pendingCleanup?.promise;
     },
     "required",
   );
@@ -266,6 +285,10 @@ export function createCliLiveSessionCapability(params: {
       ensureCliLiveSessionCapacity(params.context);
       const cleanup = params.claimResources?.();
       const record: CliLiveSessionRecord = {
+        identity: {
+          sessionKey: params.context.params.sessionKey,
+          sessionId: params.context.params.sessionId,
+        },
         handle,
         owner: params.context.preparedBackend,
         approvalGrants: new Set(),
@@ -315,12 +338,17 @@ export function createCliLiveSessionCapability(params: {
         .then(() => record.cleanup?.())
         .then(() => {
           retiringSessionHandles.delete(handle);
-          if (retiredSessionCleanup.get(ownerKey) === record.cleanupPromise) {
+          if (retiredSessionCleanup.get(ownerKey)?.promise === record.cleanupPromise) {
             retiredSessionCleanup.delete(ownerKey);
           }
+          // A pending conversation promotion waits on this process custody.
+          notifySessionWorkSettled([record.identity.sessionKey, record.identity.sessionId]);
         });
       // A fresh prepared context must still join the retired owner after a timeout.
-      retiredSessionCleanup.set(ownerKey, record.cleanupPromise);
+      retiredSessionCleanup.set(ownerKey, {
+        identity: record.identity,
+        promise: record.cleanupPromise,
+      });
       void record.cleanupPromise.catch((error: unknown) => {
         cliBackendLog.warn(`cli live session cleanup failed: ${String(error)}`);
       });

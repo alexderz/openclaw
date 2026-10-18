@@ -299,6 +299,8 @@ type SessionEntryCore = SessionRestartRecoveryState &
     incognito?: true;
     /** Opaque owner revision used to reject stale lifecycle mutations. */
     lifecycleRevision?: string;
+    /** Core-owned durable human delegation handoff; never a reusable authority. */
+    sessionPromotion?: import("../../sessions/session-promotion-state.js").SessionPromotion;
     /** Current provider precaution; only its acknowledged continuation may start work. */
     providerReview?: import("./provider-review.types.js").SessionProviderReview;
     // archivedAt/pinnedAt mirror the Codex thread-management shape (state DB

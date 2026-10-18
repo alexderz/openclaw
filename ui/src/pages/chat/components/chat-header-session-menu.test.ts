@@ -6,6 +6,8 @@ import type { GatewayBrowserClient } from "../../../api/gateway.ts";
 import type { ApplicationContext } from "../../../app/context.ts";
 import type { UiSettings } from "../../../app/settings.ts";
 import { icons } from "../../../components/icons.ts";
+import type { SessionMenuData } from "../../../components/session-menu-actions.ts";
+import { promotionProjection } from "../../../lib/sessions/session-promotion.test-support.ts";
 import { createApplicationContextProvider } from "../../../test-helpers/application-context.ts";
 import { gatewayHelloForMethods } from "../../../test-helpers/gateway-methods.ts";
 import {
@@ -29,6 +31,88 @@ type HeaderMenuElement = HTMLElementTagNameMap["openclaw-chat-header-session-men
 type MenuItemElement = HTMLElement & { checked: boolean; disabled: boolean; submenuOpen?: boolean };
 
 const containers: HTMLElement[] = [];
+
+const promotionStatus = {
+  ...promotionProjection("authorized-none"),
+  lifecycleRevision: "rev-1",
+  effectiveRestrictions: ["Delegated tools"],
+  capabilities: { sessionsSend: "denied" },
+} satisfies NonNullable<SessionMenuData["capabilityStatus"]>;
+
+it("offers explicit promotion and accessible live capability details in both layouts", async () => {
+  for (const compact of [false, true]) {
+    const onAction = vi.fn();
+    const menu = await mountMenu({
+      compact,
+      onAction,
+      session: {
+        key: "agent:main:child:one",
+        capabilityStatus: promotionStatus,
+      } satisfies Partial<SessionMenuData>,
+    });
+    const status = menu.querySelector(".session-capability-status")!;
+    expect(status.getAttribute("role")).toBe("status");
+    expect(menu.querySelector(".session-capability-details")?.textContent).toContain(
+      "Delegated tools",
+    );
+    expect(menu.querySelector('wa-dropdown-item[value="promote-session"]')).not.toBeNull();
+    select(menu, "promote-session");
+    expect(onAction).toHaveBeenCalledWith({ kind: "promote-session" });
+  }
+});
+
+it("distinguishes ordinary policy limits and pending cancellation without widening tools", async () => {
+  const menu = await mountMenu({
+    session: {
+      key: "agent:main:child:one",
+      capabilityStatus: {
+        ...promotionStatus,
+        effectiveClass: "ordinary",
+        classScope: "all-turns",
+        canPromote: false,
+        promotionState: "activated",
+      },
+    } satisfies Partial<SessionMenuData>,
+  });
+  expect(menu.querySelector(".session-capability-status")?.textContent).toContain(
+    "Ordinary · policy-limited",
+  );
+  menu.session = {
+    ...menu.session,
+    capabilityStatus: {
+      ...promotionProjection("authorized-pending"),
+      pendingBlockers: ["Active run"],
+    },
+  };
+  await menu.updateComplete;
+  expect(menu.querySelector(".session-capability-status")?.textContent).toContain(
+    "Promotion pending",
+  );
+  expect(menu.querySelector('wa-dropdown-item[value="cancel-promotion"]')).not.toBeNull();
+  expect(menu.textContent).toContain("Active run");
+});
+
+it("tells the truth about who the promoted class covers and keeps a revoke re-requestable", async () => {
+  const menu = await mountMenu({ session: { key: "k", sessionId: "s" } });
+  const show = async (kind: Parameters<typeof promotionProjection>[0]) => {
+    menu.session = { ...menu.session, capabilityStatus: promotionProjection(kind) };
+    await menu.updateComplete;
+    return menu.querySelector(".session-capability-status")?.textContent ?? "";
+  };
+  expect(await show("promoted-requester")).toContain("Ordinary · your chat turns only");
+  const details = menu.querySelector(".session-capability-details")?.textContent ?? "";
+  expect(details).toContain(
+    "Completion wakes, automation, messages from other sessions and other people's turns stay limited",
+  );
+  // Paths the promotion does not reach are named, so the badge is not read as full parity.
+  expect(details).toContain(
+    "plugin agent harnesses (such as Codex), background and compaction runs, and the sub-agent spawn limit",
+  );
+  expect(await show("promoted-other-viewer")).toContain("Promoted for someone else");
+  expect(await show("revoked-authorized")).toContain("Promotion denied · limited");
+  const action = menu.querySelector('wa-dropdown-item[value="promote-session"]');
+  expect(action?.hasAttribute("disabled")).toBe(false);
+});
 
 afterEach(() => {
   for (const container of containers.splice(0)) {
@@ -652,5 +736,487 @@ describe("chat header session menu", () => {
     onAction.mockClear();
     select(disconnected, "continue-in-terminal");
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("effective session capability status", () => {
+  it("shows delegated limits from authoritative metadata without changing historical origin", async () => {
+    const session = {
+      label: "Durable delegated owner",
+      capabilityStatus: {
+        ...promotionProjection("authorized-none"),
+        lifecycleRevision: "original-revision",
+        effectiveRestrictions: ["delegation"],
+        capabilities: { sessionsSend: "denied" },
+      },
+    } satisfies Partial<SessionMenuData>;
+    const menu = await mountMenu({ session });
+    expect(menu.querySelector(".session-capability-status")?.textContent ?? "").toContain(
+      "Delegated · limited",
+    );
+  });
+});
+
+it("announces unknown and denied states and cannot activate a disabled promotion", async () => {
+  const onAction = vi.fn();
+  const unknown = await mountMenu({ onAction });
+  expect(unknown.querySelector('[role="status"]')?.textContent).toContain("unknown");
+  const menu = await mountMenu({
+    onAction,
+    session: {
+      key: "agent:main:dashboard:one",
+      capabilityStatus: {
+        ...promotionStatus,
+        promotionState: "blocked",
+        disabledReasons: ["Permission revoked"],
+      },
+    } satisfies Partial<SessionMenuData>,
+  });
+  expect(menu.querySelector('[role="status"]')?.textContent).toContain("Promotion denied");
+  expect(
+    menu.querySelector('wa-dropdown-item[value="promote-session"]')?.hasAttribute("disabled"),
+  ).toBe(true);
+  select(menu, "promote-session");
+  expect(onAction).not.toHaveBeenCalled();
+});
+
+it("announces submission progress and disables all promotion actions while busy", async () => {
+  const menu = await mountMenu({
+    session: {
+      key: "agent:main:dashboard:one",
+      capabilityStatus: promotionStatus,
+      promotionBusy: true,
+    } satisfies Partial<SessionMenuData>,
+  });
+  expect(menu.querySelector('[role="status"]')?.textContent).toContain("Checking or submitting");
+  expect(
+    menu.querySelector('wa-dropdown-item[value="promote-session"]')?.hasAttribute("disabled"),
+  ).toBe(true);
+});
+
+describe("pending cancellation is gated by canCancel and the projected request id", () => {
+  const target = (menu: HeaderMenuElement, value: string) =>
+    menu.querySelector(`wa-dropdown-item[value="${value}"]`);
+
+  it("enables and dispatches cancel for an authorized pending projection", async () => {
+    const onAction = vi.fn();
+    const menu = await mountMenu({
+      onAction,
+      session: {
+        key: "agent:main:child:one",
+        sessionId: "session-one",
+        capabilityStatus: promotionProjection("authorized-pending"),
+      } satisfies Partial<SessionMenuData>,
+    });
+    expect(target(menu, "cancel-promotion")?.hasAttribute("disabled")).toBe(false);
+    select(menu, "cancel-promotion");
+    expect(onAction).toHaveBeenCalledWith({ kind: "cancel-promotion" });
+  });
+
+  it.each([
+    ["unauthorized pending", promotionProjection("unauthorized-pending")],
+    [
+      "canCancel without the original request id",
+      { ...promotionProjection("authorized-pending"), pendingRequestId: undefined },
+    ],
+    [
+      "pending with a permissive canPromote but canCancel false",
+      {
+        ...promotionProjection("unauthorized-pending"),
+        canPromote: true,
+        disabledReasons: [],
+      },
+    ],
+    [
+      "canCancel on a non-pending projection",
+      { ...promotionProjection("authorized-none"), canCancel: true, pendingRequestId: "stray" },
+    ],
+  ])("keeps cancel disabled and inert for %s", async (_name, capabilityStatus) => {
+    const onAction = vi.fn();
+    const menu = await mountMenu({
+      onAction,
+      session: {
+        key: "agent:main:child:one",
+        sessionId: "session-one",
+        capabilityStatus,
+      } satisfies Partial<SessionMenuData>,
+    });
+    const cancel = target(menu, "cancel-promotion");
+    if (cancel) {
+      expect(cancel.hasAttribute("disabled")).toBe(true);
+    }
+    select(menu, "cancel-promotion");
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("disables request and cancel for a restricted viewer and a stale identity", async () => {
+    for (const kind of ["restricted-viewer", "stale-identity"] as const) {
+      const onAction = vi.fn();
+      const menu = await mountMenu({
+        onAction,
+        session: {
+          key: "agent:main:child:one",
+          sessionId: "session-one",
+          capabilityStatus: promotionProjection(kind),
+        } satisfies Partial<SessionMenuData>,
+      });
+      expect(target(menu, "promote-session")?.hasAttribute("disabled")).toBe(true);
+      select(menu, "promote-session");
+      expect(onAction).not.toHaveBeenCalled();
+    }
+  });
+
+  it("renders pane actions plus the canonical session actions in order", async () => {
+    const menu = await mountMenu();
+    const labels = Array.from(
+      menu.querySelectorAll<MenuItemElement>(":scope > wa-dropdown > wa-dropdown-item"),
+    ).map(itemLabel);
+
+    expect(labels).toEqual([
+      "View",
+      "Promote to ordinary session…",
+      "Check promotion status",
+      "Pin session",
+      "Rename…",
+      "Mark as unread",
+      "Archive session",
+      "Icon & color",
+      "Move to group",
+      "Assign to…",
+      "Fork conversation",
+      "Copy",
+      "Open in",
+      "Delete…",
+    ]);
+    expect(
+      menu.querySelector(".chat-header-session-menu__trigger")?.getAttribute("aria-label"),
+    ).toBe("Actions for Test session");
+  });
+
+  it("dispatches canonical session actions from the header surface", async () => {
+    const onAction = vi.fn<(action: HeaderMenuAction) => void>();
+    const menu = await mountMenu({ onAction, splitAllowed: true });
+
+    select(menu, "toggle-pin");
+    select(menu, "toggle-unread");
+    menu.querySelector<HTMLButtonElement>(".session-menu__icon-choice")?.click();
+    menu
+      .querySelector<HTMLButtonElement>('.session-menu__color-choice[aria-label="Purple"]')
+      ?.click();
+    menu.querySelector<HTMLButtonElement>(".session-menu__icon-remove")?.click();
+    for (const value of [
+      "copy-session-link",
+      "copy-session-preview-link",
+      "copy-markdown",
+      "copy-session-id",
+      "open-new-tab",
+      "open-new-window",
+      "split-right",
+      "split-below",
+      "move-to-group:Projects",
+    ]) {
+      select(menu, value);
+    }
+
+    expect(onAction.mock.calls).toEqual([
+      [{ kind: "toggle-pin" }],
+      [{ kind: "toggle-unread" }],
+      [{ kind: "set-icon", icon: "🦞" }],
+      [{ kind: "set-color", color: "purple" }],
+      [{ kind: "reset-appearance" }],
+      [{ kind: "copy-session-link" }],
+      [{ kind: "copy-session-preview-link" }],
+      [{ kind: "copy-markdown" }],
+      [{ kind: "copy-session-id" }],
+      [{ kind: "open-new-tab" }],
+      [{ kind: "open-new-window" }],
+      [{ kind: "split-right" }],
+      [{ kind: "split-below" }],
+      [{ kind: "move-to-group", category: "Projects" }],
+    ]);
+  });
+
+  it("adds workspace editors only for a known path and dispatches the selected editor", async () => {
+    const plain = await mountMenu();
+    expect(
+      Array.from(item(plain, "Open in").querySelectorAll("wa-dropdown-item[slot='submenu']")).map(
+        itemLabel,
+      ),
+    ).toEqual(["New tab", "New window", "Continue in terminal…"]);
+    const onAction = vi.fn<(action: HeaderMenuAction) => void>();
+    const menu = await mountMenu({ worktreePath: "/work/openclaw", onAction });
+    const openIn = item(menu, "Open in");
+
+    expect(
+      Array.from(openIn.querySelectorAll<MenuItemElement>("wa-dropdown-item[slot='submenu']")).map(
+        itemLabel,
+      ),
+    ).toEqual([
+      "New tab",
+      "New window",
+      "Continue in terminal…",
+      "Cursor",
+      "VS Code",
+      "Windsurf",
+      "Zed",
+    ]);
+    select(menu, "open-in:vscode");
+    expect(onAction).toHaveBeenCalledWith({
+      kind: "open-in",
+      editor: "vscode",
+      path: "/work/openclaw",
+    });
+  });
+
+  it("keeps the three view preferences and browser-only provenance in the submenu", async () => {
+    const onSettingsChange = vi.fn<(patch: Partial<UiSettings>) => void>();
+    const menu = await mountMenu({ preferencesBrowserOnly: true, onSettingsChange });
+    const view = item(menu, "View");
+    const viewItems = Array.from(
+      view.querySelectorAll<MenuItemElement>("wa-dropdown-item[slot='submenu']"),
+    );
+
+    expect(viewItems.map(itemLabel)).toEqual(["Reasoning", "Tool calls", "Keep commentary"]);
+    expect(viewItems.map((entry) => entry.checked)).toEqual([true, true, true]);
+    expect(view.querySelector('[role="note"]')?.textContent?.trim()).toBe(
+      "Stored in this browser only.",
+    );
+    select(menu, "view:reasoning");
+    select(menu, "view:tool-calls");
+    select(menu, "view:commentary");
+    expect(onSettingsChange.mock.calls).toEqual([
+      [{ chatShowThinking: false }],
+      [{ chatShowToolCalls: false }],
+      [{ chatPersistCommentary: false }],
+    ]);
+  });
+
+  it("keeps panel and layout actions available from the session menu", async () => {
+    const showFiles = vi.fn();
+    const showChanges = vi.fn();
+    const splitRight = vi.fn();
+    const menu = await mountMenu({
+      panelActions: [
+        {
+          id: "session-files",
+          label: "Show session files",
+          icon: icons.listChecks,
+          active: false,
+          badge: 2,
+          onActivate: showFiles,
+        },
+        {
+          id: "changes",
+          label: "Show session changes",
+          icon: icons.diff,
+          onActivate: showChanges,
+        },
+      ],
+      layoutActions: [
+        {
+          id: "split-right",
+          label: "Split right",
+          icon: icons.panelRightOpen,
+          onActivate: splitRight,
+        },
+      ],
+    });
+
+    const panels = item(menu, "Panels");
+    const panelItems = Array.from(
+      panels.querySelectorAll<MenuItemElement>("wa-dropdown-item[slot='submenu']"),
+    );
+    expect(panelItems.map(itemLabel)).toEqual(["Show session files", "Show session changes"]);
+    expect(panelItems[0]?.checked).toBe(false);
+    expect(panelItems[0]?.querySelector('[slot="details"]')?.textContent?.trim()).toBe("2");
+    expect(
+      Array.from(
+        item(menu, "Layout").querySelectorAll<MenuItemElement>("wa-dropdown-item[slot='submenu']"),
+      ).map(itemLabel),
+    ).toEqual(["Split right"]);
+
+    select(menu, "quick:panels:session-files");
+    select(menu, "quick:panels:changes");
+    select(menu, "quick:layout:split-right");
+    expect(showFiles).toHaveBeenCalledOnce();
+    expect(showChanges).toHaveBeenCalledOnce();
+    expect(splitRight).toHaveBeenCalledOnce();
+  });
+
+  it("offers self and named owner assignment in one submenu", async () => {
+    const onAction = vi.fn<(action: HeaderMenuAction) => void>();
+    const { context } = createSessionOwnerMenuHarness();
+    const menu = await mountMenu({
+      context,
+      currentOwner: { type: "agent", id: "research:one" },
+      onAction,
+    });
+
+    const submenu = item(menu, "Assign to…");
+    expect(
+      Array.from(menu.querySelectorAll<MenuItemElement>(":scope > wa-dropdown > wa-dropdown-item"))
+        .map(itemLabel)
+        .filter((label) => label.startsWith("Assign to")),
+    ).toEqual(["Assign to…"]);
+    expect(
+      Array.from(submenu.querySelectorAll("wa-dropdown-item[slot='submenu']")).map(itemLabel),
+    ).toEqual(["Me", "Research"]);
+    const selected = item(menu, "Research");
+    expect(selected.getAttribute("role")).toBe("menuitemradio");
+    expect(selected.getAttribute("aria-checked")).toBe("true");
+    expect(selected.disabled).toBe(true);
+    expect(selected.querySelector("[slot='details']")).not.toBeNull();
+
+    select(menu, item(menu, "Me").getAttribute("value") ?? "");
+    select(menu, "assign-owner:agent:research%3Aone");
+    expect(onAction.mock.calls).toEqual([
+      [{ kind: "assign-owner", owner: { type: "human", id: "profile-ada" } }],
+      [{ kind: "assign-owner", owner: { type: "agent", id: "research:one" } }],
+    ]);
+  });
+
+  it("drills into compact menu groups without rendering side flyouts", async () => {
+    const showFiles = vi.fn();
+    const onOpenCommandPalette = vi.fn();
+    const onSettingsChange = vi.fn<(patch: Partial<UiSettings>) => void>();
+    const onAction = vi.fn<(action: HeaderMenuAction) => void>();
+    const { context } = createSessionOwnerMenuHarness();
+    const menu = await mountMenu({
+      compact: true,
+      worktreePath: "/work/openclaw",
+      panelActions: [
+        {
+          id: "session-files",
+          label: "Show session files",
+          icon: icons.listChecks,
+          badge: 2,
+          onActivate: showFiles,
+        },
+      ],
+      layoutActions: [
+        {
+          id: "split-right",
+          label: "Split right",
+          icon: icons.panelRightOpen,
+          onActivate: vi.fn(),
+        },
+      ],
+      context,
+      currentOwner: { type: "agent", id: "research:one" },
+      onOpenCommandPalette,
+      onSettingsChange,
+      onAction,
+    });
+
+    const initialRootLabels = Array.from(
+      menu.querySelectorAll<MenuItemElement>(":scope > wa-dropdown > wa-dropdown-item"),
+    ).map(itemLabel);
+    expect(initialRootLabels).toEqual([
+      "Open command palette",
+      "Panels",
+      "Layout",
+      "View",
+      "Promote to ordinary session…",
+      "Check promotion status",
+      "Pin session",
+      "Rename…",
+      "Mark as unread",
+      "Archive session",
+      "Icon & color",
+      "Move to group",
+      "Assign to…",
+      "Fork conversation",
+      "Copy",
+      "Open in",
+      "Delete…",
+    ]);
+    expect(menu.querySelector("[slot='submenu']")).toBeNull();
+    select(menu, "open-command-palette");
+    expect(onOpenCommandPalette).toHaveBeenCalledOnce();
+    select(menu, "compact:open-copy");
+    await menu.updateComplete;
+    expect(
+      Array.from(menu.querySelectorAll(":scope > wa-dropdown > wa-dropdown-item")).map(itemLabel),
+    ).toEqual(["Back", "Session link", "Preview link", "Conversation as Markdown", "Session ID"]);
+    select(menu, "compact:back");
+    await menu.updateComplete;
+    select(menu, "compact:open-open-in");
+    await menu.updateComplete;
+    expect(
+      Array.from(menu.querySelectorAll(":scope > wa-dropdown > wa-dropdown-item")).map(itemLabel),
+    ).toEqual([
+      "Back",
+      "New tab",
+      "New window",
+      "Continue in terminal…",
+      "Cursor",
+      "VS Code",
+      "Windsurf",
+      "Zed",
+    ]);
+    select(menu, "compact:back");
+    await menu.updateComplete;
+    select(menu, "compact:open-view");
+    await menu.updateComplete;
+    expect(
+      Array.from(
+        menu.querySelectorAll<MenuItemElement>(":scope > wa-dropdown > wa-dropdown-item"),
+      ).map(itemLabel),
+    ).toEqual(["Back", "Reasoning", "Tool calls", "Keep commentary"]);
+    expect(menu.querySelector("[slot='submenu']")).toBeNull();
+    select(menu, "view:reasoning");
+    expect(onSettingsChange).toHaveBeenCalledWith({ chatShowThinking: false });
+
+    select(menu, "compact:back");
+    await menu.updateComplete;
+    select(menu, "compact:open-panels");
+    await menu.updateComplete;
+    const action = item(menu, "Show session files");
+    expect(action.querySelector('[slot="details"]')?.textContent?.trim()).toBe("2");
+
+    select(menu, "quick:panels:session-files");
+    expect(showFiles).toHaveBeenCalledOnce();
+
+    select(menu, "compact:open-assign-owner");
+    await menu.updateComplete;
+    expect(
+      Array.from(
+        menu.querySelectorAll<MenuItemElement>(":scope > wa-dropdown > wa-dropdown-item"),
+      ).map(itemLabel),
+    ).toEqual(["Back", "Me", "Research"]);
+    select(menu, "assign-owner:human:profile-ada");
+    expect(onAction).toHaveBeenCalledWith({
+      kind: "assign-owner",
+      owner: { type: "human", id: "profile-ada" },
+    });
+    menu.querySelector("wa-dropdown")!.dispatchEvent(new Event("wa-show"));
+    await menu.updateComplete;
+    expect(
+      Array.from(menu.querySelectorAll(":scope > wa-dropdown > wa-dropdown-item")).map(itemLabel),
+    ).toEqual(initialRootLabels);
+  });
+
+  it("pins and disables onboarding view preferences", async () => {
+    const onSettingsChange = vi.fn<(patch: Partial<UiSettings>) => void>();
+    const menu = await mountMenu({ onboarding: true, onSettingsChange });
+    const viewItems = Array.from(
+      item(menu, "View").querySelectorAll<MenuItemElement>("wa-dropdown-item[slot='submenu']"),
+    );
+
+    expect(viewItems.map((entry) => entry.checked)).toEqual([false, true, true]);
+    expect(viewItems.every((entry) => entry.disabled)).toBe(true);
+    expect(
+      viewItems.every((entry) => entry.getAttribute("title") === "Disabled during setup"),
+    ).toBe(true);
+    select(menu, "view:reasoning");
+    expect(onSettingsChange).not.toHaveBeenCalled();
+  });
+
+  it("names the stable fork boundary for an active session", async () => {
+    const menu = await mountMenu({ forkFromLastCompleted: true });
+
+    expect(item(menu, "Fork conversation").getAttribute("title")).toBe(
+      "Fork from last completed message",
+    );
   });
 });

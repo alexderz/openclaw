@@ -201,11 +201,14 @@ export async function resolveGatewayScopedTools(
   } = configuredToolPolicies;
   const policyAgentId = resolvedPolicyAgentId ?? runtimePolicyAgentId;
   const senderId = params.channelContext?.sender?.id;
+  // The class was captured once at admission; the live session row is never reread for this run.
+  const sessionEffectiveAdmission = params.admittedRunContext?.sessionEffectiveAdmission;
   const requesterPolicies = resolveGatewayRequesterToolPolicies(params, {
     runtimePolicySessionKey,
     policyAgentId,
     nodeExecSurface,
     accountId: gatewayCaller.accountId,
+    sessionEffectiveAdmission,
   });
   const { groupPolicy, senderPolicy, subagentPolicy, inheritedToolPolicy } = requesterPolicies;
   const sessionPermissionPolicy =
@@ -330,6 +333,7 @@ export async function resolveGatewayScopedTools(
   };
   const swarmCollectorContext = resolveSwarmCollectorToolContext(swarmCollectorAdmission);
   const commonToolOptions = () => ({
+    sessionEffectiveAdmission,
     runId: params.runId,
     inboundEventKind: params.inboundEventKind,
     sourceReplyDeliveryMode,

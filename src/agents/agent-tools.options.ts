@@ -35,6 +35,7 @@ import type { CronCreatorToolAllowlistEntry, CronToolsAllowCaptureRef } from "./
 
 /** Public options for building one plugin-owned agent tool surface. */
 export type OpenClawCodingToolsOptions = {
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   agentId?: string;
   /** Retained policy owner; execution identity remains agentId/runSessionKey. */
   policyAgentId?: string;

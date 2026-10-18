@@ -3,6 +3,7 @@ import { WorkerTaskError } from "@openclaw/worker-runtime";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../../config/sessions/transcript-write-context.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { isGatewayRestartDrainError } from "../../../process/gateway-work-admission.js";
+import { notifySessionWorkSettled } from "../../../sessions/session-work-settlement.js";
 import { AgentDatabaseAdmissionError } from "../../../state/agent-database-admission.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
@@ -52,6 +53,12 @@ import {
 } from "./subagent-run-generation.js";
 import { hasSubagentRunEnded } from "./subagent-run-liveness.js";
 
+/** A pending conversation promotion also waits on this wake; its release is the last custody. */
+const notifyRequesterWakeSettled = (entries: readonly SubagentRunRecord[]) =>
+  notifySessionWorkSettled(
+    entries.flatMap((entry) => [entry.childSessionKey, entry.requesterSessionKey]),
+  );
+
 const completeRequesterSettleWakeBatch = async (
   context: SubagentLifecycleWakeContext,
   entries: readonly SubagentRunRecord[],
@@ -73,6 +80,7 @@ const completeRequesterSettleWakeBatch = async (
     return false;
   }
   assertSubagentRegistryWriteSourceCurrent(stateContext);
+  notifyRequesterWakeSettled(entries);
   // The durable receipt survives caller retirement; release only its remaining owned rows.
   releaseRequesterSettleWakeBatch(
     context,
@@ -197,6 +205,7 @@ export async function cancelRequesterSettleWake(
               rearmGeneration: wake.rearmGeneration,
             });
           }
+          notifyRequesterWakeSettled([published]);
           releaseRequesterSettleWakeBatch(
             context,
             [published],

@@ -4,6 +4,7 @@ import type {
   CliBackendLiveSessionCapability,
   CliBackendLiveSessionHandle,
 } from "../../plugins/cli-backend.types.js";
+import { onSessionWorkSettled } from "../../sessions/session-work-settlement.js";
 import { formatSkillsForPromptCore } from "../../skills/loading/skill-contract.js";
 import { materializeSkill } from "../../skills/loading/skill-materializer.js";
 import type { SkillSnapshot } from "../../skills/types.js";
@@ -11,6 +12,7 @@ import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import { buildPreparedCliRunContext } from "../cli-runner.test-helpers.js";
 import { hasModelFallbackStop } from "../failover-error.js";
 import { createAgentCleanupScope } from "../run-cleanup-timeout.js";
+import * as registry from "./cli-live-session-registry.js";
 import {
   acceptsCliLiveSession,
   buildCliLiveOwnerKey,
@@ -877,4 +879,41 @@ describe("generic plugin-owned live session registry", () => {
     eligible.executionTarget = { kind: "process" };
     expect(acceptsCliLiveSession(eligible)).toBe(false);
   });
+});
+
+it("inventories live and retiring process custody by exact logical session", async () => {
+  expect(registry.hasCliSessionLifecycleCustody).toBeTypeOf("function");
+  const owner = await createOwner({ deferExit: true });
+  const target = { sessionKey: owner.sessionKey, sessionId: owner.sessionId };
+  expect(registry.hasCliSessionLifecycleCustody(target)).toBe(false);
+  owner.register();
+  expect(registry.hasCliSessionLifecycleCustody(target)).toBe(true);
+  expect(
+    registry.hasCliSessionLifecycleCustody({
+      sessionKey: "agent:main:unrelated",
+      sessionId: "unrelated",
+    }),
+  ).toBe(false);
+  owner.session.close("restart");
+  expect(registry.hasCliSessionLifecycleCustody(target)).toBe(true);
+  owner.exited.resolve();
+  await vi.waitFor(() => expect(registry.hasCliSessionLifecycleCustody(target)).toBe(false));
+});
+
+it("notifies session-work settlement when a retired process finishes its cleanup", async () => {
+  const owner = await createOwner({ deferExit: true });
+  const settled: Array<readonly string[]> = [];
+  const unsubscribe = onSessionWorkSettled((identities) => settled.push(identities));
+  try {
+    owner.register();
+    owner.session.close("restart");
+    await Promise.resolve();
+    expect(settled).toEqual([]);
+    owner.exited.resolve();
+    await vi.waitFor(() =>
+      expect(settled.some((identities) => identities.includes(owner.sessionKey))).toBe(true),
+    );
+  } finally {
+    unsubscribe();
+  }
 });
