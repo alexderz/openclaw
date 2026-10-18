@@ -8,6 +8,7 @@ import type { UiSettings } from "../../../app/settings.ts";
 import { icons } from "../../../components/icons.ts";
 import type { SessionMenuData } from "../../../components/session-menu-actions.ts";
 import type { SessionOwnerOption } from "../../../components/session-owner-chip.ts";
+import { promotionProjection } from "../../../lib/sessions/session-promotion.test-support.ts";
 import { createApplicationContextProvider } from "../../../test-helpers/application-context.ts";
 import { gatewayHelloForMethods } from "../../../test-helpers/gateway-methods.ts";
 import {
@@ -35,6 +36,88 @@ type HeaderMenuElement = HTMLElementTagNameMap["openclaw-chat-header-session-men
 type MenuItemElement = HTMLElement & { checked: boolean; disabled: boolean; submenuOpen?: boolean };
 
 const containers: HTMLElement[] = [];
+
+const promotionStatus = {
+  ...promotionProjection("authorized-none"),
+  lifecycleRevision: "rev-1",
+  effectiveRestrictions: ["Delegated tools"],
+  capabilities: { sessionsSend: "denied" },
+} satisfies NonNullable<SessionMenuData["capabilityStatus"]>;
+
+it("offers explicit promotion and accessible live capability details in both layouts", async () => {
+  for (const compact of [false, true]) {
+    const onAction = vi.fn();
+    const menu = await mountMenu({
+      compact,
+      onAction,
+      session: {
+        key: "agent:main:child:one",
+        capabilityStatus: promotionStatus,
+      } satisfies Partial<SessionMenuData>,
+    });
+    const status = menu.querySelector(".session-capability-status")!;
+    expect(status.getAttribute("role")).toBe("status");
+    expect(menu.querySelector(".session-capability-details")?.textContent).toContain(
+      "Delegated tools",
+    );
+    expect(menu.querySelector('wa-dropdown-item[value="promote-session"]')).not.toBeNull();
+    select(menu, "promote-session");
+    expect(onAction).toHaveBeenCalledWith({ kind: "promote-session" });
+  }
+});
+
+it("distinguishes ordinary policy limits and pending cancellation without widening tools", async () => {
+  const menu = await mountMenu({
+    session: {
+      key: "agent:main:child:one",
+      capabilityStatus: {
+        ...promotionStatus,
+        effectiveClass: "ordinary",
+        classScope: "all-turns",
+        canPromote: false,
+        promotionState: "activated",
+      },
+    } satisfies Partial<SessionMenuData>,
+  });
+  expect(menu.querySelector(".session-capability-status")?.textContent).toContain(
+    "Ordinary · policy-limited",
+  );
+  menu.session = {
+    ...menu.session,
+    capabilityStatus: {
+      ...promotionProjection("authorized-pending"),
+      pendingBlockers: ["Active run"],
+    },
+  };
+  await menu.updateComplete;
+  expect(menu.querySelector(".session-capability-status")?.textContent).toContain(
+    "Promotion pending",
+  );
+  expect(menu.querySelector('wa-dropdown-item[value="cancel-promotion"]')).not.toBeNull();
+  expect(menu.textContent).toContain("Active run");
+});
+
+it("tells the truth about who the promoted class covers and keeps a revoke re-requestable", async () => {
+  const menu = await mountMenu({ session: { key: "k", sessionId: "s" } });
+  const show = async (kind: Parameters<typeof promotionProjection>[0]) => {
+    menu.session = { ...menu.session, capabilityStatus: promotionProjection(kind) };
+    await menu.updateComplete;
+    return menu.querySelector(".session-capability-status")?.textContent ?? "";
+  };
+  expect(await show("promoted-requester")).toContain("Ordinary · your chat turns only");
+  const details = menu.querySelector(".session-capability-details")?.textContent ?? "";
+  expect(details).toContain(
+    "Completion wakes, automation, messages from other sessions and other people's turns stay limited",
+  );
+  // Paths the promotion does not reach are named, so the badge is not read as full parity.
+  expect(details).toContain(
+    "plugin agent harnesses (such as Codex), background and compaction runs, and the sub-agent spawn limit",
+  );
+  expect(await show("promoted-other-viewer")).toContain("Promoted for someone else");
+  expect(await show("revoked-authorized")).toContain("Promotion denied · limited");
+  const action = menu.querySelector('wa-dropdown-item[value="promote-session"]');
+  expect(action?.hasAttribute("disabled")).toBe(false);
+});
 
 afterEach(() => {
   for (const container of containers.splice(0)) {
@@ -321,6 +404,8 @@ describe("chat header session menu", () => {
 
     expect(labels).toEqual([
       "View",
+      "Promote to ordinary session…",
+      "Check promotion status",
       "Pin session",
       "Rename…",
       "Mark as unread",
@@ -620,6 +705,8 @@ describe("chat header session menu", () => {
       "Panels",
       "Layout",
       "View",
+      "Promote to ordinary session…",
+      "Check promotion status",
       "Pin session",
       "Rename…",
       "Mark as unread",
@@ -834,5 +921,133 @@ describe("chat header session menu", () => {
     onAction.mockClear();
     select(disconnected, "continue-in-terminal");
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("effective session capability status", () => {
+  it("shows delegated limits from authoritative metadata without changing historical origin", async () => {
+    const session = {
+      label: "Durable delegated owner",
+      capabilityStatus: {
+        ...promotionProjection("authorized-none"),
+        lifecycleRevision: "original-revision",
+        effectiveRestrictions: ["delegation"],
+        capabilities: { sessionsSend: "denied" },
+      },
+    } satisfies Partial<SessionMenuData>;
+    const menu = await mountMenu({ session });
+    expect(menu.querySelector(".session-capability-status")?.textContent ?? "").toContain(
+      "Delegated · limited",
+    );
+  });
+});
+
+it("announces unknown and denied states and cannot activate a disabled promotion", async () => {
+  const onAction = vi.fn();
+  const unknown = await mountMenu({ onAction });
+  expect(unknown.querySelector('[role="status"]')?.textContent).toContain("unknown");
+  const menu = await mountMenu({
+    onAction,
+    session: {
+      key: "agent:main:dashboard:one",
+      capabilityStatus: {
+        ...promotionStatus,
+        promotionState: "blocked",
+        disabledReasons: ["Permission revoked"],
+      },
+    } satisfies Partial<SessionMenuData>,
+  });
+  expect(menu.querySelector('[role="status"]')?.textContent).toContain("Promotion denied");
+  expect(
+    menu.querySelector('wa-dropdown-item[value="promote-session"]')?.hasAttribute("disabled"),
+  ).toBe(true);
+  select(menu, "promote-session");
+  expect(onAction).not.toHaveBeenCalled();
+});
+
+it("announces submission progress and disables all promotion actions while busy", async () => {
+  const menu = await mountMenu({
+    session: {
+      key: "agent:main:dashboard:one",
+      capabilityStatus: promotionStatus,
+      promotionBusy: true,
+    } satisfies Partial<SessionMenuData>,
+  });
+  expect(menu.querySelector('[role="status"]')?.textContent).toContain("Checking or submitting");
+  expect(
+    menu.querySelector('wa-dropdown-item[value="promote-session"]')?.hasAttribute("disabled"),
+  ).toBe(true);
+});
+
+describe("pending cancellation is gated by canCancel and the projected request id", () => {
+  const target = (menu: HeaderMenuElement, value: string) =>
+    menu.querySelector(`wa-dropdown-item[value="${value}"]`);
+
+  it("enables and dispatches cancel for an authorized pending projection", async () => {
+    const onAction = vi.fn();
+    const menu = await mountMenu({
+      onAction,
+      session: {
+        key: "agent:main:child:one",
+        sessionId: "session-one",
+        capabilityStatus: promotionProjection("authorized-pending"),
+      } satisfies Partial<SessionMenuData>,
+    });
+    expect(target(menu, "cancel-promotion")?.hasAttribute("disabled")).toBe(false);
+    select(menu, "cancel-promotion");
+    expect(onAction).toHaveBeenCalledWith({ kind: "cancel-promotion" });
+  });
+
+  it.each([
+    ["unauthorized pending", promotionProjection("unauthorized-pending")],
+    [
+      "canCancel without the original request id",
+      { ...promotionProjection("authorized-pending"), pendingRequestId: undefined },
+    ],
+    [
+      "pending with a permissive canPromote but canCancel false",
+      {
+        ...promotionProjection("unauthorized-pending"),
+        canPromote: true,
+        disabledReasons: [],
+      },
+    ],
+    [
+      "canCancel on a non-pending projection",
+      { ...promotionProjection("authorized-none"), canCancel: true, pendingRequestId: "stray" },
+    ],
+  ])("keeps cancel disabled and inert for %s", async (_name, capabilityStatus) => {
+    const onAction = vi.fn();
+    const menu = await mountMenu({
+      onAction,
+      session: {
+        key: "agent:main:child:one",
+        sessionId: "session-one",
+        capabilityStatus,
+      } satisfies Partial<SessionMenuData>,
+    });
+    const cancel = target(menu, "cancel-promotion");
+    if (cancel) {
+      expect(cancel.hasAttribute("disabled")).toBe(true);
+    }
+    select(menu, "cancel-promotion");
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("disables request and cancel for a restricted viewer and a stale identity", async () => {
+    for (const kind of ["restricted-viewer", "stale-identity"] as const) {
+      const onAction = vi.fn();
+      const menu = await mountMenu({
+        onAction,
+        session: {
+          key: "agent:main:child:one",
+          sessionId: "session-one",
+          capabilityStatus: promotionProjection(kind),
+        } satisfies Partial<SessionMenuData>,
+      });
+      expect(target(menu, "promote-session")?.hasAttribute("disabled")).toBe(true);
+      select(menu, "promote-session");
+      expect(onAction).not.toHaveBeenCalled();
+    }
   });
 });

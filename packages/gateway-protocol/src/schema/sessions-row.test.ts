@@ -150,3 +150,44 @@ describe("SessionRowSchema", () => {
     ).toBe(false);
   });
 });
+
+it("accepts truthful per-viewer promotion metadata without requester snapshots", () => {
+  const promotion = {
+    historicalOrigin: "delegated",
+    effectiveClass: "delegated",
+    classScope: "none",
+    lifecycleRevision: "before",
+    canPromote: false,
+    canCancel: true,
+    pendingRequestId: "request",
+    promotionState: "pending",
+    disabledReasons: ["promotion-pending"],
+    pendingBlockers: ["admitted-input"],
+    activationBoundary: "next-fresh-human-run-after-quiescence",
+    policyEvaluatedAt: 3,
+    effectiveRestrictions: ["current-policy"],
+    capabilities: { sessionsSend: "unknown" },
+  };
+  expect(
+    Value.Check(SessionRowSchema, {
+      key: "agent:main:dashboard:visible",
+      kind: "direct",
+      promotion,
+    }),
+  ).toBe(true);
+  expect(
+    Value.Check(SessionRowSchema, {
+      key: "agent:main:dashboard:visible",
+      kind: "direct",
+      promotion: { ...promotion, requester: { profileId: "secret" } },
+    }),
+  ).toBe(false);
+  const { classScope: _omitted, ...withoutScope } = promotion;
+  expect(
+    Value.Check(SessionRowSchema, {
+      key: "agent:main:dashboard:visible",
+      kind: "direct",
+      promotion: withoutScope,
+    }),
+  ).toBe(false);
+});

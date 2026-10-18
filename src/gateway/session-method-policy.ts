@@ -53,6 +53,7 @@ const SESSION_TARGET_POLICY_BY_METHOD = new Map<string, SessionTargetPolicy>([
   ["sessions.github.publish", { fields: ["sessionKey"], required: true }],
   ["sessions.github.confirm", { fields: ["sessionKey"], required: true }],
   ["sessions.fork", { fields: ["sessionKey"], required: true }],
+  ["sessions.promote", { fields: ["key"], required: true }],
   ["sessions.patch", { fields: ["key"], required: true }],
   ["sessions.goal.update", { fields: ["sessionKey"], required: true }],
   ["sessions.goal.clear", { fields: ["sessionKey"], required: true }],

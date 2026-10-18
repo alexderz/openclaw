@@ -105,6 +105,7 @@ export type OpenClawSharedToolsOptions = {
 };
 
 export type OpenClawToolsOptions = {
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   /** Host-projected default sandbox surface; cannot execute other session actions. */
   sandboxSessionRenameOnly?: boolean;
   /** Host-issued source for session-control schema projection; execution rechecks the caller. */

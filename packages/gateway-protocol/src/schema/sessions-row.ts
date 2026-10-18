@@ -106,11 +106,49 @@ const SessionSwarmSummarySchema = closedObject({
 });
 
 /** Stable Gateway session row fields; mutation envelopes may add null tombstones. */
+export const SessionPromotionProjectionSchema = closedObject({
+  historicalOrigin: Type.Union([Type.Literal("delegated"), Type.Literal("ordinary")]),
+  effectiveClass: Type.Union([
+    Type.Literal("delegated"),
+    Type.Literal("ordinary"),
+    Type.Literal("unknown"),
+  ]),
+  classScope: Type.Union([
+    Type.Literal("all-turns"),
+    Type.Literal("requesting-human-direct-turns"),
+    Type.Literal("none"),
+  ]),
+  lifecycleRevision: Type.Optional(NonEmptyString),
+  canPromote: Type.Boolean(),
+  canCancel: Type.Boolean(),
+  pendingRequestId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+  promotionState: Type.Union([
+    Type.Literal("none"),
+    Type.Literal("pending"),
+    Type.Literal("activated"),
+    Type.Literal("revoked"),
+    Type.Literal("blocked"),
+  ]),
+  disabledReasons: Type.Array(Type.String()),
+  pendingBlockers: Type.Array(Type.String()),
+  activationBoundary: Type.Literal("next-fresh-human-run-after-quiescence"),
+  policyEvaluatedAt: Type.Number({ minimum: 0 }),
+  effectiveRestrictions: Type.Array(Type.String()),
+  capabilities: closedObject({
+    sessionsSend: Type.Union([
+      Type.Literal("allowed"),
+      Type.Literal("denied"),
+      Type.Literal("unknown"),
+    ]),
+  }),
+});
+
 export const SessionRowSchema = Type.Object(
   {
     key: Type.String(),
     /** Detail fields omitted in compact lists must not clear a client's full-row cache. */
     rowMode: Type.Optional(Type.Literal("compact")),
+    promotion: Type.Optional(SessionPromotionProjectionSchema),
     sessionId: Type.Optional(Type.String()),
     incognito: Type.Optional(Type.Literal(true)),
     kind: Type.Union([

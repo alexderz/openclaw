@@ -467,6 +467,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
           ),
           // Keep the in-process caller so materialized agent roots retain their creation stamp.
           createSessionsSendTool({
+            sessionEffectiveAdmission: options?.sessionEffectiveAdmission,
             ...options,
             requesterTurnRunId: options?.runId,
             agentId: sessionAgentId,

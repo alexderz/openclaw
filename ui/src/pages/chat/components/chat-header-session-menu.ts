@@ -22,6 +22,10 @@ import {
 } from "../../../components/session-menu-compact.ts";
 import type { SessionCreatedActor } from "../../../components/session-owner-chip.ts";
 import { t } from "../../../i18n/index.ts";
+import {
+  canRequestPromotion,
+  pendingCancelRequestId,
+} from "../../../lib/sessions/session-promotion-gate.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import {
   canManageChatSessionSharing,
@@ -32,6 +36,9 @@ import {
 
 export type HeaderMenuAction =
   | SessionManagementAction
+  | { kind: "promote-session" }
+  | { kind: "cancel-promotion" }
+  | { kind: "check-promotion" }
   | { kind: "continue-in-terminal" }
   | { kind: "stop-cloud-worker" }
   | { kind: "plugin"; id: string };
@@ -141,6 +148,26 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
   );
 
   private readonly handleSelect = (event: MenuSelectEvent) => {
+    const promotionValue = event.detail.item.value ?? "";
+    if (["promote-session", "cancel-promotion", "check-promotion"].includes(promotionValue)) {
+      const status = this.session.capabilityStatus;
+      if (
+        !this.session.promotionBusy &&
+        !this.session.promotionDisabledReason &&
+        (promotionValue === "check-promotion" ||
+          (this.session.key &&
+            this.session.sessionId &&
+            !this.session.promotionUncertain &&
+            (promotionValue === "cancel-promotion"
+              ? pendingCancelRequestId(status)
+              : canRequestPromotion(status))))
+      ) {
+        this.onAction({
+          kind: promotionValue as "promote-session" | "cancel-promotion" | "check-promotion",
+        });
+      }
+      return;
+    }
     const value = event.detail.item.value;
     if (!value) {
       return;
@@ -401,7 +428,7 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
             </wa-dropdown-item>`
       }
       <div class="session-menu__separator" role="separator"></div>
-      ${this.managementActions.renderPrimaryActions()}
+      ${this.renderPromotionActions()} ${this.managementActions.renderPrimaryActions()}
       <div class="session-menu__separator" role="separator"></div>
       ${this.managementActions.renderOrganizationActions()}
       ${this.renderQuickActionItems("session", this.sessionActions, true)}
@@ -431,9 +458,107 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     this.onOpen();
   };
 
+  private capabilityLabel(): string {
+    if (this.session.promotionBusy) {
+      return t("chat.sessionHeader.promotion.busy");
+    }
+    const status = this.session.capabilityStatus;
+    if (this.session.promotionUncertain) {
+      return t("chat.sessionHeader.promotion.uncertain");
+    }
+    if (!status || status.effectiveClass === "unknown") {
+      return t("chat.sessionHeader.capabilityUnknown");
+    }
+    if (status.promotionState === "pending") {
+      return t("chat.sessionHeader.promotion.pending");
+    }
+    if (status.promotionState === "blocked" || status.promotionState === "revoked") {
+      return t("chat.sessionHeader.promotion.denied");
+    }
+    if (status.effectiveClass === "delegated") {
+      return t(
+        status.classScope === "requesting-human-direct-turns"
+          ? "chat.sessionHeader.promotion.promotedForOther"
+          : "chat.sessionHeader.capabilityDelegated",
+      );
+    }
+    if (status.classScope === "requesting-human-direct-turns") {
+      return t("chat.sessionHeader.promotion.ordinaryDirectTurns");
+    }
+    return t(
+      status.effectiveRestrictions.length || status.capabilities.sessionsSend !== "allowed"
+        ? "chat.sessionHeader.promotion.ordinaryLimited"
+        : "chat.sessionHeader.promotion.ordinary",
+    );
+  }
+
+  private renderPromotionActions() {
+    const status = this.session.capabilityStatus;
+    const pending = status?.promotionState === "pending";
+    const identified = Boolean(this.session.key && this.session.sessionId);
+    const unavailableReason = pending
+      ? !identified || !pendingCancelRequestId(status)
+        ? t("chat.sessionHeader.promotion.cancelUnavailable")
+        : undefined
+      : status?.disabledReasons.join("; ") ||
+        (!identified || !canRequestPromotion(status)
+          ? t("chat.sessionHeader.promotion.unavailable")
+          : undefined);
+    const reason =
+      this.session.promotionDisabledReason ??
+      (this.session.promotionBusy ? t("chat.sessionHeader.promotion.busy") : unavailableReason);
+    return html`
+      ${
+        status?.effectiveClass !== "ordinary" || pending
+          ? html`
+              <wa-dropdown-item
+                class="session-menu__item session-promotion-action"
+                value=${pending ? "cancel-promotion" : "promote-session"}
+                ?disabled=${Boolean(reason) || Boolean(this.session.promotionUncertain)}
+                title=${reason ?? ""}
+              >
+                <span class="session-menu__text"
+                  >${t(pending ? "chat.sessionHeader.promotion.cancel" : "chat.sessionHeader.promotion.action")}</span
+                >
+              </wa-dropdown-item>
+              ${reason ? html`<div class="session-menu__info" role="note">${reason}</div>` : nothing}
+            `
+          : nothing
+      }
+      <wa-dropdown-item
+        class="session-menu__item session-promotion-action"
+        value="check-promotion"
+        ?disabled=${Boolean(this.session.promotionBusy || this.session.promotionDisabledReason)}
+      >
+        <span class="session-menu__text">${t("chat.sessionHeader.promotion.check")}</span>
+      </wa-dropdown-item>
+    `;
+  }
+
   override render() {
     const menuLabel = t("chat.sidebar.sessionMenu", { session: this.session.label });
     return html`
+      <span class="session-capability-status" role="status" aria-live="polite" aria-atomic="true"
+        >${this.capabilityLabel()}</span
+      >
+      <details class="session-capability-details">
+        <summary>${t("chat.sessionHeader.promotion.details")}</summary>
+        <div>${t("chat.sessionHeader.promotion.explanation")}</div>
+        <div>${this.session.promotionMessage ?? ""}</div>
+        <div>
+          ${this.session.capabilityStatus?.historicalOrigin === "delegated" ? t("chat.sessionHeader.promotion.origin") : ""}
+        </div>
+        <div>
+          ${this.session.capabilityStatus?.classScope === "requesting-human-direct-turns" ? t("chat.sessionHeader.promotion.scope") : ""}
+        </div>
+        <ul>
+          ${[...(this.session.capabilityStatus?.disabledReasons ?? []), ...(this.session.capabilityStatus?.pendingBlockers ?? []), ...(this.session.capabilityStatus?.effectiveRestrictions ?? [])].map((reason) => html`<li>${reason}</li>`)}
+        </ul>
+        <div>
+          ${t("chat.sessionHeader.promotion.send", { status: this.session.capabilityStatus?.capabilities.sessionsSend ?? "unknown" })}
+        </div>
+        <div>${this.session.capabilityStatus?.activationBoundary ?? ""}</div>
+      </details>
       <wa-dropdown
         class=${`session-menu chat-header-session-menu${this.compact ? " chat-header-session-menu--compact" : ""}${this.compact && this.compactView === "sharing" ? " chat-header-session-menu--compact-sharing" : ""}`}
         placement="bottom-end"

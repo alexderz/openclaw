@@ -417,6 +417,8 @@ export async function finishGatewayStartup(params: {
     const { startOpenClawDatabaseIntegrityVerifier } =
       await import("../state/openclaw-database-verify.js");
     registerGatewayLifetimeSidecars(startOpenClawDatabaseIntegrityVerifier({ env: process.env }));
+    const { startSessionPromotionSettlement } = await import("./session-promotion-settlement.js");
+    registerGatewayLifetimeSidecars(startSessionPromotionSettlement(gatewayRequestContext, log));
   }
   postAttachRuntimeReturned = true;
   activateScheduledServicesWhenReady();

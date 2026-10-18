@@ -4,7 +4,6 @@ import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-requ
 import { defaultRuntime } from "../../../runtime.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
-import { loadSessionEntryByKey } from "../announce/subagent-announce-delivery.runtime.js";
 import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import {
   ensureDeliveryState,
@@ -279,13 +278,11 @@ export const startSubagentAnnounceCleanupFlow = (
           return;
         }
         if (cleanup === "delete" && (await prepareChildSessionEffects())) {
-          const cleanupSessionEntry = await loadSessionEntryByKey(entry.childSessionKey);
+          // Cleanup owns only the incarnation recorded when this task started.
+          // Reloading by key could adopt a later operator-promoted conversation.
           const cleanupSessionIdentity =
-            cleanupSessionEntry?.sessionId && cleanupSessionEntry.lifecycleRevision
-              ? {
-                  sessionId: cleanupSessionEntry.sessionId,
-                  lifecycleRevision: cleanupSessionEntry.lifecycleRevision,
-                }
+            entry.childSessionIdentity?.sessionId && entry.childSessionIdentity.lifecycleRevision
+              ? { ...entry.childSessionIdentity }
               : undefined;
           const canDelete = await prepareChildSessionEffects();
           if (canDelete && !cleanupSessionIdentity) {
@@ -409,6 +406,9 @@ export const startSubagentAnnounceCleanupFlow = (
 
   const announceParams: Parameters<RunSubagentAnnounceFlow>[0] = {
     childSessionKey: pendingPayload.childSessionKey,
+    childSessionIdentity: entry.childSessionIdentity
+      ? { ...entry.childSessionIdentity }
+      : undefined,
     childRunId: pendingPayload.childRunId,
     runTimeoutSeconds: entry.runTimeoutSeconds,
     requesterSessionKey: pendingPayload.requesterSessionKey,

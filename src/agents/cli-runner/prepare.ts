@@ -56,6 +56,7 @@ import { resolveUserPath } from "../../utils.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import {
   readRunOperatorAuthority,
+  readRunSessionEffectiveAdmission,
   resolveAdmittedRunActiveAssertion,
 } from "../admitted-run-context.js";
 import { hasAgentRosterProperty, resolveAgentWorkspaceDir } from "../agent-scope-config.js";
@@ -1194,6 +1195,8 @@ async function prepareCliRunContextWithinReadFence(
       agentId: policyAgentId,
     });
     const nativeMcpCapabilityProfile = resolveConversationCapabilityProfile({
+      // Same immutable class the run was admitted under; the live row is never reread.
+      sessionEffectiveAdmission: readRunSessionEffectiveAdmission(params),
       config: runConfig,
       sessionKey: policySessionKey,
       runSessionKey:

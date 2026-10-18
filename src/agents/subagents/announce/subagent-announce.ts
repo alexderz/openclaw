@@ -7,6 +7,7 @@ import {
   stripLeadingSilentToken,
   stripSilentToken,
 } from "../../../auto-reply/tokens.js";
+import type { SessionEntry } from "../../../config/sessions/types.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { withPluginRuntimeGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
@@ -128,6 +129,8 @@ function stripAndClassifyReply(text: string): string | null {
 
 type SubagentAnnounceFlowParams = {
   childSessionKey: string;
+  /** Launch custody, never the identity currently occupying childSessionKey. */
+  childSessionIdentity?: Pick<SessionEntry, "sessionId" | "lifecycleRevision">;
   childAgentId?: string;
   childRunId: string;
   runTimeoutSeconds?: number;
@@ -200,7 +203,11 @@ async function runSubagentAnnounceFlowBound(
     (ownResult?.isCurrent() ?? true) &&
     isChildResultsCurrent();
   let childSessionId: string | undefined;
-  let childSessionLifecycleRevision: string | undefined;
+  // Snapshot before awaiting: neither a fresh key lookup nor later mutation of
+  // the caller's identity may authorize deleting a successor incarnation.
+  const cleanupSessionIdentity = params.childSessionIdentity
+    ? { ...params.childSessionIdentity }
+    : undefined;
   try {
     let targetRequesterSessionKey = params.requesterSessionKey;
     let targetRequesterAgentId = params.requesterAgentId;
@@ -213,7 +220,6 @@ async function runSubagentAnnounceFlowBound(
       typeof childSessionEntry?.sessionId === "string" && childSessionEntry.sessionId.trim()
         ? childSessionEntry.sessionId.trim()
         : undefined;
-    childSessionLifecycleRevision = normalizeOptionalString(childSessionEntry?.lifecycleRevision);
     const settleTimeoutMs = Math.min(Math.max(params.timeoutMs, 1), 120_000);
     let reply =
       params.terminalReply?.disposition === "visible"
@@ -644,8 +650,8 @@ async function runSubagentAnnounceFlowBound(
         isCurrent: childSessionEffectsAllowed,
         childSessionKey: params.childSessionKey,
         spawnMode: params.spawnMode,
-        expectedSessionId: childSessionId,
-        expectedLifecycleRevision: childSessionLifecycleRevision,
+        expectedSessionId: cleanupSessionIdentity?.sessionId,
+        expectedLifecycleRevision: cleanupSessionIdentity?.lifecycleRevision,
       });
     }
   }

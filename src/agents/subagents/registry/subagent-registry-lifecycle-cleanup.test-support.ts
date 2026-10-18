@@ -249,6 +249,10 @@ export function registerDirectSessionCleanupAuthorityTests({
 
   it("keeps direct delete cleanup root-admitted until the gateway call settles", async () => {
     const entry = createRunEntry({ cleanup: "delete", expectsCompletionMessage: false });
+    entry.childSessionIdentity = {
+      sessionId: "child-session-id",
+      lifecycleRevision: "child-lifecycle-revision",
+    };
     const runs = new Map([[entry.runId, entry]]);
     let releaseDelete: (() => void) | undefined;
     gatewayMocks.callGateway.mockImplementation((opts) => {

@@ -13,6 +13,7 @@ import {
 } from "./agent-tools.policy.js";
 import type { SandboxToolPolicy } from "./sandbox/types.js";
 import { resolveSenderToolPolicy } from "./sender-tool-policy.js";
+import { isOrdinarySessionEffectiveAdmission } from "./session-effective-admission.js";
 import {
   isTrustedSubagentCompletionHandoffForRun,
   type TrustedSubagentCompletionHandoff,
@@ -25,6 +26,7 @@ import {
   type PreparedSessionCapabilityEntry,
   type SessionCapabilityStore,
 } from "./subagents/spawn/subagent-capabilities.js";
+import { asSessionCapabilityLookup } from "./subagents/spawn/subagent-session-store.js";
 
 export const MAX_DELEGATION_LINEAGE_DEPTH = 32;
 
@@ -44,6 +46,7 @@ type RequesterToolPolicyResolution = {
 type SenderPolicyMode = "always" | "when-sender-id" | "never";
 
 type RequesterToolPolicyParams = {
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   config?: OpenClawConfig;
   agentId?: string;
   sessionKey?: string;
@@ -216,8 +219,19 @@ export function resolveRequesterToolPolicies(
     preparedSessionEntry: params.preparedSessionEntry,
     store: params.preparedSessionCapabilityStore,
   });
-  const delegatedPolicy = resolveDelegatedPolicy({ ...params, subagentSessionKey }, subagentStore);
+  const storedSessionId =
+    subagentSessionKey && subagentStore
+      ? asSessionCapabilityLookup(subagentStore).get(subagentSessionKey)?.sessionId
+      : undefined;
+  const ordinaryAdmission = isOrdinarySessionEffectiveAdmission(
+    params.sessionEffectiveAdmission,
+    params.sessionId ?? (typeof storedSessionId === "string" ? storedSessionId : undefined),
+  );
+  const delegatedPolicy = ordinaryAdmission
+    ? { delegated: false as const }
+    : resolveDelegatedPolicy({ ...params, subagentSessionKey }, subagentStore);
   const subagentPolicy =
+    !ordinaryAdmission &&
     subagentSessionKey &&
     isSubagentEnvelopeSession(subagentSessionKey, {
       cfg: params.config,
@@ -250,7 +264,7 @@ export function resolveRequesterToolPolicies(
       resolveGroupToolPolicy({
         config: params.config,
         sessionKey: params.groupPolicySessionKey ?? params.sessionKey,
-        spawnedBy: params.spawnedBy,
+        spawnedBy: ordinaryAdmission ? undefined : params.spawnedBy,
         messageProvider: params.messageProvider ?? undefined,
         groupId: params.groupId,
         groupChannel: params.groupChannel,
@@ -276,9 +290,11 @@ export function resolveRequesterToolPolicies(
         })
       : undefined,
     subagentPolicy,
-    inheritedToolPolicy: resolveInheritedToolPolicyForSession(params.config, subagentSessionKey, {
-      store: subagentStore,
-    }),
+    inheritedToolPolicy: ordinaryAdmission
+      ? undefined
+      : resolveInheritedToolPolicyForSession(params.config, subagentSessionKey, {
+          store: subagentStore,
+        }),
     subagentStore,
   };
 }

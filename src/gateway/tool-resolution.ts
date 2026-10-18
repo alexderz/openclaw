@@ -200,7 +200,10 @@ export function resolveGatewayScopedTools(
     nodeExecSurface &&
     params.senderIsOwner === true &&
     normalizeMessageChannel(params.messageProvider) === INTERNAL_MESSAGE_CHANNEL;
+  // The class was captured once at admission; the live session row is never reread for this run.
+  const sessionEffectiveAdmission = params.admittedRunContext?.sessionEffectiveAdmission;
   const requesterPolicies = resolveRequesterToolPolicies({
+    sessionEffectiveAdmission,
     config: params.cfg,
     sessionKey: runtimePolicySessionKey,
     subagentSessionKey: runtimePolicySessionKey,
@@ -358,6 +361,7 @@ export function resolveGatewayScopedTools(
   };
   const swarmCollectorContext = resolveSwarmCollectorToolContext(swarmCollectorAdmission);
   const openClawTools = createOpenClawTools({
+    sessionEffectiveAdmission,
     sessionPortalTarget,
     gatewayConfigReadAllowed,
     agentSessionKey: params.sessionKey,
@@ -500,6 +504,7 @@ export function resolveGatewayScopedTools(
   const mediatedCodingTools =
     surface === "loopback" && (includeMediatedBaseCodingTools || includeMediatedShellTools)
       ? createOpenClawCodingTools({
+          sessionEffectiveAdmission,
           config: params.cfg,
           sessionConfigSource: "runtime",
           agentId: policyAgentId,

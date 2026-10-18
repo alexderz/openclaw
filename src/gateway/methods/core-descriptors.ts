@@ -227,6 +227,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   // Dynamic mutation scope policy, including write-scoped model overrides, lives
   // in shared/session-method-scopes.ts. The admin-only sticky configured-default
   // persistence guard lives in server-methods/sessions-mutations.ts.
+  ["sessions.promote", "sessions-promotion", "operator.sessions.write", "2026.10"],
   ["sessions.patch", "sessions-mutations", "dynamic", "<=2026.7"],
   ["sessions.goal.update", "sessions-goal", "operator.write", "2026.8"],
   ["sessions.goal.clear", "sessions-goal", "operator.write", "2026.8"],

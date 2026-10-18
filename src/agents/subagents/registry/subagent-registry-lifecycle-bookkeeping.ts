@@ -1,6 +1,7 @@
 import { runWithGatewayDetachedWorkContinuation } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { isCronRunSessionKey } from "../../../sessions/session-key-utils.js";
+import { notifySessionWorkSettled } from "../../../sessions/session-work-settlement.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { retireSessionMcpRuntimeForSessionKey } from "../../agent-bundle-mcp-tools.js";
 import { removeInternalSessionEffectsSession } from "../../internal-session-effects.js";
@@ -190,4 +191,6 @@ export async function completeCleanupBookkeeping(
     assertPublishedOwner();
     scheduleRequesterSettleWake(context, entry.runId, entry, stateContext);
   }
+  // A pending conversation promotion waits on this child's and its requester's custody.
+  notifySessionWorkSettled([entry.childSessionKey, entry.requesterSessionKey]);
 }

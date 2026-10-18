@@ -397,7 +397,7 @@ export function prepareQualifiedSessionEntryTarget(
 export async function updateResolvedSessionEntry<T>(
   scope: LogicalSessionAccessScope,
   update: (entry: SessionEntry, context: ResolvedSessionEntryUpdateContext) => Promise<T> | T,
-  options?: { target: QualifiedSessionEntryAccessTarget },
+  options?: { target: QualifiedSessionEntryAccessTarget; shouldCommit?: () => boolean },
 ): Promise<ResolvedSessionEntryUpdateResult<T>> {
   const captured = options?.target;
   const target = captured ?? resolveSessionEntryStoreTarget(scope);
@@ -440,7 +440,11 @@ export async function updateResolvedSessionEntry<T>(
     updateResult = await update(entry, context);
     return entry;
   };
-  const patchOptions = { replaceEntry: true, skipMaintenance: true };
+  const patchOptions = {
+    replaceEntry: true,
+    skipMaintenance: true,
+    shouldCommit: options?.shouldCommit,
+  };
   const updated =
     captured && source
       ? await patchSessionEntryTarget(

@@ -265,6 +265,41 @@ export function hasRetainedRequiredCompletionDelivery(
   );
 }
 
+/**
+ * True only when every durable obligation this row can own has actually settled: terminal
+ * execution, finished cleanup, no kill/recovery/queued-launch/collector or requester-wake
+ * custody, and a required completion that was delivered or durably, terminally disposed.
+ * Unknown or legacy shapes are NOT settled. `endedAt` or `cleanupCompletedAt` alone prove nothing.
+ */
+export function isSubagentRunLifecycleSettled(entry: SubagentRunRecord): boolean {
+  if (
+    entry.execution?.status !== "terminal" ||
+    typeof entry.execution.endedAt !== "number" ||
+    typeof entry.cleanupCompletedAt !== "number" ||
+    entry.execution.restartRecovery ||
+    entry.killIntent ||
+    entry.killReconciliation ||
+    entry.queuedLaunch ||
+    entry.swarmLaunchPending ||
+    entry.collectorLaunchCleanupPending ||
+    entry.collectorCompletion ||
+    entry.requesterSettleWake ||
+    entry.terminalOwner
+  ) {
+    return false;
+  }
+  if (entry.suppressCompletionDelivery === true || entry.expectsCompletionMessage !== true) {
+    return !hasRetainedRequiredCompletionDelivery(entry);
+  }
+  const status = entry.delivery?.status;
+  return (
+    status === "delivered" ||
+    status === "failed" ||
+    status === "discarded" ||
+    status === "not_required"
+  );
+}
+
 export function getDeliveryLastError(entry: SubagentRunRecord): string | undefined {
   const error = entry.delivery?.lastError;
   return typeof error === "string" && error.trim() ? error : undefined;

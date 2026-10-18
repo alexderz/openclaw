@@ -517,6 +517,11 @@ export class TerminalSessionManager {
     this.connections.addPendingOpen(connId, pending);
   }
 
+  /** Read-only lifecycle inventory, including pending opens and exiting PTYs. */
+  inspectAgentSessionWork(owner: AgentTerminalOwner): boolean {
+    return this.hasAgentSessionWork(owner);
+  }
+
   private hasAgentSessionWork(owner: AgentTerminalOwner): boolean {
     return (
       [...this.pendingOpens.values()].some((pendingOwner) =>

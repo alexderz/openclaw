@@ -16,6 +16,7 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "../gateway/session-utils-store-lookup.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
+import { captureSessionEffectiveAdmissionForTest } from "../sessions/session-promotion-state.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as requesterTransfer from "./subagents/registry/subagent-registry-requester-wake-commit.js";
 
@@ -884,6 +885,45 @@ describe("sessions_send child coordination", () => {
       expect(agentParams(agentCalls[0] ?? {}).inputProvenance?.sourceRole).toBe("subagent");
       expect(calls.filter((call) => call.method === "agent.wait")).toHaveLength(
         timeoutSeconds === 0 ? 0 : 1,
+      );
+    },
+  );
+  it.each(["ordinary", "delegated"] as const)(
+    "uses the captured %s requester class for sessions_send",
+    async (effectiveClass) => {
+      const requesterKey = "agent:main:dashboard:promoted-requester";
+      const targetKey = "agent:main:main";
+      await writeEntry(requesterKey, {
+        sessionId: "requester",
+        updatedAt: 1,
+        lifecycleRevision: "after",
+        spawnedBy: targetKey,
+        spawnDepth: 2,
+        inheritedToolPolicyVersion: 1,
+        inheritedToolAllow: ["read"],
+      });
+      await writeEntry(targetKey, { sessionId: "target", updatedAt: 1 });
+      const tool = createSessionsSendTool({
+        agentSessionKey: requesterKey,
+        agentSessionId: "requester",
+        config,
+        sessionEffectiveAdmission: captureSessionEffectiveAdmissionForTest({
+          sessionKey: requesterKey,
+          sessionId: "requester",
+          lifecycleRevision: "after",
+          effectiveClass,
+        }),
+      });
+      const result = await tool.execute("promotion", {
+        sessionKey: targetKey,
+        message: "hello",
+        timeoutSeconds: 0,
+      });
+      expect(result.details).toMatchObject({ status: "accepted" });
+      const agentCall = calls.find((call) => call.method === "agent");
+      expect(agentCall).toBeDefined();
+      expect(agentParams(agentCall!).inputProvenance?.sourceRole).toBe(
+        effectiveClass === "ordinary" ? undefined : "subagent",
       );
     },
   );

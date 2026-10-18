@@ -32,6 +32,7 @@ export type OperationalRunInstanceRef = Readonly<{
 
 /** Exact context carried by one admitted execution and every retry/fallback it owns. */
 export type AdmittedRunContext = Readonly<{
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   operationalRunInstance: OperationalRunInstanceRef;
   /** Scheduler-authored ingress authority, independent of optional audit collection. */
   admissionSource?: "operator-schedule" | "requester-schedule";
@@ -39,6 +40,8 @@ export type AdmittedRunContext = Readonly<{
 }>;
 
 export type AdmittedRunOperatorAuthority = Readonly<{
+  /** Immutable admission ceiling, never refreshed from the live session row. */
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   profileId: string;
   scopes: readonly string[];
   /** Original access dependency; null is proven independent, undefined is unclassified. */
@@ -94,6 +97,9 @@ export function createAdmittedRunOperatorAuthority(
   const readCurrentRoleAssignment = source.readCurrentRoleAssignment;
   const readCurrentGithubLogin = source.readCurrentGithubLogin;
   const authority = Object.freeze({
+    ...(source.sessionEffectiveAdmission
+      ? { sessionEffectiveAdmission: source.sessionEffectiveAdmission }
+      : {}),
     profileId: source.profileId,
     scopes: Object.freeze([...source.scopes]),
     gatewayAccessGrant: source.gatewayAccessGrant
@@ -225,6 +231,17 @@ export function readRunOperatorAuthority(params: {
   return (
     readAdmittedRunOperatorAuthority(params.admittedRunContext) ??
     readPreparedRunOperatorAuthority(params.preparedRunAdmission)
+  );
+}
+
+/** Immutable class captured at admission; prepared and admitted forms of one run agree. */
+export function readRunSessionEffectiveAdmission(params: {
+  preparedRunAdmission?: PreparedAgentRunAdmission;
+  admittedRunContext?: AdmittedRunContext;
+}): AdmittedRunContext["sessionEffectiveAdmission"] {
+  return (
+    params.admittedRunContext?.sessionEffectiveAdmission ??
+    readPreparedRunOperatorAuthority(params.preparedRunAdmission)?.sessionEffectiveAdmission
   );
 }
 
@@ -557,6 +574,7 @@ export function prepareAgentRunAdmission(params: {
           extra: executionIdentitySpawnAdmission({ operation: "read", value: params.facts }),
         });
         const context = admitPreparedAgentRun({
+          sessionEffectiveAdmission: operatorAuthority?.sessionEffectiveAdmission,
           cfg: params.cfg,
           admissionSource: params.admissionSource,
           facts,
@@ -632,6 +650,7 @@ function consumeRecoveryAdmission(params: {
  * Queue loss remains audit loss only; the admitted execution keeps its exact token object.
  */
 function admitPreparedAgentRun(params: {
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   cfg: OpenClawConfig;
   admissionSource?: AdmittedRunContext["admissionSource"];
   facts: ExecutionIdentityAdmissionFacts;
@@ -644,6 +663,9 @@ function admitPreparedAgentRun(params: {
   }
   const operationalRunInstance = params.operationalRunInstance;
   const admitted = {
+    ...(params.sessionEffectiveAdmission
+      ? { sessionEffectiveAdmission: params.sessionEffectiveAdmission }
+      : {}),
     operationalRunInstance,
     ...(params.admissionSource ? { admissionSource: params.admissionSource } : {}),
   };

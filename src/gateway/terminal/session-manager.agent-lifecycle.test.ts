@@ -84,3 +84,15 @@ describe("TerminalSessionManager agent session lifecycle", () => {
     });
   });
 });
+
+it("exposes an owner-backed read-only inventory without closing terminal admissions", () => {
+  const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => makeFakePty() });
+  expect(manager.inspectAgentSessionWork).toBeTypeOf("function");
+  const owner = {
+    kind: "agent" as const,
+    agentId: "main",
+    agentSessionKey: "agent:main:dashboard:quiet",
+    agentSessionId: "quiet",
+  };
+  expect(manager.inspectAgentSessionWork(owner)).toBe(false);
+});

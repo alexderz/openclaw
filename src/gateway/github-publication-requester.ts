@@ -7,6 +7,7 @@ import {
 } from "../state/github-publication-requester.js";
 import { UserProfileMutationUnsettledError } from "../state/user-profile-events.js";
 import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
+import { UserProfileNotFoundError } from "../state/user-profiles-schema.js";
 import type { UserProfileAccessFacts } from "../state/user-profiles.types.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
@@ -98,7 +99,13 @@ function prepareRequesterPolicy(
           { cause: error },
         );
       }
-      throw new GitHubPublicationRequesterUnavailableError();
+      if (error instanceof GitHubPublicationRequesterUnavailableError) {
+        throw error;
+      }
+      // A missing profile or binding proves the ending; any other read failure does not.
+      throw new GitHubPublicationRequesterUnavailableError(
+        error instanceof UserProfileNotFoundError ? undefined : { cause: error },
+      );
     }
   };
   const assertRole = (profile: UserProfileAccessFacts | undefined, config: OpenClawConfig) => {

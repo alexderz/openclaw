@@ -13,6 +13,7 @@ import { createDeferredCore } from "../../../shared/deferred.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
+import { loadSessionEntryByKey } from "../announce/subagent-announce-delivery.runtime.js";
 import {
   prepareRequesterCronAuthority,
   type PreparedRequesterCronAuthority,
@@ -232,6 +233,17 @@ export class SubagentLifecycleController {
   ): Promise<boolean> {
     const boundEffects = this.terminalSessionEffects.get(getSubagentRunRuntimeKey(entry));
     const effects = prospectiveEffects ?? boundEffects;
+    if (entry.childSessionIdentity) {
+      // A completed child can keep its registry row after an operator handoff.
+      // No newer child run is required for its original session custody to end.
+      const currentSession = await loadSessionEntryByKey(entry.childSessionKey, entry.childAgentId);
+      if (
+        currentSession?.sessionId !== entry.childSessionIdentity.sessionId ||
+        currentSession.lifecycleRevision !== entry.childSessionIdentity.lifecycleRevision
+      ) {
+        return true;
+      }
+    }
     return (
       this.sessionEffectsSuppressed(entry) ||
       (await effects?.isCurrent()) === false ||

@@ -126,6 +126,8 @@ const CORE_GATEWAY_HANDLER_MODULES = {
     import("./sessions-provider-review.js").then((module) => module.sessionProviderReviewHandlers),
   "sessions-messaging": () =>
     import("./sessions-messaging.js").then((module) => module.sessionMessagingHandlers),
+  "sessions-promotion": () =>
+    import("./sessions-promotion.js").then((module) => module.sessionPromotionHandlers),
   "sessions-mutations": () =>
     import("./sessions-mutations.js").then((module) => module.sessionMutationHandlers),
   "sessions-read": () => import("./sessions-read.js").then((module) => module.sessionReadHandlers),
