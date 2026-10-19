@@ -47,6 +47,8 @@ export async function requestSessionPromotion(params: {
   now?: number;
   signal?: AbortSignal;
   assertCurrent: () => void;
+  /** The host-attested live Control UI admin flag for this request; restore never sets it. */
+  liveAdmin?: boolean;
 }): Promise<SessionPromotion> {
   params.assertCurrent();
   const target = resolveSessionEntryAccessTarget(params.scope, { keyFormat: "agent-qualified" });
@@ -84,13 +86,16 @@ export async function requestSessionPromotion(params: {
             ...(params.device ? { device: params.device } : {}),
             now: params.now ?? Date.now(),
             assertCurrent: params.assertCurrent,
-            adminBasisAllowed: promotionAdminBasisAllowed({
-              profileId:
-                params.requester.actor.kind === "operator"
-                  ? params.requester.actor.profileId
-                  : undefined,
-              cfg: params.scope.cfg,
-            }),
+            // A live attested admin is a basis at request time; a restored intent has no live flag.
+            adminBasisAllowed:
+              params.liveAdmin === true ||
+              promotionAdminBasisAllowed({
+                profileId:
+                  params.requester.actor.kind === "operator"
+                    ? params.requester.actor.profileId
+                    : undefined,
+                cfg: params.scope.cfg,
+              }),
           });
         },
         {
@@ -217,6 +222,14 @@ export async function activatePendingSessionPromotion(params: {
               nextRevision: randomUUID(),
               blockers,
               ...(params.basis ? { basis: params.basis } : {}),
+              // Restore re-proves the admin basis from the intent's own operator profile and config.
+              adminBasisAllowed: promotionAdminBasisAllowed({
+                profileId:
+                  promotion.requester.actor.kind === "operator"
+                    ? promotion.requester.actor.profileId
+                    : undefined,
+                cfg: params.scope.cfg,
+              }),
               assertCurrent: params.assertCurrent,
             });
           },

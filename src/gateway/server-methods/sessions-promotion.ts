@@ -182,6 +182,7 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
         requester: admitted.requester.snapshot,
         signal: options.signal,
         assertCurrent,
+        liveAdmin: isControlUiAdminClient(options.client),
       });
       respond(true, toSessionPromotionResult(promotion), undefined);
       if (promotion.state === "pending") {
@@ -219,15 +220,6 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
             // Raised only after authorization, or from the key alone: safe to name.
             { details: { code: "SESSION_PROMOTION_UNSUPPORTED", reason: error.reason } },
           ),
-        );
-      } else if (error instanceof SessionPromotionLineageUnavailableError) {
-        // The delegation chain is not readable yet: nothing was decided, so the caller may retry.
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.UNAVAILABLE, "Session promotion is temporarily unavailable.", {
-            retryable: true,
-          }),
         );
       } else if (
         error instanceof SessionMutationAuthorizationChangedError &&

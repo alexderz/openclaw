@@ -72,6 +72,8 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
     spawnedBy: entry.spawnedBy,
     spawnDepth: entry.spawnDepth,
     parentSessionKey: entry.parentSessionKey,
+    // The promotion lineage rule proves each hop by its exact parent incarnation.
+    parentSessionId: entry.parentSessionId,
     sessionStartedAt: entry.sessionStartedAt,
     permissionMode: entry.permissionMode,
     toolOverrides: entry.toolOverrides ? structuredClone(entry.toolOverrides) : undefined,

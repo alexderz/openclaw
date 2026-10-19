@@ -141,6 +141,8 @@ describe("session promotion target eligibility", () => {
         requestId: "request",
         now: 1,
         assertCurrent: vi.fn(),
+        // The live Control UI admin flag is the basis at request time; the restore path re-proves it.
+        adminBasisAllowed: true,
       }),
     ).toMatchObject({ state: "pending", target: { key } });
     let refused: unknown;
