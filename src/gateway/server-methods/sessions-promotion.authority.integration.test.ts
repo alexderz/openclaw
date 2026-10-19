@@ -174,7 +174,12 @@ async function createWorld(cfg: OpenClawConfig) {
         key,
       }).row?.promotion;
     },
-    async promote(client: GatewayWsClient, key = TARGET, requestId = `${client.connId}-intent`) {
+    async promote(
+      client: GatewayWsClient,
+      key = TARGET,
+      requestId = `${client.connId}-intent`,
+      action: "request" | "cancel" = "request",
+    ) {
       const entry = loadSessionEntry({ agentId: "main", sessionKey: key })!;
       const respond = vi.fn();
       await handleGatewayRequest({
@@ -187,6 +192,7 @@ async function createWorld(cfg: OpenClawConfig) {
             expectedSessionId: entry.sessionId,
             expectedLifecycleRevision: entry.lifecycleRevision,
             requestId,
+            action,
           },
         },
         client,
@@ -488,6 +494,56 @@ describe("non-admin promotion through owned lineage", () => {
         const bob = world.person("bob", "write");
         expect(await world.promoteWithParity(bob.client)).toMatchObject(FORBIDDEN);
         expect(world.loggedReasons()).toMatch(/reason=lineage-unreadable/);
+      } finally {
+        await world.projection.dispose();
+      }
+    });
+  });
+});
+
+describe("cancelling a pending intent", () => {
+  it("lets the original requester and the gateway owner cancel; other admins and people are refused", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await seedLiveTree();
+      const world = await createWorld(rolesConfig);
+      try {
+        const ada = world.person("ada", "admin");
+        const grace = world.person("grace", "admin");
+        const bob = world.person("bob", "write");
+        const owner = world.owner();
+
+        // The original requester cancels her own intent, reusing its requestId.
+        expect(await world.promote(ada.client, SUBAGENT, "ada-sub")).toMatchObject({
+          ok: true,
+          payload: { state: "pending" },
+        });
+        for (const refused of [grace.client, bob.client]) {
+          expect(await world.promote(refused, SUBAGENT, "ada-sub", "cancel")).toMatchObject(
+            FORBIDDEN,
+          );
+          expect(world.promotion(SUBAGENT)).toMatchObject({
+            state: "pending",
+            requestId: "ada-sub",
+          });
+        }
+        expect(await world.promote(ada.client, SUBAGENT, "ada-sub", "cancel")).toMatchObject({
+          ok: true,
+        });
+        expect(world.promotion(SUBAGENT)).toMatchObject({ state: "cancelled" });
+
+        // The gateway owner may cancel someone else's intent, but another admin may not.
+        expect(await world.promote(ada.client, TARGET, "ada-intent")).toMatchObject({
+          ok: true,
+          payload: { state: "pending" },
+        });
+        expect(await world.promote(grace.client, TARGET, "ada-intent", "cancel")).toMatchObject(
+          FORBIDDEN,
+        );
+        expect(world.promotion()).toMatchObject({ state: "pending", requestId: "ada-intent" });
+        expect(await world.promote(owner, TARGET, "ada-intent", "cancel")).toMatchObject({
+          ok: true,
+        });
+        expect(world.promotion()).toMatchObject({ state: "cancelled" });
       } finally {
         await world.projection.dispose();
       }
