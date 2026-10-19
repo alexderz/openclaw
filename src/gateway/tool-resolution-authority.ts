@@ -5,6 +5,7 @@ import {
 import { resolveRequesterToolPolicies } from "../agents/requester-tool-policy.js";
 import { pickSandboxToolPolicy } from "../agents/sandbox-tool-policy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { SessionEffectiveAdmission } from "../sessions/session-promotion-state.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
 import { normalizeMessageChannel } from "../utils/message-channel-core.js";
 import type { McpLoopbackRequestContext } from "./mcp-grant-store.js";
@@ -38,6 +39,7 @@ export function resolveGatewayRequesterToolPolicies(
     policyAgentId: string;
     nodeExecSurface: boolean;
     accountId?: string;
+    sessionEffectiveAdmission?: SessionEffectiveAdmission;
   },
 ) {
   // Only immutable Gateway-launched grants can opt into node exec. Match the
@@ -47,6 +49,7 @@ export function resolveGatewayRequesterToolPolicies(
     params.senderIsOwner === true &&
     normalizeMessageChannel(params.messageProvider) === INTERNAL_MESSAGE_CHANNEL;
   const policies = resolveRequesterToolPolicies({
+    sessionEffectiveAdmission: options.sessionEffectiveAdmission,
     config: params.cfg,
     conversationPolicy: pickSandboxToolPolicy(params.conversationToolPolicy),
     sessionKey: options.runtimePolicySessionKey,
