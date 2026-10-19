@@ -5,6 +5,7 @@ import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { prepareSessionCreatorProfile } from "./session-creator.js";
 import {
+  promotionAdminBasisAllowed,
   resolveSessionPromotionOwnership,
   type SessionPromotionLineageEntry,
   type SessionPromotionOwnership,
@@ -61,7 +62,13 @@ export function createSessionPromotionOwnerCheck(
   }) =>
     assertSessionPromotionOwnership(
       resolveSessionPromotionOwnership({
-        admin: isAdminPromotionScopes(owner.scopes) && (liveAdmin?.() ?? true),
+        // Without a live connection, the restored scopes are a basis only for the gateway owner
+        // or when operator roles are configured; otherwise ownership decides.
+        admin:
+          isAdminPromotionScopes(owner.scopes) &&
+          (liveAdmin
+            ? liveAdmin()
+            : promotionAdminBasisAllowed({ profileId: owner.profileId, cfg: owner.config })),
         cfg: owner.config,
         profileId: owner.profileId,
         scopes: owner.scopes,

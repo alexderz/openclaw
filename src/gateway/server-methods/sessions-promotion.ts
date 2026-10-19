@@ -4,6 +4,7 @@ import {
   validateSessionsPromoteParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import {
+  SessionPromotionCancelDeniedError,
   SessionPromotionConflictError,
   SessionPromotionUnsupportedError,
   type SessionPromotion,
@@ -27,6 +28,10 @@ import {
   SessionPromotionLineageUnavailableError,
   SessionPromotionOwnershipDeniedError,
 } from "../session-promotion-owner-check.js";
+import {
+  markSessionPromotionPending,
+  clearSessionPromotionPending,
+} from "../session-promotion-pending-keys.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -64,6 +69,9 @@ export function sessionPromotionRefusalReason(error: unknown): string {
   }
   if (error instanceof SessionPromotionConflictError) {
     return "conflict";
+  }
+  if (error instanceof SessionPromotionCancelDeniedError) {
+    return error.reason;
   }
   if (
     error instanceof SessionPromotionOwnershipDeniedError ||
@@ -177,9 +185,13 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
       });
       respond(true, toSessionPromotionResult(promotion), undefined);
       if (promotion.state === "pending") {
+        // Mark before notifying: settlement attempts run only for keys with a pending intent.
+        markSessionPromotionPending(promotion.target.key);
         // An already idle session has no owner release to wake the settlement coordinator.
         // It consumes only the intent just persisted, under its original basis.
         notifySessionWorkSettled([promotion.target.key]);
+      } else {
+        clearSessionPromotionPending(promotion.target.key);
       }
     } catch (error) {
       const reason = sessionPromotionRefusalReason(error);
@@ -207,6 +219,15 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
             // Raised only after authorization, or from the key alone: safe to name.
             { details: { code: "SESSION_PROMOTION_UNSUPPORTED", reason: error.reason } },
           ),
+        );
+      } else if (error instanceof SessionPromotionLineageUnavailableError) {
+        // The delegation chain is not readable yet: nothing was decided, so the caller may retry.
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "Session promotion is temporarily unavailable.", {
+            retryable: true,
+          }),
         );
       } else if (
         error instanceof SessionMutationAuthorizationChangedError &&

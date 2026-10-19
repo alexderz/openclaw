@@ -9,9 +9,16 @@ vi.mock("../config/sessions/session-entry-read-runtime.js", () => ({
 }));
 
 import { notifySessionWorkSettled } from "../sessions/session-work-settlement.js";
+import {
+  clearSessionPromotionPending,
+  markSessionPromotionPending,
+} from "./session-promotion-pending-keys.js";
 import { startSessionPromotionSettlement } from "./session-promotion-settlement.js";
 
 const key = "agent:main:dashboard:target";
+const subagentKey = "agent:main:subagent:task";
+const mainKey = "agent:main:main";
+const idleKey = "agent:main:dashboard:idle";
 const context = { getRuntimeConfig: () => ({ agents: { list: [{ id: "main" }] } }) } as never;
 let stop: (() => void) | undefined;
 const flush = async (ms = 300) => {
@@ -26,11 +33,15 @@ beforeEach(() => {
 });
 afterEach(() => {
   stop?.();
+  for (const sessionKey of [key, subagentKey, mainKey, idleKey, "agent:main:dashboard:done"]) {
+    clearSessionPromotionPending(sessionKey);
+  }
   vi.useRealTimers();
 });
 
 describe("owner-scheduled promotion settlement", () => {
   it("coalesces repeated owner releases for one dashboard key into one attempt", async () => {
+    markSessionPromotionPending(key);
     ({ stop } = startSessionPromotionSettlement(context, { warn: vi.fn() }));
     notifySessionWorkSettled([key, "session-id"]);
     notifySessionWorkSettled([key]);
@@ -39,21 +50,28 @@ describe("owner-scheduled promotion settlement", () => {
     expect(mocks.activate).toHaveBeenCalledTimes(1);
     expect(mocks.activate).toHaveBeenCalledWith({ context, sessionKey: key });
   });
-  it("attempts every agent-scoped key an administrator may promote, and ignores the rest", async () => {
+  it("attempts only the agent-scoped keys with a pending intent, and ignores the rest", async () => {
+    markSessionPromotionPending(subagentKey);
+    markSessionPromotionPending(mainKey);
     ({ stop } = startSessionPromotionSettlement(context, { warn: vi.fn() }));
-    notifySessionWorkSettled([
-      "agent:main:subagent:task",
-      "agent:main:main",
-      "session-id",
-      undefined,
-    ]);
+    notifySessionWorkSettled([subagentKey, mainKey, idleKey, "session-id", undefined]);
     await flush();
     expect(mocks.activate.mock.calls.map(([call]) => call.sessionKey)).toEqual([
-      "agent:main:subagent:task",
-      "agent:main:main",
+      subagentKey,
+      mainKey,
     ]);
   });
+  it("does not attempt a key whose intent was settled and cleared", async () => {
+    markSessionPromotionPending(key);
+    clearSessionPromotionPending(key);
+    ({ stop } = startSessionPromotionSettlement(context, { warn: vi.fn() }));
+    notifySessionWorkSettled([key]);
+    await flush();
+    expect(mocks.activate).not.toHaveBeenCalled();
+  });
   it("never schedules an incognito dashboard key, in any letter case", async () => {
+    markSessionPromotionPending("agent:main:dashboard:incognito-abc");
+    markSessionPromotionPending("agent:main:dashboard:Incognito-ABC");
     ({ stop } = startSessionPromotionSettlement(context, { warn: vi.fn() }));
     notifySessionWorkSettled([
       "agent:main:dashboard:incognito-abc",
@@ -63,6 +81,7 @@ describe("owner-scheduled promotion settlement", () => {
     expect(mocks.activate).not.toHaveBeenCalled();
   });
   it("re-runs once when another owner releases while an attempt is in flight, and survives failures", async () => {
+    markSessionPromotionPending(key);
     const warn = vi.fn();
     ({ stop } = startSessionPromotionSettlement(context, { warn }));
     let release!: () => void;
@@ -84,6 +103,7 @@ describe("owner-scheduled promotion settlement", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("deferred"));
   });
   it("stops cleanly: no attempt after stop and no stray timers", async () => {
+    markSessionPromotionPending(key);
     ({ stop } = startSessionPromotionSettlement(context, { warn: vi.fn() }));
     notifySessionWorkSettled([key]);
     stop();
@@ -136,6 +156,7 @@ describe("owner-scheduled promotion settlement", () => {
   it("an unreadable agent store at startup is logged and waits for the next release", async () => {
     const warn = vi.fn();
     mocks.entries.mockRejectedValue(new Error("store unavailable"));
+    markSessionPromotionPending(key);
     ({ stop } = startSessionPromotionSettlement(context, { warn }));
     await flush();
     expect(mocks.activate).not.toHaveBeenCalled();

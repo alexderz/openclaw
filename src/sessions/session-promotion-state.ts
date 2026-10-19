@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import { isAcpSessionKey } from "../routing/session-key.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
@@ -134,6 +135,13 @@ export class SessionPromotionUnsupportedError extends Error {
     super("Session promotion is not available for this target.");
   }
 }
+/** A pending intent may be cancelled only by its original requester or the gateway owner as admin. */
+export class SessionPromotionCancelDeniedError extends Error {
+  readonly reason = "cancel-not-requester" as const;
+  constructor() {
+    super("Session promotion cancellation is not available to this requester.");
+  }
+}
 
 /**
  * An administrator's accepted basis: operator.admin in the immutable requester scopes. Live
@@ -190,6 +198,7 @@ function assertTarget(
   entry: PromotionEntry,
   target: SessionPromotionTarget,
   requester: GitHubPublicationRequesterSnapshot,
+  adminBasisAllowed: boolean,
 ): void {
   if (
     entry.sessionId !== target.sessionId ||
@@ -198,7 +207,7 @@ function assertTarget(
     throw new SessionPromotionConflictError();
   }
   const unsupported = resolveSessionPromotionTargetSupport(target.key, entry, {
-    admin: isAdminPromotionScopes(requester.scopes),
+    admin: adminBasisAllowed && isAdminPromotionScopes(requester.scopes),
   });
   if (unsupported) {
     throw new SessionPromotionUnsupportedError(unsupported);
@@ -226,6 +235,25 @@ function auditOf(pending: PendingSessionPromotion) {
   };
 }
 
+/** The original requester, or the gateway owner acting as an accepted administrator. */
+function mayCancelPendingPromotion(
+  original: GitHubPublicationRequesterSnapshot,
+  current: GitHubPublicationRequesterSnapshot,
+  adminBasisAllowed: boolean,
+): boolean {
+  if (current.actor.kind !== "operator") {
+    return false;
+  }
+  if (original.actor.kind === "operator" && original.actor.profileId === current.actor.profileId) {
+    return true;
+  }
+  return (
+    adminBasisAllowed &&
+    current.actor.profileId === GATEWAY_OWNER_PROFILE_ID &&
+    isAdminPromotionScopes(current.scopes)
+  );
+}
+
 /** Called only inside the lifecycle identity fence AND the authoritative store writer. */
 export function applySessionPromotionRequest(params: {
   entry: PromotionEntry;
@@ -238,8 +266,17 @@ export function applySessionPromotionRequest(params: {
   now: number;
   /** Prepared current human role, grant, own-target and agent checks, plus invocation custody. */
   assertCurrent: () => void;
+  /**
+   * Whether the requester's admin scopes are an accepted admin basis (gateway owner or configured
+   * roles). Defaults to the gateway-owner profile check when the caller does not supply it.
+   */
+  adminBasisAllowed?: boolean;
 }): SessionPromotion {
   params.assertCurrent(); // Always before even an idempotent response.
+  const adminBasisAllowed =
+    params.adminBasisAllowed ??
+    (params.requester.actor.kind === "operator" &&
+      params.requester.actor.profileId === GATEWAY_OWNER_PROFILE_ID);
   const existing = decodeSessionPromotion(params.entry.sessionPromotion);
   // An activated receipt is bound to the new revision, not the original request revision.
   if (existing?.state === "activated") {
@@ -255,9 +292,16 @@ export function applySessionPromotionRequest(params: {
     }
     return existing;
   }
-  assertTarget(params.entry, params.target, params.requester);
+  assertTarget(params.entry, params.target, params.requester, adminBasisAllowed);
   if (existing && !sameTarget(existing.target, params.target)) {
     throw new SessionPromotionConflictError();
+  }
+  if (
+    params.action === "cancel" &&
+    existing?.state === "pending" &&
+    !mayCancelPendingPromotion(existing.requester, params.requester, adminBasisAllowed)
+  ) {
+    throw new SessionPromotionCancelDeniedError();
   }
   if (existing?.requestId === params.requestId) {
     if (existing.state !== "pending" || params.action !== "cancel") {

@@ -695,6 +695,15 @@ export async function createGatewaySession(
         if (params.initialEntry && existingEntry !== undefined) {
           return invalidSessionRequest("trusted initial session state requires a new session");
         }
+        // A stored parent link is fixed for the life of the row: a request may name the same
+        // parent again, never re-parent an existing session.
+        if (
+          existingEntry !== undefined &&
+          canonicalParentSessionKey !== undefined &&
+          canonicalParentSessionKey !== existingEntry.parentSessionKey
+        ) {
+          return invalidSessionRequest("parentSessionKey cannot change on an existing session");
+        }
         if (params.catalogTarget && existingEntry !== undefined) {
           return invalidSessionRequest("catalog session target requires a new session");
         }
@@ -926,13 +935,16 @@ export async function createGatewaySession(
           !initializedEntry.modelOverride
             ? { modelOverrideSource: "default" as const }
             : {}),
-          ...buildSessionParentLink({
-            parentSessionKey: explicitParentSessionKey ?? dashboardParentSessionKey,
-            parent: canonicalParentSessionKey ? currentParentSessionEntry : undefined,
-            captureSpawnAuthority:
-              createdNewEntry && params.creation?.via === "spawn" && Boolean(spawnToolPolicy),
-            requesterSenderIsOwner: params.creation?.requesterSenderIsOwner,
-          }),
+          // Only a new row takes a parent link; an existing row keeps its stored link.
+          ...(existingEntry === undefined
+            ? buildSessionParentLink({
+                parentSessionKey: explicitParentSessionKey ?? dashboardParentSessionKey,
+                parent: canonicalParentSessionKey ? currentParentSessionEntry : undefined,
+                captureSpawnAuthority:
+                  createdNewEntry && params.creation?.via === "spawn" && Boolean(spawnToolPolicy),
+                requesterSenderIsOwner: params.creation?.requesterSenderIsOwner,
+              })
+            : {}),
         };
         let validateAccountModel: (() => ErrorShape | undefined) | undefined;
         if (params.fork !== true) {
