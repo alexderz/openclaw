@@ -12,8 +12,10 @@ import {
   applySessionPromotionRequest,
   activatePendingSessionPromotion as activatePromotionEntry,
   decodeSessionPromotion,
+  resolveSessionPromotionTargetSupport,
   revokePendingSessionPromotion as revokePromotionEntry,
   SessionPromotionConflictError,
+  SessionPromotionUnsupportedError,
   type SessionPromotion,
 } from "./session-promotion-state.js";
 import {
@@ -55,6 +57,12 @@ export async function requestSessionPromotion(params: {
   if (!target.entry) {
     throw new SessionPromotionConflictError();
   }
+  // Activation can restore only a configured or gateway-owner basis; a live attestation is not kept.
+  const restorableAdminBasis = promotionAdminBasisAllowed({
+    profileId:
+      params.requester.actor.kind === "operator" ? params.requester.actor.profileId : undefined,
+    cfg: params.scope.cfg,
+  });
   return await runExclusiveSessionLifecycleMutation("promote", {
     kind: "promote",
     scope: target.storePath,
@@ -72,6 +80,18 @@ export async function requestSessionPromotion(params: {
         (entry, context) => {
           params.signal?.throwIfAborted();
           params.assertCurrent();
+          // Refuse now, rather than persist an intent that activation could never restore.
+          if (
+            params.liveAdmin === true &&
+            params.action !== "cancel" &&
+            !restorableAdminBasis &&
+            resolveSessionPromotionTargetSupport(context.canonicalKey, entry, { admin: false }) !==
+              null &&
+            resolveSessionPromotionTargetSupport(context.canonicalKey, entry, { admin: true }) ===
+              null
+          ) {
+            throw new SessionPromotionUnsupportedError("admin-basis-unavailable");
+          }
           return applySessionPromotionRequest({
             entry,
             target: {
@@ -87,15 +107,7 @@ export async function requestSessionPromotion(params: {
             now: params.now ?? Date.now(),
             assertCurrent: params.assertCurrent,
             // A live attested admin is a basis at request time; a restored intent has no live flag.
-            adminBasisAllowed:
-              params.liveAdmin === true ||
-              promotionAdminBasisAllowed({
-                profileId:
-                  params.requester.actor.kind === "operator"
-                    ? params.requester.actor.profileId
-                    : undefined,
-                cfg: params.scope.cfg,
-              }),
+            adminBasisAllowed: params.liveAdmin === true || restorableAdminBasis,
           });
         },
         {

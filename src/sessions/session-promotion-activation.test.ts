@@ -73,9 +73,7 @@ describe("pending promotion activation transaction", () => {
       ).rejects.toBeInstanceOf(SessionPromotionConflictError);
       await expect(
         revokePendingSessionPromotion({ ...p, reason: "ended", adminBasisAllowed: false }),
-      ).rejects.toBeInstanceOf(
-        SessionPromotionConflictError,
-      );
+      ).rejects.toBeInstanceOf(SessionPromotionConflictError);
     } finally {
       update.mockRestore();
     }
@@ -169,6 +167,44 @@ describe("pending promotion activation transaction", () => {
     expect(loadSessionEntry(p.scope)?.sessionPromotion).toMatchObject({
       basis: "fresh-human-rebound",
     });
+  });
+  it("refuses a live admin's request on an admin-only target when no admin basis can be restored", async () => {
+    const scope = {
+      cfg: {},
+      agentId: "main",
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: fs.realpathSync(dirs.make("promotion-live-admin-")),
+      },
+      sessionKey: "agent:main:subagent:task",
+    };
+    await upsertSessionEntryCore(scope, {
+      sessionId: "session",
+      updatedAt: 1,
+      lifecycleRevision: "before",
+      spawnDepth: 1,
+      spawnedBy: "agent:main:dashboard:parent",
+      label: "Keep me",
+    });
+    const liveAdmin = {
+      version: 1,
+      actor: { kind: "operator", profileId: "someone-else" },
+      scopes: ["operator.admin"],
+      grant: null,
+    };
+    await expect(
+      requestSessionPromotion({
+        scope,
+        expectedSessionId: "session",
+        expectedLifecycleRevision: "before",
+        requester: liveAdmin,
+        requestId: "request",
+        liveAdmin: true,
+        assertCurrent: () => {},
+        now: 2,
+      }),
+    ).rejects.toMatchObject({ reason: "admin-basis-unavailable" });
+    expect(loadSessionEntry(scope)?.sessionPromotion).toBeUndefined();
   });
   it("revokes a pending intent terminally; it is never revived by a later activation or replay", async () => {
     const p = await fixture();

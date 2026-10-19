@@ -129,6 +129,7 @@ export type SessionPromotionUnsupportedReason =
   | "acp-session"
   | "not-delegated"
   | "dashboard-only"
+  | "admin-basis-unavailable"
   | "requester-not-human";
 export class SessionPromotionUnsupportedError extends Error {
   constructor(readonly reason: SessionPromotionUnsupportedReason = "unsupported-key") {
