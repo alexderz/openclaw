@@ -71,7 +71,9 @@ describe("pending promotion activation transaction", () => {
       await expect(
         activatePendingSessionPromotion({ ...p, probeBlockers: () => [] }),
       ).rejects.toBeInstanceOf(SessionPromotionConflictError);
-      await expect(revokePendingSessionPromotion({ ...p, reason: "ended" })).rejects.toBeInstanceOf(
+      await expect(
+        revokePendingSessionPromotion({ ...p, reason: "ended", adminBasisAllowed: false }),
+      ).rejects.toBeInstanceOf(
         SessionPromotionConflictError,
       );
     } finally {
@@ -176,6 +178,7 @@ describe("pending promotion activation transaction", () => {
       expectedLifecycleRevision: p.expectedLifecycleRevision,
       requestId: p.requestId,
       reason: "original-basis-ended",
+      adminBasisAllowed: false,
       now: 4,
     });
     expect(revoked).toMatchObject({ state: "revoked", reason: "original-basis-ended" });
@@ -303,6 +306,7 @@ describe("pending promotion activation transaction", () => {
           expectedLifecycleRevision: p.expectedLifecycleRevision,
           requestId: p.requestId,
           reason: "x",
+          adminBasisAllowed: false,
           ...change,
         }),
       ).rejects.toThrow();

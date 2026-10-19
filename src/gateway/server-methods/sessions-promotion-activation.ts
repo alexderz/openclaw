@@ -21,6 +21,7 @@ import {
   readPromotionPairedDevice,
 } from "../session-promotion-human.js";
 import { createSessionPromotionOwnerCheck } from "../session-promotion-owner-check.js";
+import { promotionAdminBasisAllowed } from "../session-promotion-ownership.js";
 import { clearSessionPromotionPending } from "../session-promotion-pending-keys.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { probeSessionEntryObligations } from "./sessions-promotion-entry-obligations.js";
@@ -138,6 +139,13 @@ async function consumePendingPromotion(params: {
         expectedLifecycleRevision: pending.target.fromLifecycleRevision,
         requestId: pending.requestId,
         reason: device,
+        adminBasisAllowed: promotionAdminBasisAllowed({
+          profileId:
+            pending.requester.actor.kind === "operator"
+              ? pending.requester.actor.profileId
+              : undefined,
+          cfg: scope.cfg,
+        }),
         signal: params.signal,
       });
       return "revoked";
@@ -235,6 +243,13 @@ async function consumePendingPromotion(params: {
           expectedLifecycleRevision: pending.target.fromLifecycleRevision,
           requestId: pending.requestId,
           reason: "original-basis-ended",
+          adminBasisAllowed: promotionAdminBasisAllowed({
+            profileId:
+              pending.requester.actor.kind === "operator"
+                ? pending.requester.actor.profileId
+                : undefined,
+            cfg: scope.cfg,
+          }),
           signal: params.signal,
         });
         return "revoked";

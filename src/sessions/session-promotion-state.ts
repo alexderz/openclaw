@@ -344,12 +344,14 @@ export function revokePendingSessionPromotion(params: {
   target: SessionPromotionTarget;
   now: number;
   reason: string;
+  /** The restored admin basis for the intent's requester, computed as at activation. */
+  adminBasisAllowed: boolean;
 }): boolean {
   const pending = decodeSessionPromotion(params.entry.sessionPromotion);
   if (pending?.state !== "pending") {
     return false;
   }
-  assertTarget(params.entry, params.target, pending.requester);
+  assertTarget(params.entry, params.target, pending.requester, params.adminBasisAllowed);
   if (!sameTarget(pending.target, params.target)) {
     throw new SessionPromotionConflictError();
   }

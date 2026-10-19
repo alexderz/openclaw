@@ -165,6 +165,30 @@ describe("session promotion target eligibility", () => {
   });
 });
 
+describe("session promotion revocation", () => {
+  it("revokes an admin-only intent on a non-own session once its original basis ended", () => {
+    const revoke = implementation("revokePendingSessionPromotion");
+    const key = "agent:main:subagent:task";
+    const admin = { ...requester, scopes: ["operator.admin"] };
+    const row = entry();
+    row.sessionPromotion = { ...pending, target: { ...target, key }, requester: admin };
+    expect(
+      revoke({
+        entry: row,
+        target: { ...target, key },
+        now: 2,
+        reason: "original-basis-ended",
+        adminBasisAllowed: true,
+      }),
+    ).toBe(true);
+    expect(row.sessionPromotion).toMatchObject({
+      state: "revoked",
+      reason: "original-basis-ended",
+      settledAt: 2,
+    });
+  });
+});
+
 describe("session promotion transition owner", () => {
   it("persists only a current authorized intent, preserving revision and lineage", () => {
     const apply = implementation("applySessionPromotionRequest");
