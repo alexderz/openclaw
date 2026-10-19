@@ -337,6 +337,7 @@ export const validateSessionsProviderReviewContinueParams = compile(
 );
 export const validateSessionsPatchManyParams = compile(S.SessionsPatchManyParamsSchema);
 export const validateSessionsPluginPatchParams = compile(S.SessionsPluginPatchParamsSchema);
+export const validateSessionsPromoteParams = compile(S.SessionsPromoteParamsSchema);
 export const validateSessionsResetParams = compile(S.SessionsResetParamsSchema);
 export const validateSessionsDeleteParams = compile(S.SessionsDeleteParamsSchema);
 export const validateSessionsAssignOwnerParams = compile(S.SessionsAssignOwnerParamsSchema);

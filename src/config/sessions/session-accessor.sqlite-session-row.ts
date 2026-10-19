@@ -1,4 +1,5 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import { decodeSessionPromotion } from "../../sessions/session-promotion-state.js";
 import {
   deliveryContextFromSession,
   sessionDeliveryChannel,
@@ -8,7 +9,11 @@ import { bindSessionEntryProvenance } from "./session-accessor.sqlite-provenance
 import { normalizeStatus } from "./session-accessor.sqlite-status.js";
 import type { SessionEntry } from "./types.js";
 
-export function normalizeSessionEntryTimestamp(entry: SessionEntry): SessionEntry {
+export function normalizeSessionEntryTimestamp(input: SessionEntry): SessionEntry {
+  const entry: SessionEntry =
+    input.sessionPromotion === undefined
+      ? input
+      : { ...input, sessionPromotion: decodeSessionPromotion(input.sessionPromotion) };
   const hasLegacyDeliveryFields = [
     "route",
     "deliveryContext",

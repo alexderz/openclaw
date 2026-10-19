@@ -1,6 +1,7 @@
 // Subagent announce flow tests cover the seam-level orchestration between wait
 // outcomes, requester lookup, delivery, and cleanup.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CallGatewayOptions } from "../../../gateway/call.js";
 import { normalizeSessionDeliveryState } from "../../../utils/delivery-context.shared.js";
 import type { EmbeddedAgentQueueMessageOutcome } from "../../embedded-agent-runner/runs.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
@@ -170,6 +171,10 @@ vi.mock("./subagent-announce-delivery.js", () => ({
 
 vi.mock("../registry/subagent-registry-read.js", () => subagentRegistryRuntimeMock);
 vi.mock("../registry/subagent-registry.js", () => subagentRegistryRuntimeMock);
+import {
+  createLifecycleControllerFixture,
+  createRunEntry,
+} from "../registry/subagent-registry-lifecycle-controller.test-support.js";
 import { testing as outputTesting } from "./subagent-announce-output.test-support.js";
 import { runSubagentAnnounceFlow } from "./subagent-announce.js";
 
@@ -282,6 +287,10 @@ describe("subagent announce seam flow", () => {
         endedAt: 20,
         childRunId: "run-direct-skip-whitespace",
         childAgentId: "research",
+        childSessionIdentity: {
+          sessionId: "child-session-id",
+          lifecycleRevision: "child-lifecycle-revision",
+        },
         cleanup: "delete",
         roundOneReply: "  child result  ",
         ...(terminal
@@ -346,6 +355,10 @@ describe("subagent announce seam flow", () => {
         await runAnnounceFlow({
           childSessionKey: "global",
           childAgentId: "research",
+          childSessionIdentity: {
+            sessionId: "research-child",
+            lifecycleRevision: "research-revision",
+          },
           cleanup: "delete",
           terminalReply: { disposition: "visible", text: "Research result" },
         }),
@@ -443,6 +456,102 @@ describe("subagent announce seam flow", () => {
     expect(agentSpy.mock.calls[1]?.[0].params?.message).toBe(first);
   });
 
+  it.each([
+    "unchanged",
+    "promoted",
+    "replaced",
+    "missing-session-id",
+    "missing-revision",
+    "missing",
+  ] as const)(
+    "normal completion preserves launch custody through announcement cleanup: %s",
+    async (state) => {
+      const original = { sessionId: "launched-child", lifecycleRevision: "launch-revision" };
+      const childSessionIdentity =
+        state === "missing"
+          ? undefined
+          : state === "missing-session-id"
+            ? { ...original, sessionId: "" }
+            : state === "missing-revision"
+              ? { ...original, lifecycleRevision: undefined }
+              : original;
+      const current =
+        state === "replaced"
+          ? { sessionId: "successor-child", lifecycleRevision: "successor-revision" }
+          : state === "promoted"
+            ? { ...original, lifecycleRevision: "promoted-revision" }
+            : original;
+      const entry = createRunEntry({
+        childSessionKey: "agent:main:subagent:test",
+        childSessionIdentity,
+        cleanup: "delete",
+        expectsCompletionMessage: true,
+        completion: { required: true, resultText: "child result" },
+        endedAt: 20,
+        outcome: { status: "ok" },
+      });
+      loadSessionStoreMock.mockReturnValue({ [entry.childSessionKey]: current });
+      let deleted = false;
+      const dispatch = callGatewayMock.getMockImplementation()!;
+      callGatewayMock.mockImplementation(async (request: unknown) => {
+        const typed = request as AgentCallRequest;
+        if (typed.method !== "sessions.delete") {
+          return await dispatch(request);
+        }
+        // Model the storage owner's atomic CAS, including a changed incarnation
+        // after preparation but before destructive dispatch.
+        deleted =
+          typed.params?.expectedSessionId === current.sessionId &&
+          typed.params?.expectedLifecycleRevision === current.lifecycleRevision;
+        return { ok: deleted };
+      });
+      const runFlow = vi.fn<typeof runSubagentAnnounceFlow>();
+      const controller = createLifecycleControllerFixture(
+        {
+          runSubagentAnnounceFlow: runFlow,
+          entry,
+        },
+        {
+          callGateway: async <T = Record<string, unknown>>(request: CallGatewayOptions) =>
+            (await callGatewayMock(request)) as T,
+          cleanupBrowserSessionsForLifecycleEnd: vi.fn(async () => {}),
+          ownersByEntry: new Map(),
+        },
+      );
+      runFlow.mockImplementation(
+        async (request) =>
+          await runSubagentAnnounceFlow({
+            ...request,
+            roundOneReply: "child result",
+            // Delivery authority is orthogonal to child deletion authority.
+            isCompletionDeliveryAllowed: () => true,
+            isCompletionOwnedByRequesterYield: () => false,
+            prepareChildSessionEffects: async () => true,
+            isChildSessionEffectsAllowed: () => true,
+            onBeforeDeleteChildSession: async () => true,
+          }),
+      );
+      expect(controller.startSubagentAnnounceCleanupFlow(entry)).toBe(true);
+      await vi.waitFor(() => expect(runFlow).toHaveBeenCalledTimes(1));
+      expect(await runFlow.mock.results[0]?.value).toBe("delivered");
+      expect(runFlow.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ childSessionIdentity }));
+      const deletes = callGatewayMock.mock.calls
+        .map(([request]) => request as AgentCallRequest)
+        .filter((request) => request.method === "sessions.delete");
+      expect(deletes).toHaveLength(state.startsWith("missing") ? 0 : 1);
+      if (deletes.length) {
+        expect(deletes[0]?.params).toEqual(
+          expect.objectContaining({
+            expectedSessionId: original.sessionId,
+            expectedLifecycleRevision: original.lifecycleRevision,
+          }),
+        );
+      }
+      expect(deleted).toBe(state === "unchanged");
+      expect(agentSpy).toHaveBeenCalled();
+    },
+  );
+
   it("keeps lifecycle hooks enabled when deleting a completed session-mode child session", async () => {
     loadSessionStoreMock.mockReturnValue({
       "agent:main:subagent:test": {
@@ -454,6 +563,10 @@ describe("subagent announce seam flow", () => {
       startedAt: 10,
       endedAt: 20,
       childRunId: "run-session-delete-cleanup",
+      childSessionIdentity: {
+        sessionId: "child-session-id",
+        lifecycleRevision: "child-lifecycle-revision",
+      },
       task: "thread-bound cleanup",
       cleanup: "delete",
       roundOneReply: "completed",

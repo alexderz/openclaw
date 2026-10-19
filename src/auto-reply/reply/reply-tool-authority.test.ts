@@ -1,7 +1,9 @@
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { prepareOperatorModelPolicy } from "../../agents/operator-model-policy.js";
 import { attachToolAllowlistIntersection } from "../../agents/tool-policy.js";
+import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import type { GatewayOperatorRoleDefinition } from "../../config/types.gateway.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { captureGatewayDeviceRevocation } from "../../gateway/device-revocation.js";
@@ -10,6 +12,7 @@ import { createOperatorClient } from "../../gateway/server-plugin-in-process-dis
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
 import type { GatewayAccessGrantRef } from "../../plugins/gateway-access-policy.types.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
+import { captureSessionEffectiveAdmissionForTest } from "../../sessions/session-promotion-state.test-support.js";
 import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -256,6 +259,56 @@ describe("reply tool authority", () => {
       expect(operation.toolAuthorityFingerprint).toBe(fingerprint);
     },
   );
+
+  it("fingerprints the admitted session class, never the live row, for the reply tool authority", async () =>
+    withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const sessionKey = "agent:main:dashboard:promoted-peer";
+      replaceSessionEntrySync(
+        {
+          sessionKey,
+          storePath: path.join(state.stateDir, "agents", "main", "agent", "openclaw-agent.sqlite"),
+        },
+        {
+          sessionId: "promoted-session",
+          updatedAt: 1,
+          spawnedBy: "agent:main:main",
+          parentSessionKey: "agent:main:main",
+          spawnDepth: 1,
+          inheritedToolPolicyVersion: 1,
+          inheritedToolAllow: ["read"],
+          lifecycleRevision: "after-handoff",
+        },
+      );
+      const source = {};
+      const authorityFor = (effectiveClass?: "ordinary" | "delegated") =>
+        createAdmittedRunOperatorAuthority({
+          profileId: "human",
+          scopes: ["operator.write"],
+          source,
+          assertCurrent: () => {},
+          ...(effectiveClass
+            ? {
+                sessionEffectiveAdmission: captureSessionEffectiveAdmissionForTest({
+                  sessionKey,
+                  sessionId: "promoted-session",
+                  effectiveClass,
+                }),
+              }
+            : {}),
+        });
+      const fingerprintFor = (effectiveClass?: "ordinary" | "delegated") => {
+        const run = createQueueTestRun({ prompt: "promoted" });
+        run.run.sessionKey = sessionKey;
+        run.run.sessionId = "promoted-session";
+        run.run.agentId = "main";
+        run.operatorAuthority = authorityFor(effectiveClass);
+        return resolveFollowupRunToolAuthorityFingerprint(run);
+      };
+      const ordinary = fingerprintFor("ordinary");
+      const delegated = fingerprintFor("delegated");
+      expect(ordinary).not.toBe(delegated);
+      expect(fingerprintFor()).toBe(delegated);
+    }));
 
   it("keeps the initial policy snapshot while tracking concrete fallback authority", () => {
     const run = createQueueTestRun({ prompt: "route authority" });

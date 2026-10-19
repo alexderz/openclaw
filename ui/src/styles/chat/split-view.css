@@ -633,3 +633,61 @@
   overflow-wrap: anywhere;
   white-space: normal;
 }
+
+/* Persistent capability status remains readable beside the existing More menu. */
+openclaw-chat-header-session-menu {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: min(100%, calc(100dvw - 80px));
+}
+.session-capability-status {
+  font-size: var(--font-size-xs, 12px);
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+.session-capability-details {
+  position: relative;
+  max-width: min(28rem, 100%);
+  inline-size: min(28rem, calc(100dvw - 80px));
+  min-width: 0;
+  box-sizing: border-box;
+  white-space: normal;
+  font-size: var(--font-size-xs, 12px);
+  overflow-wrap: anywhere;
+}
+.session-capability-details > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.session-capability-details > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.session-capability-details[open] {
+  flex: 0 1 auto;
+  max-inline-size: min(28rem, calc(100dvw - 80px));
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.session-promotion-action,
+.chat-header-session-menu--compact .session-menu__item.session-promotion-action {
+  min-height: 44px;
+  flex-basis: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 480px) {
+  .session-capability-details {
+    max-width: 100%;
+  }
+  .session-capability-status {
+    max-width: 100%;
+  }
+}

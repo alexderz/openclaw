@@ -59,6 +59,7 @@ export function applyNodesToolWorkspaceGuard(
 }
 
 export function shouldIncludeProgressCardToolForOpenClawTools(params: {
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   agentId?: string;
   agentSessionKey?: string;
   config?: OpenClawConfig;
@@ -104,6 +105,7 @@ export function shouldIncludeProgressCardToolForOpenClawTools(params: {
       effective.agentPolicy,
       effective.agentProviderPolicy,
       resolveRequesterToolPolicies({
+        sessionEffectiveAdmission: params.sessionEffectiveAdmission,
         config: params.config,
         agentId: params.agentId,
         sessionKey: params.agentSessionKey,

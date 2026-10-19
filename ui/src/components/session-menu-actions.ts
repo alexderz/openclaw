@@ -1,6 +1,7 @@
 import { ContextConsumer } from "@lit/context";
 import { html, nothing, type ReactiveControllerHost, type TemplateResult } from "lit";
 import { normalizeSessionIconValue } from "../../../packages/gateway-protocol/src/session-agent-status.js";
+import type { SessionCapabilityStatus } from "../api/types.ts";
 import { applicationContext } from "../app/context.ts";
 import { t } from "../i18n/index.ts";
 import { EDITOR_IDS, type EditorId } from "../lib/editor-links.ts";
@@ -23,7 +24,15 @@ import type { SessionCreatedActor, SessionOwnerOption } from "./session-owner-ch
 import { SessionOwnerMenu } from "./session-owner-menu.ts";
 import "../styles/sidebar-menus.css";
 
+export type { SessionCapabilityStatus };
+
 export type SessionMenuData = {
+  key?: string;
+  promotionBusy?: boolean;
+  promotionUncertain?: boolean;
+  promotionMessage?: string;
+  promotionDisabledReason?: string;
+  capabilityStatus?: SessionCapabilityStatus;
   label: string;
   sessionId: string | null;
   isChild?: boolean;

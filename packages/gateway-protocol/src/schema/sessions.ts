@@ -509,6 +509,20 @@ export const SessionsPluginPatchResultSchema = closedObject({
   value: Type.Optional(PluginJsonValueSchema),
 });
 
+/** Human-only durable delegation handoff. No caller-supplied authority fields. */
+export const SessionsPromoteParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    expectedSessionId: NonEmptyString,
+    expectedLifecycleRevision: NonEmptyString,
+    requestId: Type.String({ minLength: 1, maxLength: 128 }),
+    action: Type.Optional(Type.Union([Type.Literal("request"), Type.Literal("cancel")])),
+  },
+  { additionalProperties: false },
+);
+
+export type SessionsPromoteParams = Static<typeof SessionsPromoteParamsSchema>;
+
 export const SessionsResetParamsSchema = closedObject({
   key: NonEmptyString,
   agentId: Type.Optional(NonEmptyString),

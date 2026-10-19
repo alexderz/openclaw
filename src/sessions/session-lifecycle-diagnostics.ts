@@ -15,7 +15,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { StoreWriterQueue, StoreWriterTiming } from "../shared/store-writer-queue.js";
 
 type QueueKind = "lifecycle" | "mutation";
-type Operation = QueueKind | "compaction";
+type Operation = QueueKind | "compaction" | "promote";
 export type SessionLifecycleMutationOperation =
   | "worktree-cleanup"
   | "background-result"
@@ -37,6 +37,7 @@ export type SessionLifecycleMutationOperation =
   | "switch"
   | "sharing"
   | "patch"
+  | "promote"
   | "archive"
   | "restore"
   | "delete"

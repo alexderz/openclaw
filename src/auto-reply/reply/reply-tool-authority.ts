@@ -222,6 +222,8 @@ export function resolveReplyToolAuthorityContext(
   const sandboxRuntime =
     preparedSandbox ?? resolveSandboxRuntimeStatus(resolveReplyToolSandboxParams(execution));
   const capabilityProfile = resolveConversationCapabilityProfile({
+    // The class frozen into this run's operator authority, never the live session row.
+    sessionEffectiveAdmission: snapshot.operatorAuthority?.sessionEffectiveAdmission,
     config: execution.config,
     sessionId: execution.sessionId,
     // Capability identity follows execution, not the independent sandbox policy owner.

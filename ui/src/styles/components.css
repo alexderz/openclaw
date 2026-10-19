@@ -4889,6 +4889,7 @@ td.data-table-key-col {
 
   .exec-approval-actions .btn {
     width: 100%;
+    min-height: 44px;
   }
 
   .exec-approval-command {
