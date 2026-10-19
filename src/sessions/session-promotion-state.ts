@@ -195,18 +195,21 @@ export function resolveSessionPromotionTargetSupport(
   }
   return requester.admin || DASHBOARD_SESSION_KEY.test(key) ? null : "dashboard-only";
 }
-function assertTarget(
-  entry: PromotionEntry,
-  target: SessionPromotionTarget,
-  requester: GitHubPublicationRequesterSnapshot,
-  adminBasisAllowed: boolean,
-): void {
+function assertIdentity(entry: PromotionEntry, target: SessionPromotionTarget): void {
   if (
     entry.sessionId !== target.sessionId ||
     entry.lifecycleRevision !== target.fromLifecycleRevision
   ) {
     throw new SessionPromotionConflictError();
   }
+}
+function assertTarget(
+  entry: PromotionEntry,
+  target: SessionPromotionTarget,
+  requester: GitHubPublicationRequesterSnapshot,
+  adminBasisAllowed: boolean,
+): void {
+  assertIdentity(entry, target);
   const unsupported = resolveSessionPromotionTargetSupport(target.key, entry, {
     admin: adminBasisAllowed && isAdminPromotionScopes(requester.scopes),
   });
@@ -293,7 +296,13 @@ export function applySessionPromotionRequest(params: {
     }
     return existing;
   }
-  assertTarget(params.entry, params.target, params.requester, adminBasisAllowed);
+  if (params.action === "cancel") {
+    // Cancelling grants nothing, so it needs no supported-target basis: an intent whose admin
+    // basis was removed after the request stays cancellable by its requester.
+    assertIdentity(params.entry, params.target);
+  } else {
+    assertTarget(params.entry, params.target, params.requester, adminBasisAllowed);
+  }
   if (existing && !sameTarget(existing.target, params.target)) {
     throw new SessionPromotionConflictError();
   }
@@ -339,20 +348,21 @@ export function applySessionPromotionRequest(params: {
   return intent;
 }
 
-/** Original basis provably ended: terminal, never revived by a later regrant. */
+/**
+ * Original basis provably ended: terminal, never revived by a later regrant. Revoking grants
+ * nothing, so only the target identity is checked, never the requester's (possibly ended) basis.
+ */
 export function revokePendingSessionPromotion(params: {
   entry: PromotionEntry;
   target: SessionPromotionTarget;
   now: number;
   reason: string;
-  /** The restored admin basis for the intent's requester, computed as at activation. */
-  adminBasisAllowed: boolean;
 }): boolean {
   const pending = decodeSessionPromotion(params.entry.sessionPromotion);
   if (pending?.state !== "pending") {
     return false;
   }
-  assertTarget(params.entry, params.target, pending.requester, params.adminBasisAllowed);
+  assertIdentity(params.entry, params.target);
   if (!sameTarget(pending.target, params.target)) {
     throw new SessionPromotionConflictError();
   }

@@ -296,8 +296,6 @@ export async function revokePendingSessionPromotion(params: {
   expectedLifecycleRevision: string;
   requestId: string;
   reason: string;
-  /** Restored admin basis for the intent's requester, as activation re-proves it. */
-  adminBasisAllowed: boolean;
   now?: number;
   signal?: AbortSignal;
 }): Promise<SessionPromotion> {
@@ -335,7 +333,6 @@ export async function revokePendingSessionPromotion(params: {
             },
             now: params.now ?? Date.now(),
             reason: params.reason,
-            adminBasisAllowed: params.adminBasisAllowed,
           });
         },
         { target },
