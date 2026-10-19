@@ -38,6 +38,7 @@ import {
   SessionPromotionConflictError,
   SessionPromotionUnsupportedError,
 } from "../../sessions/session-promotion-state.js";
+import { GitHubPublicationRequesterUnavailableError } from "../github-publication-failure.js";
 import { CORE_GATEWAY_METHOD_SPECS } from "../methods/core-descriptors.js";
 import {
   createCoreGatewayMethodDescriptors,
@@ -45,7 +46,13 @@ import {
 } from "../methods/core-method-policy.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
 import { sessionMutationTargetFields } from "../session-method-policy.js";
-import { sessionPromotionHandlers } from "./sessions-promotion.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
+import { PromotionRequesterDeniedError } from "../session-promotion-human.js";
+import {
+  SessionPromotionLineageUnavailableError,
+  SessionPromotionOwnershipDeniedError,
+} from "../session-promotion-owner-check.js";
+import { sessionPromotionHandlers, sessionPromotionRefusalReason } from "./sessions-promotion.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 function fixture() {
@@ -165,7 +172,11 @@ describe("sessions.promote", () => {
         client: options.client,
         hasCurrentClientAuthority: expect.any(Function),
       }),
-      { sessionKey: options.params.key, agentId: "main" },
+      expect.objectContaining({
+        sessionKey: options.params.key,
+        agentId: "main",
+        authorizeOwner: expect.any(Function),
+      }),
     );
     expect(mocks.request).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -179,7 +190,8 @@ describe("sessions.promote", () => {
     expect(mocks.current).toHaveBeenCalled();
     expect(mocks.accessCurrent).toHaveBeenCalled();
     expect(mocks.access).toHaveBeenCalledWith(
-      expect.objectContaining({ policy: { mode: "write" }, ownSessionOnly: true }),
+      // Ownership (admin, own session or lineage) is the requester's promotion owner check.
+      expect.objectContaining({ policy: { mode: "write" }, ownSessionOnly: false }),
     );
     expect(respond).toHaveBeenCalledWith(
       true,
@@ -457,5 +469,93 @@ describe("sessions.promote", () => {
       undefined,
     );
     expect(JSON.stringify(respond.mock.calls)).not.toContain("private");
+  });
+});
+
+describe("sessions.promote refusal reasons (server log only)", () => {
+  class CustomFailure extends Error {}
+  it.each([
+    [new PromotionRequesterDeniedError(), "not-control-ui-human"],
+    [new PromotionRequesterDeniedError("device-pairing-unreadable"), "device-pairing-unreadable"],
+    [new SessionPromotionOwnershipDeniedError("not-admin-not-owner"), "not-admin-not-owner"],
+    [new SessionPromotionOwnershipDeniedError("lineage-denied"), "lineage-denied"],
+    [new SessionPromotionLineageUnavailableError(), "lineage-unreadable"],
+    [new SessionPromotionUnsupportedError("incognito"), "unsupported-target:incognito"],
+    [new SessionPromotionConflictError(), "conflict"],
+    [new GitHubPublicationRequesterUnavailableError(), "requester-capture-failed"],
+    [
+      new SessionMutationAuthorizationChangedError({ code: "FORBIDDEN", message: "changed" }),
+      "session-access-denied",
+    ],
+    [new TypeError("boom"), "unexpected:TypeError"],
+    [new CustomFailure("boom"), "unexpected:CustomFailure"],
+    ["thrown string", "unexpected:string"],
+  ] as const)("maps %s to %s", (error, reason) => {
+    expect(sessionPromotionRefusalReason(error)).toBe(reason);
+  });
+
+  it("logs the reason while the client keeps the non-disclosing denial", async () => {
+    const { options, respond } = fixture();
+    const logGateway = { info: vi.fn(), warn: vi.fn() };
+    Object.assign(options.context, { logGateway });
+    mocks.capture.mockRejectedValueOnce(new SessionPromotionOwnershipDeniedError("lineage-denied"));
+    await invoke(options);
+    expect(respond).toHaveBeenCalledWith(false, undefined, {
+      code: "FORBIDDEN",
+      message: "Session promotion is not available.",
+    });
+    expect(logGateway.info).toHaveBeenCalledWith("sessions.promote refused reason=lineage-denied");
+    expect(JSON.stringify(respond.mock.calls)).not.toContain("lineage");
+  });
+
+  it("warns for an unexpected failure and still answers with the same denial", async () => {
+    const { options, respond } = fixture();
+    const logGateway = { info: vi.fn(), warn: vi.fn() };
+    Object.assign(options.context, { logGateway });
+    mocks.capture.mockRejectedValueOnce(new RangeError("store closed"));
+    await invoke(options);
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "FORBIDDEN" }),
+    );
+    expect(logGateway.warn).toHaveBeenCalledWith(
+      "sessions.promote refused reason=unexpected:RangeError",
+    );
+  });
+
+  it("names an unsupported target and keeps transient access preparation retryable", async () => {
+    const { options, respond } = fixture();
+    mocks.request.mockRejectedValueOnce(new SessionPromotionUnsupportedError("not-delegated"));
+    await invoke(options);
+    expect(respond).toHaveBeenLastCalledWith(false, undefined, {
+      code: "INVALID_REQUEST",
+      message: "Session promotion is not available for this target.",
+      details: { code: "SESSION_PROMOTION_UNSUPPORTED", reason: "not-delegated" },
+    });
+    const refreshing = {
+      code: "UNAVAILABLE",
+      message: "Session access is refreshing; retry the operation shortly.",
+      retryable: true,
+      details: { code: "SESSION_ACCESS_REFRESHING" },
+    } as const;
+    mocks.access.mockRejectedValueOnce(new SessionMutationAuthorizationChangedError(refreshing));
+    await invoke(options);
+    expect(respond).toHaveBeenLastCalledWith(false, undefined, refreshing);
+  });
+
+  it("refuses an incognito key as unsupported before any access preparation", async () => {
+    const { options, respond } = fixture();
+    Object.assign(options.params as object, { key: "agent:main:dashboard:incognito-abc" });
+    await invoke(options);
+    expect(mocks.access).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "INVALID_REQUEST",
+        details: { code: "SESSION_PROMOTION_UNSUPPORTED", reason: "incognito" },
+      }),
+    );
   });
 });

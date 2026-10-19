@@ -46,10 +46,13 @@ describe("durable promotion persistence", () => {
       toLifecycleRevision: "after",
     };
     expect(restore(receipt)?.sessionPromotion).toEqual(receipt);
+    // An administrator may promote a subagent-key session; its intent persists like any other.
+    const subagent = { ...intent, target: { ...intent.target, key: "agent:main:subagent:task" } };
+    expect(restore(subagent)?.sessionPromotion).toEqual(subagent);
     for (const record of [
       { ...receipt, toLifecycleRevision: "before" },
       { ...receipt, activatedAt: 0 },
-      { ...intent, target: { ...intent.target, key: "agent:main:subagent:hidden" } },
+      { ...intent, target: { ...intent.target, key: "agent:main:subagent:incognito-hidden" } },
       { ...intent, target: { ...intent.target, agentId: "other" } },
     ]) {
       expect(restore(record)?.sessionPromotion).toBeUndefined();

@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { isAcpSessionKey } from "../routing/session-key.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
+import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
   decodeGitHubPublicationRequester,
   type GitHubPublicationRequesterSnapshot,
@@ -43,6 +45,8 @@ const pendingSchema = z.strictObject({
   deviceGeneration: boundedId.optional(),
 });
 const audit = { profileId: boundedId };
+const AGENT_SESSION_KEY = /^agent:[^:]+:[^:].*$/;
+const DASHBOARD_SESSION_KEY = /^agent:[^:]+:dashboard:[^:]+$/;
 const terminalBase = { ...base, ...audit };
 const promotionSchema = z
   .discriminatedUnion("state", [
@@ -74,9 +78,10 @@ const promotionSchema = z
     }),
   ])
   .superRefine((record, context) => {
+    // Data validation only: which requester may target which key family is assertTarget's rule.
     if (
-      !record.target.key.startsWith("agent:" + record.target.agentId + ":dashboard:") ||
-      !/^agent:[^:]+:dashboard:[^:]+$/.test(record.target.key) ||
+      !record.target.key.startsWith("agent:" + record.target.agentId + ":") ||
+      !AGENT_SESSION_KEY.test(record.target.key) ||
       isIncognitoSessionKey(record.target.key)
     ) {
       context.addIssue({ code: "custom", message: "unsupported promotion target" });
@@ -117,10 +122,30 @@ export class SessionPromotionConflictError extends Error {
     super("Session promotion target or request changed.");
   }
 }
+export type SessionPromotionUnsupportedReason =
+  | "unsupported-key"
+  | "incognito"
+  | "acp-session"
+  | "not-delegated"
+  | "dashboard-only"
+  | "requester-not-human";
 export class SessionPromotionUnsupportedError extends Error {
-  constructor() {
+  constructor(readonly reason: SessionPromotionUnsupportedReason = "unsupported-key") {
     super("Session promotion is not available for this target.");
   }
+}
+
+/**
+ * An administrator's accepted basis: operator.admin in the immutable requester scopes. Live
+ * ingress additionally requires the host-attested Control UI admin flag; restore re-proves the
+ * scopes against the current role, so a revoked admin grant ends the intent.
+ */
+export function isAdminPromotionScopes(scopes: readonly string[]): boolean {
+  return roleScopesAllow({
+    role: "operator",
+    requestedScopes: ["operator.admin"],
+    allowedScopes: scopes,
+  });
 }
 
 type PromotionEntry = Pick<
@@ -134,24 +159,49 @@ type PromotionEntry = Pick<
   | "incognito"
 >;
 
-export function isDurableDashboardPromotionTarget(key: string, entry: PromotionEntry): boolean {
-  return (
-    /^agent:[^:]+:dashboard:[^:]+$/.test(key) &&
-    // Process-only conversations have no durable identity to hand over.
-    !isIncognitoSessionKey(key) &&
-    entry.incognito !== true &&
-    Boolean(entry.spawnedBy || (entry.spawnDepth ?? 0) > 0)
-  );
+/**
+ * The one supported-target rule. Administrators may promote any durable delegated session key
+ * (dashboard, subagent/task, cron-backed and other agent-scoped rows); everyone else keeps the
+ * durable dashboard conversation. Incognito is a privacy boundary for everyone. ACP sessions run
+ * an external harness that the admitted ordinary class does not govern, and a never-delegated
+ * row has nothing to promote. Rows that do not exist are refused before this by access checks.
+ */
+export function resolveSessionPromotionTargetSupport(
+  key: string,
+  entry: PromotionEntry,
+  requester: { admin: boolean },
+): SessionPromotionUnsupportedReason | null {
+  if (!AGENT_SESSION_KEY.test(key)) {
+    return "unsupported-key";
+  }
+  // Process-only conversations have no durable identity to hand over.
+  if (isIncognitoSessionKey(key) || entry.incognito === true) {
+    return "incognito";
+  }
+  if (isAcpSessionKey(key)) {
+    return "acp-session";
+  }
+  if (!entry.spawnedBy && !((entry.spawnDepth ?? 0) > 0)) {
+    return "not-delegated";
+  }
+  return requester.admin || DASHBOARD_SESSION_KEY.test(key) ? null : "dashboard-only";
 }
-function assertTarget(entry: PromotionEntry, target: SessionPromotionTarget): void {
+function assertTarget(
+  entry: PromotionEntry,
+  target: SessionPromotionTarget,
+  requester: GitHubPublicationRequesterSnapshot,
+): void {
   if (
     entry.sessionId !== target.sessionId ||
     entry.lifecycleRevision !== target.fromLifecycleRevision
   ) {
     throw new SessionPromotionConflictError();
   }
-  if (!isDurableDashboardPromotionTarget(target.key, entry)) {
-    throw new SessionPromotionUnsupportedError();
+  const unsupported = resolveSessionPromotionTargetSupport(target.key, entry, {
+    admin: isAdminPromotionScopes(requester.scopes),
+  });
+  if (unsupported) {
+    throw new SessionPromotionUnsupportedError(unsupported);
   }
 }
 function sameTarget(a: SessionPromotionTarget, b: SessionPromotionTarget): boolean {
@@ -164,7 +214,7 @@ function sameTarget(a: SessionPromotionTarget, b: SessionPromotionTarget): boole
 }
 function auditOf(pending: PendingSessionPromotion) {
   if (pending.requester.actor.kind !== "operator") {
-    throw new SessionPromotionUnsupportedError();
+    throw new SessionPromotionUnsupportedError("requester-not-human");
   }
   return {
     version: pending.version,
@@ -205,7 +255,7 @@ export function applySessionPromotionRequest(params: {
     }
     return existing;
   }
-  assertTarget(params.entry, params.target);
+  assertTarget(params.entry, params.target, params.requester);
   if (existing && !sameTarget(existing.target, params.target)) {
     throw new SessionPromotionConflictError();
   }
@@ -237,7 +287,7 @@ export function applySessionPromotionRequest(params: {
     boundary: "settlement-or-fresh-human-input",
   });
   if (!intent || intent.state !== "pending") {
-    throw new SessionPromotionUnsupportedError();
+    throw new SessionPromotionUnsupportedError("requester-not-human");
   }
   params.assertCurrent();
   params.entry.sessionPromotion = intent;
@@ -255,7 +305,7 @@ export function revokePendingSessionPromotion(params: {
   if (pending?.state !== "pending") {
     return false;
   }
-  assertTarget(params.entry, params.target);
+  assertTarget(params.entry, params.target, pending.requester);
   if (!sameTarget(pending.target, params.target)) {
     throw new SessionPromotionConflictError();
   }
@@ -284,7 +334,7 @@ export function activatePendingSessionPromotion(params: {
   if (pending?.state !== "pending") {
     return false;
   }
-  assertTarget(params.entry, params.target);
+  assertTarget(params.entry, params.target, pending.requester);
   if (!sameTarget(pending.target, params.target)) {
     throw new SessionPromotionConflictError();
   }

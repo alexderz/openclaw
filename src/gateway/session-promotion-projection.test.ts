@@ -247,6 +247,6 @@ describe("terminal revoked intent contract", () => {
       now: 3,
     });
     expect(incognito.canPromote).toBe(false);
-    expect(incognito.disabledReasons).toContain("unsupported-target");
+    expect(incognito.disabledReasons).toContain("unsupported-target:incognito");
   });
 });

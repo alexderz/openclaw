@@ -8,12 +8,11 @@ import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { activateSessionPromotionAfterSettlement } from "./server-methods/sessions-promotion-activation.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 
-const DASHBOARD_KEY = /^agent:[^:]+:dashboard:[^:]+$/;
 const SETTLE_DELAY_MS = 250;
 
 /**
- * Owner-scheduled promotion attempts. When a work owner releases custody of a durable dashboard
- * conversation, consume its already-persisted pending intent through the shared activation
+ * Owner-scheduled promotion attempts. When a work owner releases custody of a durable session
+ * (administrators may promote any agent-scoped key, not only dashboards), consume its already-persisted pending intent through the shared activation
  * helper. No polling: attempts are coalesced per key and only follow an owner release, plus
  * one startup pass for intents that were already quiet when the previous process stopped.
  */
@@ -60,10 +59,9 @@ export function startSessionPromotionSettlement(
     timer.unref?.();
     timers.set(key, timer);
   };
+  // The attempt itself reads the row and returns at once without a pending intent.
   const isPromotionKey = (identity: string) =>
-    DASHBOARD_KEY.test(identity) &&
-    !isIncognitoSessionKey(identity) &&
-    parseAgentSessionKey(identity);
+    !isIncognitoSessionKey(identity) && parseAgentSessionKey(identity);
   const unsubscribe = onSessionWorkSettled((identities) => {
     for (const identity of identities) {
       if (isPromotionKey(identity)) {

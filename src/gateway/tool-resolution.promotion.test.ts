@@ -48,7 +48,6 @@ vi.mock("../agents/agent-tools.js", () => ({
 
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
 
-const sessionKey = "agent:main:dashboard:promoted-peer";
 const sessionId = "promoted-session";
 const entryFields: InternalSessionEntry = {
   sessionId,
@@ -61,11 +60,15 @@ const entryFields: InternalSessionEntry = {
   lifecycleRevision: "after-handoff",
 };
 
-function admissionOf(effectiveClass: "ordinary" | "delegated"): SessionEffectiveAdmission {
-  return captureSessionEffectiveAdmissionForTest({ sessionKey, sessionId, effectiveClass });
-}
-
-describe("loopback tool resolution consumes the admitted session class", () => {
+// An administrator may promote a subagent-key task session too; its key shape alone must not
+// keep the delegated envelope once an ordinary admission was minted for it.
+describe.each([
+  ["dashboard", "agent:main:dashboard:promoted-peer"],
+  ["subagent", "agent:main:subagent:promoted-task"],
+])("loopback tool resolution consumes the admitted session class (%s key)", (_kind, sessionKey) => {
+  function admissionOf(effectiveClass: "ordinary" | "delegated"): SessionEffectiveAdmission {
+    return captureSessionEffectiveAdmissionForTest({ sessionKey, sessionId, effectiveClass });
+  }
   let dir: string;
   let previousStateDir: string | undefined;
   const admissions: PreparedAgentRunAdmission[] = [];

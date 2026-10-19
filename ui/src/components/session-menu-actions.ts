@@ -30,6 +30,8 @@ export type SessionMenuData = {
   key?: string;
   promotionBusy?: boolean;
   promotionUncertain?: boolean;
+  /** The Gateway definitively refused the last request; nothing is in doubt. */
+  promotionDenied?: boolean;
   promotionMessage?: string;
   promotionDisabledReason?: string;
   capabilityStatus?: SessionCapabilityStatus;

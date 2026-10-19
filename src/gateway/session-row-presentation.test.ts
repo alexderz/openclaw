@@ -613,11 +613,21 @@ it("preserves selected account across role changes but rejects a changed merge i
   });
 });
 
+/** Promotion is offered only to an authenticated, host-attested Control UI human. */
+function controlUiHuman<T extends ReturnType<typeof roleClient>>(client: T): T {
+  client.internal = {
+    ...client.internal,
+    authenticatedOperator: true,
+    authenticatedControlUi: true,
+  };
+  return client;
+}
+
 it("keeps promotion capability per viewer for the same durable delegated row", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const cfg = rolePolicyConfig();
-    const writer = roleClient("write", "promotion-writer");
-    const reader = roleClient("view", "promotion-reader");
+    const writer = controlUiHuman(roleClient("write", "promotion-writer"));
+    const reader = controlUiHuman(roleClient("view", "promotion-reader"));
     const key = "agent:main:dashboard:promotion";
     replaceSessionEntrySync(
       { agentId: "main", sessionKey: key },
@@ -662,8 +672,8 @@ it("keeps promotion capability per viewer for the same durable delegated row", a
 it("projects pending cancellation only to the viewer who may still mutate the target", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const cfg = rolePolicyConfig();
-    const writer = roleClient("write", "pending-writer");
-    const reader = roleClient("view", "pending-reader");
+    const writer = controlUiHuman(roleClient("write", "pending-writer"));
+    const reader = controlUiHuman(roleClient("view", "pending-reader"));
     const key = "agent:main:dashboard:pending";
     replaceSessionEntrySync(
       { agentId: "main", sessionKey: key },
