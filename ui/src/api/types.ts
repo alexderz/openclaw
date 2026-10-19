@@ -166,6 +166,9 @@ export type SessionWorkspaceListResult = ProtocolSessionsFilesListResult & {
   artifacts?: ProtocolArtifactSummary[];
 };
 
+/** Per-viewer promotion projection exactly as the Gateway sends it on `row.promotion`. */
+export type SessionCapabilityStatus = NonNullable<GatewayWireSessionRow["promotion"]>;
+
 export type GatewaySessionRow = Omit<GatewayWireSessionRow, "archivedBy" | "updatedAt"> &
   Pick<SessionRow, "archivedBy" | "updatedAt"> & {
     /** Transient UI-owned Swarm note overlays, not persisted session fields. */

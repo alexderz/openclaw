@@ -38,6 +38,8 @@ import {
   type SessionWorkAdmissionInterrupt,
 } from "./session-work-admission-interruption.js";
 import { createSessionWorkAdmissionQueries } from "./session-work-admission-queries.js";
+import { noteSessionWorkAdmissionReserved } from "./session-work-admission-reservation-watch.js";
+import { countAdmissionPhases, notifySessionWorkSettled } from "./session-work-settlement.js";
 
 export {
   cancelSessionWorkAdmissionHandoff,
@@ -75,7 +77,7 @@ type SessionLifecycleAdmissionState = {
   currentAdmissions: AsyncLocalStorage<ReadonlySet<SessionWorkAdmission>>;
 };
 
-type SessionLifecycleMutationKind = "compaction";
+type SessionLifecycleMutationKind = "compaction" | "promote";
 
 type SessionLifecycleMutationTarget = {
   scope: string;
@@ -383,15 +385,21 @@ export function hasOnlySessionLifecycleMutationKindActive(
   );
 }
 
+/** Complete read-only admission inventory, including waiters not yet acquired. */
+export const inspectSessionWorkAdmissionPhases = (
+  scope: string,
+  identities: Iterable<string | undefined>,
+) =>
+  countAdmissionPhases(
+    ACTIVE_SESSION_WORK_ADMISSIONS,
+    normalizeSessionIdentities(scope, identities),
+  );
+
 export function isSessionWorkAdmissionActive(
   scope: string,
   identities: Iterable<string | undefined>,
 ): boolean {
-  return normalizeSessionIdentities(scope, identities).some((identity) =>
-    [...(ACTIVE_SESSION_WORK_ADMISSIONS.get(identity) ?? [])].some(
-      (admission) => admission.phase === "acquired",
-    ),
-  );
+  return inspectSessionWorkAdmissionPhases(scope, identities).acquired > 0;
 }
 
 function isRestartRecoverableAdmission(admission: SessionWorkAdmission): boolean {
@@ -575,6 +583,7 @@ export async function beginSessionWorkAdmission(params: {
     active.add(admission);
     ACTIVE_SESSION_WORK_ADMISSIONS.set(identity, active);
   }
+  noteSessionWorkAdmissionReserved(identities);
   let released = false;
   const release = () => {
     if (released) {
@@ -590,6 +599,7 @@ export async function beginSessionWorkAdmission(params: {
     }
     clearSessionWorkAdmissionHandoffs(admission);
     resolveReleased();
+    notifySessionWorkSettled(rawIdentities);
   };
   const lease: SessionWorkAdmissionLease = {
     isActive: () => !released,

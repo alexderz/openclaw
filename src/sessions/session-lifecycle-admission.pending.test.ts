@@ -4,6 +4,7 @@ import {
   createAgentRunDirectAbortError,
   createAgentRunRestartAbortError,
 } from "../agents/run-termination.js";
+import * as lifecycle from "./session-lifecycle-admission.js";
 import {
   beginSessionWorkAdmission,
   collectActiveSessionWorkAdmissions,
@@ -18,6 +19,7 @@ import {
   runExclusiveSessionLifecycleMutation,
   startSessionWorkAdmissionInterruption,
 } from "./session-lifecycle-admission.js";
+import { watchSessionWorkAdmissionReservations } from "./session-work-admission-reservation-watch.js";
 
 it.each(["completed", "cancelled", "cancelled-then-restart", "restart", "timeout"] as const)(
   "uses the adopted run's %s outcome when capturing restart work",
@@ -469,4 +471,87 @@ it("an initial validator finishing after pending cancellation cannot enter the w
     release.resolve();
     await pending;
   }
+});
+
+it("inventories pending admissions as well as acquired leases without interrupting them", async () => {
+  expect(lifecycle.inspectSessionWorkAdmissionPhases).toBeTypeOf("function");
+  const scope = "promotion-pending-inventory";
+  const identities = ["agent:main:dashboard:pending-inventory"];
+  const entered = createDeferred();
+  const release = createDeferred();
+  const mutation = runExclusiveSessionLifecycleMutation("promote", {
+    kind: "promote",
+    scope,
+    identities,
+    run: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  await entered.promise;
+  const pending = beginSessionWorkAdmission({ scope, identities, assertAllowed: () => {} });
+  await Promise.resolve();
+  expect(lifecycle.inspectSessionWorkAdmissionPhases(scope, identities)).toMatchObject({
+    pending: 1,
+    acquired: 0,
+  });
+  release.resolve();
+  await mutation;
+  const lease = await pending;
+  try {
+    expect(lifecycle.inspectSessionWorkAdmissionPhases(scope, identities)).toMatchObject({
+      pending: 0,
+      acquired: 1,
+    });
+  } finally {
+    lease.release();
+  }
+  expect(lifecycle.inspectSessionWorkAdmissionPhases(scope, identities)).toEqual({
+    pending: 0,
+    acquired: 0,
+  });
+});
+
+it("a reservation watch observes ingress on watched identities only, without delaying it", async () => {
+  const scope = "reservation-watch.sqlite";
+  const watch = watchSessionWorkAdmissionReservations();
+  try {
+    watch.add(scope, ["agent:main:dashboard:watched", "watched-session"]);
+    const other = await beginSessionWorkAdmission({
+      scope,
+      identities: ["agent:main:dashboard:other"],
+      assertAllowed: () => {},
+    });
+    other.release();
+    expect(watch.reserved()).toBe(false);
+    // Another store with the same key is a different identity.
+    const elsewhere = await beginSessionWorkAdmission({
+      scope: "other-store.sqlite",
+      identities: ["watched-session"],
+      assertAllowed: () => {},
+    });
+    elsewhere.release();
+    expect(watch.reserved()).toBe(false);
+    const turn = await beginSessionWorkAdmission({
+      scope,
+      identities: ["watched-session"],
+      assertAllowed: () => {},
+    });
+    turn.release();
+    // Still observed after the admission finished.
+    expect(watch.reserved()).toBe(true);
+  } finally {
+    watch.stop();
+  }
+  const after = watchSessionWorkAdmissionReservations();
+  after.stop();
+  after.add(scope, ["watched-session"]);
+  (
+    await beginSessionWorkAdmission({
+      scope,
+      identities: ["watched-session"],
+      assertAllowed: () => {},
+    })
+  ).release();
+  expect(after.reserved()).toBe(false);
 });

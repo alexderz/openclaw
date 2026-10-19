@@ -51,6 +51,7 @@ function resolveManifestToolProfileNames(
 }
 
 export type ConversationCapabilityProfileParams = {
+  sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   config?: OpenClawConfig;
   sessionKey?: string;
   /** Live conversation key when a sandbox/policy key is used for tool filtering. */
@@ -126,6 +127,7 @@ export function resolveConversationCapabilityProfile(params: ConversationCapabil
     channel: messageProvider ?? undefined,
   });
   const requesterPolicies = resolveRequesterToolPolicies({
+    sessionEffectiveAdmission: params.sessionEffectiveAdmission,
     ...params,
     subagentSessionKey,
     agentId: effective.agentId,

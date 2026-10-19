@@ -5,6 +5,7 @@ import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
 import { resolveActiveSessionAgentStatus } from "../sessions/session-agent-status.js";
 import { freezeJsonSnapshot } from "../shared/immutable-data.js";
+import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
 import { prepareOperatorModelPresentation } from "./operator-model-presentation.js";
 import { registerSerializedJsonArray } from "./serialized-json.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
@@ -16,6 +17,7 @@ import {
   projectSessionProfileInvolvement,
 } from "./session-identity-projection.js";
 import type { SessionEntrySelection } from "./session-list-filters.js";
+import { projectSessionPromotion } from "./session-promotion-projection.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import type * as records from "./session-row-projection-record.js";
@@ -24,6 +26,7 @@ import {
   authorizeIncognitoSessionTarget,
   authorizeSessionAgentRun,
   resolveSessionVisibility,
+  authorizeOwnSessionMutation,
   type SessionSharingTarget,
 } from "./session-sharing-policy.js";
 import { prepareProjectedSessionSharing } from "./session-sharing.js";
@@ -194,6 +197,56 @@ export function prepareProjectedSessionPresentation(
         }
       : {}),
     sharingRole: sharing.roleForTarget(value),
+    promotion: projectSessionPromotion({
+      key: value.canonicalKey,
+      entry: value.entry,
+      now,
+      viewerProfileId: profile?.id,
+      authorize: () => {
+        if (!profile || !client?.connect) {
+          return false;
+        }
+        const request = {
+          key: value.canonicalKey,
+          expectedSessionId: value.entry.sessionId,
+          expectedLifecycleRevision: value.entry.lifecycleRevision,
+        };
+        const scope = authorizeOperatorScopesForMethod(
+          "sessions.promote",
+          client.connect.scopes ?? [],
+          request,
+        );
+        if (!scope.allowed) {
+          return false;
+        }
+        if (
+          policyConfig.gateway?.roles &&
+          (!sharing.policy ||
+            !authorizeOperatorScopesForMethod("sessions.promote", sharing.policy.scopes, request)
+              .allowed)
+        ) {
+          return false;
+        }
+        if (
+          scope.sessionScope === "operator.sessions.write" &&
+          authorizeOwnSessionMutation({
+            client,
+            expectedProfileId: profile.id,
+            target: value,
+            isCreator: sharing.isCreator,
+          })
+        ) {
+          return false;
+        }
+        return (
+          !sharing.authorizeTarget(value) &&
+          !authorizeSessionAgentRun(
+            { cfg: policyConfig, client, target: value },
+            { policy: sharing.policy },
+          )
+        );
+      },
+    }),
     sendDisabledReason:
       authorizeSessionAgentRun(
         { cfg: policyConfig, client: client ?? null, target: value },

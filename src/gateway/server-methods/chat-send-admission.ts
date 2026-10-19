@@ -3,6 +3,7 @@ import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coe
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-readonly.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { isAgentRunRestartAbortReason } from "../../agents/run-termination.js";
 import {
   isReplyRunAbortableForSignal,
@@ -28,6 +29,7 @@ import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admi
 import { registerChatAbortController } from "../chat-abort.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import type { DedupeEntry } from "../server-shared.js";
+import { resolveFreshHumanPromotionProfileId } from "../session-promotion-human.js";
 import { writePreRegisteredChatAbort } from "./chat-abort-authorization.js";
 import {
   resolveRestartSafeChatAdmission,
@@ -50,6 +52,7 @@ import {
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
 import type { ChatSendAdmissionParams } from "./chat-send-pre-admission.types.js";
+import { isDirectHumanChatTurn } from "./chat-send-promotion-boundary.js";
 import {
   createPendingChatSendReservationAccess,
   inspectGoalChatSendRetry,
@@ -239,6 +242,16 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
       }
       // Freeze the writer-barrier snapshot; later preparation must retain this authority.
       admittedSessionSettings = captureAdmittedChatSendSessionSettings({
+        sessionKey,
+        // Only a direct, live Control UI human turn can consume an activated handoff; every
+        // queued, restored, model, automation or synthetic admission keeps its historical class.
+        humanProfileId: isDirectHumanChatTurn(request)
+          ? resolveFreshHumanPromotionProfileId({ client, context })
+          : undefined,
+        admittedIdentity: entry
+          ? { sessionId: entry.sessionId, lifecycleRevision: entry.lifecycleRevision }
+          : undefined,
+        assertCurrent: params.assertCurrent,
         commit: true,
         entry: latestEntry,
         expectedPermissionMode: p.expectedPermissionMode,
@@ -655,6 +668,20 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     lifecycleGeneration,
     ...progressCardRefreshRunProjection(request.systemInputProvenance),
   });
+
+  if (capturedOperator.authority && admittedSessionSettings?.effectiveAdmission) {
+    const originalAuthority = capturedOperator.authority;
+    capturedOperator = {
+      ...capturedOperator,
+      authority: createAdmittedRunOperatorAuthority({
+        ...originalAuthority,
+        get modelPolicy() {
+          return originalAuthority.modelPolicy;
+        },
+        sessionEffectiveAdmission: admittedSessionSettings.effectiveAdmission,
+      }),
+    };
+  }
 
   return {
     ok: true as const,

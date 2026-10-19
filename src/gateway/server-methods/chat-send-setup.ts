@@ -7,6 +7,7 @@ import {
   respondChatSendAdmissionError,
   runChatSendPreAdmission,
 } from "./chat-send-pre-admission.js";
+import { activatePendingPromotionBeforeChatSend } from "./chat-send-promotion-boundary.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
 import {
   prepareChatSendNativeRuntimeRestriction,
@@ -86,6 +87,19 @@ export async function prepareAndAdmitChatSend(
       return undefined;
     }
   }
+  // Settle an accepted promotion intent before this input captures any session lifecycle
+  // identity, lease or policy: the admission below then reads the post-handoff session fresh.
+  await activatePendingPromotionBeforeChatSend({
+    request: normalizedRequest.value,
+    trustedSystemInput: options?.trustedSystemInput,
+    options: {
+      client,
+      context,
+      signal: undefined,
+      sessionMutationAuthorization,
+      hasCurrentClientAuthority,
+    },
+  });
   const loadedSession = await prepareChatSendSession({
     request: normalizedRequest.value,
     context,

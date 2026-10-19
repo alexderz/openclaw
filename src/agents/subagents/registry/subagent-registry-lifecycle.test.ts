@@ -37,6 +37,7 @@ import {
   tryBeginGatewayRootWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../../../process/gateway-work-admission.js";
+import { onSessionWorkSettled } from "../../../sessions/session-work-settlement.js";
 import {
   AsyncWorkScope,
   getAsyncWorkSignal,
@@ -2064,6 +2065,10 @@ describe("subagent registry lifecycle hardening", () => {
 
   it("rejects a yield after direct delete cleanup has been dispatched", async () => {
     const entry = createRunEntry({ cleanup: "delete", expectsCompletionMessage: false });
+    entry.childSessionIdentity = {
+      sessionId: "child-session-id",
+      lifecycleRevision: "child-lifecycle-revision",
+    };
     const runs = new Map([[entry.runId, entry]]);
     let releaseDelete: (() => void) | undefined;
     gatewayMocks.callGateway.mockImplementation((opts) => {
@@ -2917,6 +2922,10 @@ describe("subagent registry lifecycle hardening", () => {
       collect: true,
       groupId: "swarm:test",
     });
+    entry.childSessionIdentity = {
+      sessionId: "child-session-id",
+      lifecycleRevision: "child-lifecycle-revision",
+    };
     const runs = new Map([[entry.runId, entry]]);
     const notifyContextEngineSubagentEnded = vi.fn(async () => {});
     const controller = createLifecycleController({
@@ -3046,6 +3055,10 @@ describe("subagent registry lifecycle hardening", () => {
       expectsCompletionMessage: false,
       spawnMode: "session",
     });
+    entry.childSessionIdentity = {
+      sessionId: "child-session-id",
+      lifecycleRevision: "child-lifecycle-revision",
+    };
     const runs = new Map([[entry.runId, entry]]);
     const runSubagentAnnounceFlow = vi.fn(async () => "delivered" as const);
 
@@ -5908,6 +5921,50 @@ describe("requester settle wake trigger", () => {
       vi.useRealTimers();
       resetGatewayWorkAdmission();
     }
+  });
+
+  it("notifies session-work settlement again when the requester wake releases its batch", async () => {
+    const run = async (completeWake: boolean) => {
+      const entry = createRunEntry({ endedAt: 4_000 });
+      const settled: Array<readonly string[]> = [];
+      const unsubscribe = onSessionWorkSettled((identities) => settled.push(identities));
+      try {
+        const controller = createLifecycleController({
+          entry,
+          maybeWakeRequesterAfterAllChildrenSettled: async (params) => {
+            if (completeWake) {
+              await params.completeBatch(
+                [params.settledEntry],
+                params.settledEntry.requesterSettleWake?.rearmGeneration,
+                { delivered: true, path: "direct", deliveredAt: 12_345 },
+              );
+            }
+            return completeWake;
+          },
+        });
+        await controller.completeCleanupBookkeeping({
+          runId: entry.runId,
+          entry,
+          cleanup: "keep",
+          completedAt: 5_000,
+        });
+        if (completeWake) {
+          // The wake runs as detached root work after bookkeeping returns.
+          await waitForLifecycleState(() =>
+            expect(readLifecycleRun(entry).requesterSettleWake).toBeUndefined(),
+          );
+        }
+        await Promise.resolve();
+        await Promise.resolve();
+        return settled.filter((identities) => identities.includes(entry.requesterSessionKey));
+      } finally {
+        unsubscribe();
+      }
+    };
+    const withoutWake = await run(false);
+    const withWake = await run(true);
+    expect(withoutWake).toHaveLength(1);
+    expect(withWake).toHaveLength(2);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
