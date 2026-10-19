@@ -199,6 +199,8 @@ export async function readProcessHeldCliHistoryInWorker(
     const page = await readChatHistoryPageKernel(params, {
       readers: cli?.readers ?? readers,
       deferProfileDisplay: true,
+      // Host refreshes current cron labels after worker page selection.
+      resolveCronJobName: () => undefined,
       readMessageSequence: cli?.sequence,
     });
     cli?.applyPagination(page);

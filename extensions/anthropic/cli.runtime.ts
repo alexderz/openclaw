@@ -62,6 +62,8 @@ type ClaudeCliTurn = {
   foregroundBashToolUseIds: Set<string>;
   pendingBackgroundTaskIds: Set<string>;
   subagentTaskIds: Set<string>;
+  restartedTaskIds: Set<string>;
+  requeuedTaskIds: Set<string>;
   taskNotifications: Map<string, "queued" | "replayed">;
   error?: Error;
 };
@@ -260,6 +262,10 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
         turn.subagentTaskIds.add(message.task_id);
       }
     } else if (typeof message.task_id === "string" && message.task_id) {
+      // A resumed task may restart while its prior notification still awaits a result.
+      if (turn.taskNotifications.has(message.task_id)) {
+        turn.restartedTaskIds.add(message.task_id);
+      }
       // task_type is optional here; the background task list names it later.
       if (message.is_backgrounded === false) {
         turn.foregroundTaskIds.add(message.task_id);
@@ -304,7 +310,20 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     !turn.subagentTaskIds.delete(message.task_id)
   ) {
     // Include non-held tasks: each queued notification has its own ordered result.
-    turn.taskNotifications.set(message.task_id, "queued");
+    if (
+      turn.foregroundTaskIds.has(message.task_id) &&
+      !turn.pendingBackgroundTaskIds.has(message.task_id)
+    ) {
+      // Foreground Bash completion is not a separate background continuation.
+      turn.foregroundTaskIds.delete(message.task_id);
+    } else if (
+      turn.restartedTaskIds.delete(message.task_id) &&
+      turn.taskNotifications.get(message.task_id) === "queued"
+    ) {
+      turn.requeuedTaskIds.add(message.task_id);
+    } else {
+      turn.taskNotifications.set(message.task_id, "queued");
+    }
   }
   let completesTurn = false;
   if (message.type === "result") {
@@ -322,8 +341,13 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
       const taskId = turn.taskNotifications.keys().next().value;
       if (taskId) {
         turn.taskNotifications.delete(taskId);
-        turn.pendingBackgroundTaskIds.delete(taskId);
-        turn.foregroundTaskIds.delete(taskId);
+        if (turn.requeuedTaskIds.delete(taskId)) {
+          // Move the newer notification behind the receipt this result consumed.
+          turn.taskNotifications.set(taskId, "queued");
+        } else if (!turn.restartedTaskIds.delete(taskId)) {
+          turn.pendingBackgroundTaskIds.delete(taskId);
+          turn.foregroundTaskIds.delete(taskId);
+        }
       }
     }
     // Inline receipts have no separate result. The query just answered them too.
@@ -410,6 +434,8 @@ export async function* executeClaudeCli(
     foregroundBashToolUseIds: new Set(),
     pendingBackgroundTaskIds: new Set(),
     subagentTaskIds: new Set(),
+    restartedTaskIds: new Set(),
+    requeuedTaskIds: new Set(),
     taskNotifications: new Map(),
   };
   session.currentTurn = turn;

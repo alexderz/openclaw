@@ -134,6 +134,56 @@ function disposeFailedChild(child: ChildProcess | undefined): void {
   }
 }
 
+// Parent-side IPC disconnect can suppress Node's aggregate ChildProcess "close".
+// Join native exit, IPC, and stdio receipts; transferred pipes retain their own leases.
+function waitForBrokerChildCompletion(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    let exited = child.exitCode != null || child.signalCode != null;
+    let ipcClosed = !child.connected;
+    let openStdio = 0;
+    const finish = () => {
+      if (!exited || !ipcClosed || openStdio !== 0) {
+        return;
+      }
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+      child.removeListener("disconnect", onDisconnect);
+      resolve();
+    };
+    const onExit = () => {
+      exited = true;
+      finish();
+    };
+    const onError = () => {
+      // A signaling/IPC error does not establish native exit for a live PID.
+      if (child.pid === undefined) {
+        exited = true;
+        ipcClosed = true;
+        finish();
+      }
+    };
+    const onDisconnect = () => {
+      ipcClosed = true;
+      finish();
+    };
+    child.once("exit", onExit);
+    child.on("error", onError);
+    child.once("disconnect", onDisconnect);
+    // Failed native spawn (EMFILE/ENFILE) may expose neither PID nor stdio.
+    for (const stream of child.stdio ?? []) {
+      if (!stream || stream.closed) {
+        continue;
+      }
+      openStdio += 1;
+      stream.once("close", () => {
+        openStdio -= 1;
+        finish();
+      });
+    }
+    finish();
+  });
+}
+
 async function launch(
   message: Extract<BrokerRequest, { type: "spawn" | "prepare-spawn" | "spawn-execa" }>,
 ): Promise<void> {
@@ -278,7 +328,7 @@ async function launch(
       );
       child.once("disconnect", () => event({ type: "disconnect", id: message.id }));
       child.once("exit", (code, signal) => event({ type: "exit", id: message.id, code, signal }));
-      child.once("close", () => {
+      void waitForBrokerChildCompletion(child).then(() => {
         event({ type: "closed", id: message.id });
         current.exited = true;
         forget(message.id, current);

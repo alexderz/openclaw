@@ -128,7 +128,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       process.stderr.write("PermissionError: fixture cannot read its input\n", () => process.exit(1));
       continue;
     }
-    if (scenario === "background-success" || scenario === "background-agent-subagent-bash") {
+    if (["background-success", "background-agent-subagent-bash", "background-agent-resumed", "background-agent-requeued"].includes(scenario)) {
       const subagentBash = scenario === "background-agent-subagent-bash";
       send({ type: "system", subtype: "background_tasks_changed",
         tasks: [{ task_id: "background-agent", task_type: "local_agent" }] });
@@ -254,6 +254,22 @@ for await (const line of createInterface({ input: process.stdin })) {
     assert.equal(message.response.subtype, "success");
     const { request_id: id, response } = message.response;
     if (id === "background-release") {
+      if (scenario === "background-agent-resumed" || scenario === "background-agent-requeued") {
+        send({ type: "system", subtype: "task_notification", task_id: "background-agent", status: "completed" });
+        send({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "background-agent", task_type: "local_agent" }] });
+        send({ type: "system", subtype: "task_started", task_id: "background-agent", task_type: "local_agent", is_backgrounded: true });
+        if (scenario === "background-agent-requeued") {
+          send({ type: "system", subtype: "task_notification", task_id: "background-agent", status: "completed" });
+          send({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+        }
+        send({ type: "result", subtype: "success", origin: { kind: "task-notification" }, result: "resumed", session_id: "fixture-session", is_error: false });
+        // Hold the final answer until the host has observed the resumed interim result.
+        request("resumed-release", { subtype: "can_use_tool", tool_name: "Read",
+          input: { file_path: "fixture.txt" }, tool_use_id: "resumed-release" });
+        continue;
+      }
+    }
+    if (id === "background-release" || id === "resumed-release") {
       if (scenario === "background-agent-subagent-bash") send({ type: "system", subtype: "task_notification", task_id: "subagent-bash",
         tool_use_id: "tool-subagent-bash", status: "completed", output_file: "", summary: "sleep" });
       send({ type: "system", subtype: "background_tasks_changed", tasks: [] });

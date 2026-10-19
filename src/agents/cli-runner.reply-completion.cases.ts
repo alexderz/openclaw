@@ -178,9 +178,16 @@ export function registerCliReplyCompletionTests({
     },
   );
 
-  it.each([false, true])(
-    "requires child continuation custody before accepting NO_REPLY (completion=%s)",
-    async (expectsCompletionMessage) => {
+  it.each(
+    [false, true].flatMap((expectsCompletionMessage) =>
+      [SILENT_REPLY_TOKEN, JSON.stringify({ action: SILENT_REPLY_TOKEN }), ""].map((text) => ({
+        expectsCompletionMessage,
+        text,
+      })),
+    ),
+  )(
+    "requires child continuation custody (completion=$expectsCompletionMessage, output=$text)",
+    async ({ expectsCompletionMessage, text }) => {
       const child = {
         runId: "spawned-cli-child",
         childSessionKey: "agent:main:subagent:spawned-cli-child",
@@ -195,7 +202,7 @@ export function registerCliReplyCompletionTests({
           },
           { details: { status: "accepted", ...child } },
         );
-        return makeManagedRun({ stdout: SILENT_REPLY_TOKEN });
+        return makeManagedRun({ stdout: text });
       });
       const context = createContext({
         sessionKey: "agent:main:subagent:cli-parent",
@@ -216,8 +223,8 @@ export function registerCliReplyCompletionTests({
     },
   );
 
-  it.each([SILENT_REPLY_TOKEN, JSON.stringify({ action: SILENT_REPLY_TOKEN })])(
-    "rejects silent CLI output %j when a final reply is required",
+  it.each([SILENT_REPLY_TOKEN, JSON.stringify({ action: SILENT_REPLY_TOKEN }), ""])(
+    "rejects uncustodied required CLI output %j",
     async (text) => {
       supervisorSpawnMock.mockResolvedValueOnce(makeManagedRun({ stdout: text }));
       const context = createContext({
@@ -227,10 +234,46 @@ export function registerCliReplyCompletionTests({
         inputProvenance: { kind: "inter_session", sourceTool: "sessions_spawn" },
       });
 
-      await expect(run(context)).rejects.toMatchObject({
-        name: "FailoverError",
-        reason: "empty_response",
+      try {
+        await run(context);
+        throw new Error("expected empty response");
+      } catch (error) {
+        expect(error).toMatchObject({ name: "FailoverError", reason: "empty_response" });
+      }
+      expect(supervisorSpawnMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([SILENT_REPLY_TOKEN, JSON.stringify({ action: SILENT_REPLY_TOKEN })])(
+    "preserves synthetic settle silence %j when host policy is optional",
+    async (text) => {
+      supervisorSpawnMock.mockResolvedValueOnce(makeManagedRun({ stdout: text }));
+      const context = createContext({
+        sessionKey: "agent:main:subagent:settle-cli-reply",
+        lane: "subagent",
+        inputProvenance: { kind: "inter_session", sourceTool: "subagent_settle" },
       });
+      await expect(run(context)).resolves.toBeDefined();
+      expect(supervisorSpawnMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([SILENT_REPLY_TOKEN, JSON.stringify({ action: SILENT_REPLY_TOKEN })])(
+    "explicit required policy cannot be bypassed by synthetic provenance %j",
+    async (text) => {
+      supervisorSpawnMock.mockResolvedValueOnce(makeManagedRun({ stdout: text }));
+      const context = createContext({
+        sessionKey: "agent:main:subagent:required-settle-cli-reply",
+        lane: "subagent",
+        terminalReplyExpectation: "required",
+        inputProvenance: { kind: "inter_session", sourceTool: "subagent_settle" },
+      });
+      try {
+        await run(context);
+        throw new Error("expected empty response");
+      } catch (error) {
+        expect(error).toMatchObject({ name: "FailoverError", reason: "empty_response" });
+      }
       expect(supervisorSpawnMock).toHaveBeenCalledOnce();
     },
   );
