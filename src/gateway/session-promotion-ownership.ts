@@ -5,10 +5,24 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 
-export type SessionPromotionLineageEntry = Pick<SessionEntry, "createdActor" | "parentSessionKey">;
+export type SessionPromotionLineageEntry = Pick<
+  SessionEntry,
+  "createdActor" | "parentSessionKey" | "parentSessionId" | "sessionId" | "spawnedBy"
+>;
 
 /** Delegation trees are shallow; a longer chain is treated as unprovable, never as owned. */
 export const SESSION_PROMOTION_LINEAGE_MAX_HOPS = 32;
+
+/**
+ * Admin scopes count as an admin basis for a restored intent only for the gateway owner, or when
+ * operator roles are configured. Any other profile with admin scopes falls through to ownership.
+ */
+export function promotionAdminBasisAllowed(params: {
+  profileId: string | undefined;
+  cfg: OpenClawConfig;
+}): boolean {
+  return params.profileId === GATEWAY_OWNER_PROFILE_ID || params.cfg.gateway?.roles !== undefined;
+}
 
 export type SessionPromotionOwnershipDenial =
   | "scope-denied"
@@ -81,6 +95,15 @@ export function resolveSessionPromotionOwnership(params: {
     }
     if (!entry) {
       return { ok: false, reason: "lineage-unreadable" };
+    }
+    // Each agent-created hop must name its exact parent: the spawner key and that parent's
+    // current incarnation. A reused key or a rewritten parent link is not a proven lineage.
+    if (
+      current.spawnedBy !== key ||
+      !entry.sessionId ||
+      current.parentSessionId !== entry.sessionId
+    ) {
+      return { ok: false, reason: "lineage-denied" };
     }
     if (entry.createdActor?.type === "agent") {
       current = entry;

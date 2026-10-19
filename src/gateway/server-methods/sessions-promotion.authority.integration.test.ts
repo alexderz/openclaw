@@ -16,13 +16,13 @@ import { handleGatewayRequest } from "../server-methods.js";
 import { createOperatorWsClient } from "../server/ws-connection/authenticated-request-dispatch.test-support.js";
 import { prepareGatewayConnectOperatorAccess } from "../server/ws-connection/connect-operator-access.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
-import type { GatewayClient } from "./types.js";
 import { prepareProjectedSessionPresentation } from "../session-row-presentation.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import { createSessionRowProjection } from "../session-row-projection.js";
 import { createWorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import { activateSessionPromotionAfterSettlement } from "./sessions-promotion-activation.js";
 import { sessionPromotionHandlers } from "./sessions-promotion.js";
+import type { GatewayClient } from "./types.js";
 
 /** Handshake-attested internals as connect-session.ts sets them; the WS type declares a subset. */
 function attest(client: GatewayWsClient, internal: NonNullable<GatewayClient["internal"]>) {

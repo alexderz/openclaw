@@ -21,6 +21,7 @@ import {
   readPromotionPairedDevice,
 } from "../session-promotion-human.js";
 import { createSessionPromotionOwnerCheck } from "../session-promotion-owner-check.js";
+import { clearSessionPromotionPending } from "../session-promotion-pending-keys.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { probeSessionEntryObligations } from "./sessions-promotion-entry-obligations.js";
 import { probeSessionPromotionQuiescence } from "./sessions-promotion-quiescence.js";
@@ -293,13 +294,17 @@ export async function activateSessionPromotionBeforeAdmission(params: {
   sessionKey: string;
   agentIdOverride?: string;
 }): Promise<SessionPromotionAdmissionOutcome> {
-  return await consumePendingPromotion({
+  const outcome = await consumePendingPromotion({
     context: params.options.context,
     sessionKey: params.sessionKey,
     agentIdOverride: params.agentIdOverride,
     signal: params.options.signal,
     freshHuman: params.options,
   });
+  if (outcome !== "unchanged") {
+    clearSessionPromotionPending(params.sessionKey);
+  }
+  return outcome;
 }
 
 /** Entrypoint (a): an owner released its work; consume only the already-persisted intent. */
@@ -308,5 +313,9 @@ export async function activateSessionPromotionAfterSettlement(params: {
   sessionKey: string;
   signal?: AbortSignal;
 }): Promise<SessionPromotionAdmissionOutcome> {
-  return await consumePendingPromotion(params);
+  const outcome = await consumePendingPromotion(params);
+  if (outcome !== "unchanged") {
+    clearSessionPromotionPending(params.sessionKey);
+  }
+  return outcome;
 }

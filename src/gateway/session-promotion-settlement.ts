@@ -7,13 +7,17 @@ import { onSessionWorkSettled } from "../sessions/session-work-settlement.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { activateSessionPromotionAfterSettlement } from "./server-methods/sessions-promotion-activation.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
+import {
+  isSessionPromotionPending,
+  markSessionPromotionPending,
+} from "./session-promotion-pending-keys.js";
 
 const SETTLE_DELAY_MS = 250;
 
 /**
- * Owner-scheduled promotion attempts. When a work owner releases custody of a durable session
- * (administrators may promote any agent-scoped key, not only dashboards), consume its already-persisted pending intent through the shared activation
- * helper. No polling: attempts are coalesced per key and only follow an owner release, plus
+ * Owner-scheduled promotion attempts. When a work owner releases custody of a durable session that
+ * holds a pending promotion intent, consume that intent through the shared activation helper. No
+ * polling: attempts are coalesced per key and only follow an owner release of a pending key, plus
  * one startup pass for intents that were already quiet when the previous process stopped.
  */
 export function startSessionPromotionSettlement(
@@ -64,7 +68,7 @@ export function startSessionPromotionSettlement(
     !isIncognitoSessionKey(identity) && parseAgentSessionKey(identity);
   const unsubscribe = onSessionWorkSettled((identities) => {
     for (const identity of identities) {
-      if (isPromotionKey(identity)) {
+      if (isPromotionKey(identity) && isSessionPromotionPending(identity)) {
         schedule(identity);
       }
     }
@@ -88,6 +92,7 @@ export function startSessionPromotionSettlement(
             isPromotionKey(sessionKey) &&
             decodeSessionPromotion(entry.sessionPromotion)?.state === "pending"
           ) {
+            markSessionPromotionPending(sessionKey);
             schedule(sessionKey);
           }
         }

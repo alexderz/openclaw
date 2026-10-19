@@ -5,6 +5,7 @@ import {
   type LogicalSessionAccessScope,
 } from "../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
+import { promotionAdminBasisAllowed } from "../gateway/session-promotion-ownership.js";
 import type { GitHubPublicationRequesterSnapshot } from "../state/github-publication-requester.js";
 import { runExclusiveSessionLifecycleMutation } from "./session-lifecycle-admission.js";
 import {
@@ -83,6 +84,13 @@ export async function requestSessionPromotion(params: {
             ...(params.device ? { device: params.device } : {}),
             now: params.now ?? Date.now(),
             assertCurrent: params.assertCurrent,
+            adminBasisAllowed: promotionAdminBasisAllowed({
+              profileId:
+                params.requester.actor.kind === "operator"
+                  ? params.requester.actor.profileId
+                  : undefined,
+              cfg: params.scope.cfg,
+            }),
           });
         },
         {
