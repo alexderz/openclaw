@@ -523,6 +523,7 @@ describe("chat header session menu", () => {
           "Panels",
           "Layout",
           "View",
+          "Check promotion status",
           "Pin session",
           "Rename…",
           "Mark as unread",

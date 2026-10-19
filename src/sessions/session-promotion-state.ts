@@ -371,6 +371,8 @@ export function activatePendingSessionPromotion(params: {
   /** Complete owner-probed quiescence result, sampled inside the same admission fence. */
   blockers: readonly string[];
   basis?: "original-basis" | "fresh-human-rebound";
+  /** The restored admin basis for the intent's requester; the caller re-proves it. */
+  adminBasisAllowed: boolean;
   assertCurrent: () => void;
 }): boolean {
   params.assertCurrent();
@@ -378,7 +380,7 @@ export function activatePendingSessionPromotion(params: {
   if (pending?.state !== "pending") {
     return false;
   }
-  assertTarget(params.entry, params.target, pending.requester);
+  assertTarget(params.entry, params.target, pending.requester, params.adminBasisAllowed);
   if (!sameTarget(pending.target, params.target)) {
     throw new SessionPromotionConflictError();
   }

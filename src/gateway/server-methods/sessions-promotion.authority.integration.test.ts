@@ -72,9 +72,11 @@ async function seed(key: string, entry: Partial<SessionEntry>) {
   );
 }
 
+// The parent's incarnation id is the one `seed` assigns: the lineage rule needs the exact parent.
 const delegatedBy = (parent: string): Partial<SessionEntry> => ({
   createdActor: agentActor,
   parentSessionKey: parent,
+  parentSessionId: parent.replaceAll(":", "-"),
   spawnedBy: parent,
   spawnDepth: 1,
 });

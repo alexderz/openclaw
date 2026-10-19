@@ -544,7 +544,8 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
       (this.session.promotionBusy ? t("chat.sessionHeader.promotion.busy") : unavailableReason);
     return html`
       ${
-        status?.effectiveClass !== "ordinary" || pending
+        // No capability status is no promotion offer: an unknown session shows no disabled item.
+        (status && status.effectiveClass !== "ordinary") || pending
           ? html`
               <wa-dropdown-item
                 class="session-menu__item session-promotion-action"
