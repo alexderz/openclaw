@@ -39,17 +39,19 @@ describe("owner-scheduled promotion settlement", () => {
     expect(mocks.activate).toHaveBeenCalledTimes(1);
     expect(mocks.activate).toHaveBeenCalledWith({ context, sessionKey: key });
   });
-  it("ignores ephemeral, non-dashboard and malformed identities", async () => {
+  it("attempts every agent-scoped key an administrator may promote, and ignores the rest", async () => {
     ({ stop } = startSessionPromotionSettlement(context, { warn: vi.fn() }));
     notifySessionWorkSettled([
       "agent:main:subagent:task",
       "agent:main:main",
       "session-id",
-      "agent:main:dashboard:a:b",
       undefined,
     ]);
     await flush();
-    expect(mocks.activate).not.toHaveBeenCalled();
+    expect(mocks.activate.mock.calls.map(([call]) => call.sessionKey)).toEqual([
+      "agent:main:subagent:task",
+      "agent:main:main",
+    ]);
   });
   it("never schedules an incognito dashboard key, in any letter case", async () => {
     ({ stop } = startSessionPromotionSettlement(context, { warn: vi.fn() }));

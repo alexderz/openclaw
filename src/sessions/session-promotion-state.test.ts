@@ -77,30 +77,89 @@ describe("session promotion target eligibility", () => {
   const delegated = { spawnedBy: "agent:main:main", spawnDepth: 1 } as Record<
     string,
     unknown
-  > as Parameters<typeof state.isDurableDashboardPromotionTarget>[1];
-  it("accepts a durable visible dashboard conversation", () => {
-    expect(state.isDurableDashboardPromotionTarget("agent:main:dashboard:visible", delegated)).toBe(
-      true,
-    );
+  > as Parameters<typeof state.resolveSessionPromotionTargetSupport>[1];
+  const support = (key: string, admin: boolean, row = delegated) =>
+    state.resolveSessionPromotionTargetSupport(key, row, { admin });
+  it("accepts a durable visible dashboard conversation for everyone", () => {
+    expect(support("agent:main:dashboard:visible", false)).toBeNull();
+    expect(support("agent:main:dashboard:visible", true)).toBeNull();
   });
+  it.each([
+    ["a subagent key", "agent:main:subagent:task"],
+    ["a cron-backed key", "agent:main:cron:job-1"],
+    ["a channel key", "agent:main:telegram:direct:42"],
+    ["a nested dashboard key", "agent:main:dashboard:a:b"],
+  ])(
+    "accepts %s for an administrator only, in the check and in a persisted receipt",
+    (_name, key) => {
+      expect(support(key, true)).toBeNull();
+      expect(support(key, false)).toBe("dashboard-only");
+      expect(
+        state.decodeSessionPromotion({ ...pending, target: { ...target, key } }),
+      ).toMatchObject({
+        target: { key },
+      });
+    },
+  );
   it.each([
     ["an incognito dashboard key", "agent:main:dashboard:incognito-abc"],
     ["an upper-case incognito key", "agent:main:dashboard:INCOGNITO-abc"],
-    ["a subagent key", "agent:main:subagent:task"],
-    ["a nested key", "agent:main:dashboard:a:b"],
-  ])("rejects %s in the check and in a persisted receipt", (_name, key) => {
-    expect(state.isDurableDashboardPromotionTarget(key, delegated)).toBe(false);
+    ["an incognito subagent key", "agent:main:subagent:incognito-abc"],
+  ])("rejects %s for everyone, in the check and in a persisted receipt", (_name, key) => {
+    expect(support(key, true)).toBe("incognito");
+    expect(support(key, false)).toBe("incognito");
     expect(
       state.decodeSessionPromotion({ ...pending, target: { ...target, key } }),
     ).toBeUndefined();
   });
   it("rejects an incognito row even under an ordinary-looking key", () => {
+    expect(support("agent:main:dashboard:visible", true, { ...delegated, incognito: true })).toBe(
+      "incognito",
+    );
+  });
+  it("names keys without a promotion lifecycle instead of guessing", () => {
+    expect(support("agent:main:acp:run-1", true)).toBe("acp-session");
+    expect(support("agent:main:main", true, {} as typeof delegated)).toBe("not-delegated");
+    expect(support("main", true)).toBe("unsupported-key");
     expect(
-      state.isDurableDashboardPromotionTarget("agent:main:dashboard:visible", {
-        ...delegated,
-        incognito: true,
+      state.decodeSessionPromotion({
+        ...pending,
+        target: { ...target, key: "agent:other:subagent:task" },
       }),
-    ).toBe(false);
+    ).toBeUndefined();
+  });
+  it("lets an administrator's intent target a subagent key and refuses a non-admin's", () => {
+    const apply = implementation("applySessionPromotionRequest");
+    const key = "agent:main:subagent:task";
+    const admin = { ...requester, scopes: ["operator.admin"] };
+    const row = entry();
+    expect(
+      apply({
+        entry: row,
+        target: { ...target, key },
+        requester: admin,
+        requestId: "request",
+        now: 1,
+        assertCurrent: vi.fn(),
+      }),
+    ).toMatchObject({ state: "pending", target: { key } });
+    let refused: unknown;
+    try {
+      apply({
+        entry: entry(),
+        target: { ...target, key },
+        requester,
+        requestId: "request",
+        now: 1,
+        assertCurrent: vi.fn(),
+      });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(state.SessionPromotionUnsupportedError);
+    expect((refused as InstanceType<typeof state.SessionPromotionUnsupportedError>).reason).toBe(
+      "dashboard-only",
+    );
   });
 });
 

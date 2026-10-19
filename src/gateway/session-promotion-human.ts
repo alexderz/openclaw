@@ -1,16 +1,20 @@
 import { createHash } from "node:crypto";
-import { getGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import { getPairedDevice } from "../infra/device-pairing.js";
 import type { PairedDevice } from "../infra/device-pairing.types.js";
-import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
   existingPathOrUndefined,
   resolveOpenClawStateSqlitePath,
 } from "../state/openclaw-state-db.paths.js";
 import { resolveGatewayOperatorRoleActor } from "./operator-role-policy.js";
 import type { GatewayRequestHandlerOptions } from "./server-methods/types.js";
+import { isControlUiHumanClient } from "./session-promotion-client.js";
 
-export class PromotionRequesterDeniedError extends Error {}
+/** `reason` is a server-log diagnostic code only; clients always see the same denial. */
+export class PromotionRequesterDeniedError extends Error {
+  constructor(readonly reason = "not-control-ui-human") {
+    super(`Session promotion requester refused: ${reason}`);
+  }
+}
 
 export type FreshHumanPromotionRequester = Readonly<{
   profileId: string;
@@ -39,15 +43,11 @@ export function prepareFreshHumanPromotionRequester(
   const assertCurrent = () => {
     options.signal?.throwIfAborted();
     options.sessionMutationAuthorization?.assertCurrent();
-    const internal = client?.internal;
     const currentActor = resolveGatewayOperatorRoleActor(client);
     if (
       !client ||
       !connId ||
-      client.invalidated ||
-      client.connect.role !== "operator" ||
-      internal?.authenticatedOperator !== true ||
-      internal?.authenticatedControlUi !== true ||
+      !isControlUiHumanClient(client) ||
       currentActor?.kind !== actor?.kind ||
       (actor?.kind === "operator" &&
         (currentActor?.kind !== "operator" || currentActor.profileId !== actor.profileId)) ||
@@ -55,22 +55,7 @@ export function prepareFreshHumanPromotionRequester(
       client.authenticatedUserProfile?.profileId !== profileId ||
       client.authenticatedUserId !== userId ||
       client.connId !== connId ||
-      client.authenticatedGitHubIdentitySync ||
-      internal?.syntheticClient ||
-      internal?.agentRuntimeIdentity ||
-      internal?.agentToolCaller ||
-      internal?.operatorRunAuthority ||
-      internal?.cronRunContinuation ||
-      internal?.approvalRuntime ||
-      internal?.pluginRuntimeOwnerId ||
-      internal?.nodeInvokeApprovalSessionKey ||
-      getGatewayToolCallerIdentity() ||
-      !context.getClientConnIds?.((current) => current === client).has(connId) ||
-      !roleScopesAllow({
-        role: "operator",
-        requestedScopes: ["operator.sessions.write"],
-        allowedScopes: client.connect.scopes ?? [],
-      })
+      !context.getClientConnIds?.((current) => current === client).has(connId)
     ) {
       throw new PromotionRequesterDeniedError();
     }

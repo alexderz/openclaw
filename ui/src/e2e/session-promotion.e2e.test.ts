@@ -28,7 +28,19 @@ const VIEWPORTS = [
 ] as const;
 type Viewport = (typeof VIEWPORTS)[number];
 
-async function openHandoffPage(viewport: Viewport, kind: PromotionFixtureKind) {
+async function openHandoffPage(
+  viewport: Viewport,
+  kind: PromotionFixtureKind,
+  promoteResponse: unknown = {
+    key,
+    sessionId: "proof-session",
+    lifecycleRevision: "proof-revision",
+    requestId: PENDING_REQUEST_ID,
+    state: "cancelled",
+    activation: "safe-boundary-before-fresh-human-run",
+    effective: { class: "delegated" },
+  },
+) {
   const context = await suite.browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: viewport.scale,
@@ -48,15 +60,7 @@ async function openHandoffPage(viewport: Viewport, kind: PromotionFixtureKind) {
           promotion: { ...promotionProjection(kind), lifecycleRevision: "proof-revision" },
         },
       ]),
-      "sessions.promote": {
-        key,
-        sessionId: "proof-session",
-        lifecycleRevision: "proof-revision",
-        requestId: PENDING_REQUEST_ID,
-        state: "cancelled",
-        activation: "safe-boundary-before-fresh-human-run",
-        effective: { class: "delegated" },
-      },
+      "sessions.promote": promoteResponse,
     },
   });
   await page.goto(controlUiSessionUrl(suite.server.baseUrl, key));
@@ -176,6 +180,33 @@ suite.define(() => {
       });
     } catch (error) {
       await captureUiProof(suite, page, "session-promotion-pending-cancel-failure.png");
+      throw error;
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
+
+  it("shows a definite refusal, not an unknown result, when the Gateway denies the request", async () => {
+    const { context, page, gateway, host } = await openHandoffPage(
+      VIEWPORTS[1],
+      "authorized-none",
+      { __mockError: { code: "FORBIDDEN", message: "Session promotion is not available." } },
+    );
+    try {
+      const promote = await openPromotionMenuItem(page, "promote-session");
+      await promote.click();
+      await page
+        .getByRole("button", { name: "Promote session", exact: true })
+        .waitFor({ state: "visible" });
+      await page.getByRole("button", { name: "Promote session", exact: true }).click();
+      await expect.poll(async () => (await gateway.getRequests("sessions.promote")).length).toBe(1);
+      await expect
+        .poll(() => host.locator('[role="status"]').textContent())
+        .toContain("Promotion isn't allowed for this session");
+      expect(await host.locator('[role="status"]').textContent()).not.toContain("unknown");
+      await captureUiProof(suite, page, "session-promotion-denied.png");
+    } catch (error) {
+      await captureUiProof(suite, page, "session-promotion-denied-failure.png");
       throw error;
     } finally {
       await context.close();
