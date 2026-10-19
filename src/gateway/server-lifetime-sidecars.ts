@@ -14,6 +14,7 @@ import { attachSessionChangeEventLifetime } from "./server-methods/session-chang
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import type { GatewaySidecarStopOwner } from "./server-sidecar-owners.js";
 import { startIncognitoSessionLifetime } from "./session-incognito-lifetime.js";
+import { startSessionPromotionSettlement } from "./session-promotion-settlement.js";
 
 type GatewayChatMetadataLifecycle = Awaited<ReturnType<typeof createGatewayChatMetadataLifecycle>>;
 
@@ -34,6 +35,10 @@ export async function attachInitialGatewayLifetimeSidecars(params: {
       context: params.gatewayRequestContext,
       logWarning: params.logWarning,
     }),
+  );
+  // Owner releases and one startup scan consume persisted promotion intents.
+  params.publishSidecars(
+    startSessionPromotionSettlement(params.gatewayRequestContext, { warn: params.logWarning }),
   );
   await params.chatMetadataLifecycle.attachContext(
     params.gatewayRequestContext,
