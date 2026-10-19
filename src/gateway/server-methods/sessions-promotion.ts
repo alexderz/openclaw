@@ -184,7 +184,7 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
         assertCurrent,
         liveAdmin: isControlUiAdminClient(options.client),
       });
-      respond(true, toSessionPromotionResult(promotion), undefined);
+      // Mark before responding: a client that acts on the reply must find the key already pending.
       if (promotion.state === "pending") {
         // Mark before notifying: settlement attempts run only for keys with a pending intent.
         markSessionPromotionPending(promotion.target.key);
@@ -194,6 +194,7 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
       } else {
         clearSessionPromotionPending(promotion.target.key);
       }
+      respond(true, toSessionPromotionResult(promotion), undefined);
     } catch (error) {
       const reason = sessionPromotionRefusalReason(error);
       const message = `sessions.promote refused reason=${reason}`;
@@ -228,7 +229,9 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
         // Transient access preparation: not a decision, so the caller must not see a denial.
         respond(false, undefined, error.error);
       } else {
-        // Do not disclose whether an inaccessible session, owner or grant exists.
+        // Do not disclose whether an inaccessible session, owner or grant exists. Lineage-unreadable
+        // refusals also land here on purpose: they are deliberately non-disclosing and no longer
+        // retryable, so the client gets the same final denial as any other refusal.
         respond(
           false,
           undefined,
