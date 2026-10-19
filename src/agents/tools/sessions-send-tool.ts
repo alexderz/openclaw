@@ -80,6 +80,7 @@ import {
   readSessionsSendMode,
   readSessionsSendTimeout,
 } from "./sessions-send-tool.input.js";
+import { isSessionsSendRequesterSubagent } from "./sessions-send-tool.requester.js";
 import { SessionsSendToolSchema, SessionsSendOutputSchema } from "./sessions-send-tool.schema.js";
 import type { SessionsSendToolOptions } from "./sessions-send-tool.types.js";
 
@@ -385,16 +386,13 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
               lifecycleRevision: requesterContinuationSession.lifecycleRevision ?? null,
             }
           : undefined;
-      const requesterIsSubagent = isSubagentSessionFromEntry(
-        requesterSession.canonicalKey,
+      const requesterIsSubagent = isSessionsSendRequesterSubagent({
+        cfg,
+        requesterSession,
         requesterSessionEntry,
-        readAcpSessionMetaForEntry({
-          sessionKey: requesterSession.canonicalKey,
-          agentId: requesterSession.agentId,
-          cfg,
-          entry: requesterSessionEntry,
-        }),
-      );
+        sessionEffectiveAdmission: opts?.sessionEffectiveAdmission,
+        agentSessionId: opts?.agentSessionId,
+      });
       const timeoutMs = finiteSecondsToTimerSafeMilliseconds(timeoutSeconds) ?? 0;
       const replyTimeoutMs = timeoutSeconds === 0 ? 30_000 : timeoutMs;
       const idempotencyKey = opts?.idempotencyKey ?? crypto.randomUUID();
