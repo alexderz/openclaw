@@ -10,13 +10,23 @@ import {
 } from "../../sessions/session-promotion-state.js";
 import { requestSessionPromotion } from "../../sessions/session-promotion.js";
 import { notifySessionWorkSettled } from "../../sessions/session-work-settlement.js";
+import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
+import { GitHubPublicationRequesterUnavailableError } from "../github-publication-failure.js";
+import { GitHubPublicationRecoveryPendingError } from "../github-publication-git-index.js";
 import { captureGitHubPublicationRequester } from "../github-publication-requester.js";
 import { prepareGatewaySessionAccessAuthority } from "../session-access-authority.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
+import { isControlUiAdminClient } from "../session-promotion-client.js";
 import {
   PromotionRequesterDeniedError,
   prepareFreshHumanPromotionRequester,
   readPromotionDeviceBinding,
 } from "../session-promotion-human.js";
+import {
+  createSessionPromotionOwnerCheck,
+  SessionPromotionLineageUnavailableError,
+  SessionPromotionOwnershipDeniedError,
+} from "../session-promotion-owner-check.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -41,6 +51,44 @@ export function toSessionPromotionResult(promotion: SessionPromotion) {
   };
 }
 
+/**
+ * Server-log reason for a refused request. The client keeps one non-disclosing denial; this
+ * code names the refusing owner without profile ids, grants or session contents.
+ */
+export function sessionPromotionRefusalReason(error: unknown): string {
+  if (error instanceof PromotionRequesterDeniedError) {
+    return error.reason;
+  }
+  if (error instanceof SessionPromotionUnsupportedError) {
+    return `unsupported-target:${error.reason}`;
+  }
+  if (error instanceof SessionPromotionConflictError) {
+    return "conflict";
+  }
+  if (
+    error instanceof SessionPromotionOwnershipDeniedError ||
+    error instanceof SessionPromotionLineageUnavailableError
+  ) {
+    return error.reason;
+  }
+  if (error instanceof SessionMutationAuthorizationChangedError) {
+    return error.error.retryable ? "session-access-refreshing" : "session-access-denied";
+  }
+  if (
+    error instanceof GitHubPublicationRequesterUnavailableError ||
+    error instanceof GitHubPublicationRecoveryPendingError
+  ) {
+    return "requester-capture-failed";
+  }
+  const name =
+    error instanceof Error
+      ? error.name !== "Error"
+        ? error.name
+        : error.constructor.name
+      : typeof error;
+  return `unexpected:${name.replace(/[^A-Za-z0-9_]/g, "") || "unknown"}`;
+}
+
 export const sessionPromotionHandlers: GatewayRequestHandlers = {
   "sessions.promote": async (options) => {
     const { params, respond, context } = options;
@@ -55,14 +103,20 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
       const cfg = context.getRuntimeConfig();
       const owner = resolveRequestedSessionAgentId(cfg, params.key);
       if (!owner.ok) {
-        throw new PromotionRequesterDeniedError();
+        throw new PromotionRequesterDeniedError("agent-unresolved");
+      }
+      // The key alone names the privacy boundary; this discloses nothing about any row.
+      if (isIncognitoSessionKey(params.key)) {
+        throw new SessionPromotionUnsupportedError("incognito");
       }
       const access = await prepareGatewaySessionAccessAuthority({
         policy: { mode: "write" },
         requestParams: { sessionKey: params.key },
         client: options.client,
         context,
-        ownSessionOnly: true,
+        // Ownership is the promotion rule below (admin, own session or owned lineage), enforced
+        // by the durable requester on every re-check; sharing, role and agent access stay here.
+        ownSessionOnly: false,
         assertInvocationCurrent: assertHumanCurrent,
         hasCurrentClientAuthority: () => {
           assertHumanCurrent();
@@ -73,7 +127,7 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
       assertHumanCurrent();
       access.assertCurrent();
       // This admission captures the existing immutable role/grant basis and prepares
-      // current identity, creator ownership, agent access and session sharing facts.
+      // current identity, promotion ownership, agent access and session sharing facts.
       const admitted = await captureGitHubPublicationRequester(
         {
           ...options,
@@ -85,6 +139,9 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
         {
           sessionKey: params.key,
           agentId: owner.agentId,
+          authorizeOwner: createSessionPromotionOwnerCheck(context, params.key, () =>
+            isControlUiAdminClient(options.client),
+          ),
         },
       );
       release = admitted.release;
@@ -101,7 +158,7 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
       const device =
         action === "request"
           ? await readPromotionDeviceBinding(human.deviceId).catch(() => {
-              throw new PromotionRequesterDeniedError();
+              throw new PromotionRequesterDeniedError("device-pairing-unreadable");
             })
           : undefined;
       assertCurrent();
@@ -123,6 +180,13 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
         notifySessionWorkSettled([promotion.target.key]);
       }
     } catch (error) {
+      const reason = sessionPromotionRefusalReason(error);
+      const message = `sessions.promote refused reason=${reason}`;
+      if (reason.startsWith("unexpected:")) {
+        context.logGateway?.warn?.(message);
+      } else {
+        context.logGateway?.info?.(message);
+      }
       if (error instanceof SessionPromotionConflictError) {
         respond(
           false,
@@ -138,8 +202,16 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
           errorShape(
             ErrorCodes.INVALID_REQUEST,
             "Session promotion is not available for this target.",
+            // Raised only after authorization, or from the key alone: safe to name.
+            { details: { code: "SESSION_PROMOTION_UNSUPPORTED", reason: error.reason } },
           ),
         );
+      } else if (
+        error instanceof SessionMutationAuthorizationChangedError &&
+        error.error.retryable
+      ) {
+        // Transient access preparation: not a decision, so the caller must not see a denial.
+        respond(false, undefined, error.error);
       } else {
         // Do not disclose whether an inaccessible session, owner or grant exists.
         respond(

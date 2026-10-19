@@ -1,7 +1,7 @@
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
   decodeSessionPromotion,
-  isDurableDashboardPromotionTarget,
+  resolveSessionPromotionTargetSupport,
 } from "../sessions/session-promotion-state.js";
 
 export type SessionPromotionProjection = {
@@ -35,7 +35,10 @@ export type SessionPromotionProjection = {
 export function projectSessionPromotion(params: {
   key: string;
   entry: Omit<SessionEntry, "sessionPromotion"> & { sessionPromotion?: unknown };
+  /** The shared promotion authority predicate for THIS viewer (see session-row-presentation). */
   authorize: () => boolean;
+  /** Viewer is a live, host-attested Control UI admin: widens the supported key families. */
+  admin?: boolean;
   /** The viewing profile; a promotion is ordinary only for the human who requested it. */
   viewerProfileId?: string;
   now: number;
@@ -53,9 +56,12 @@ export function projectSessionPromotion(params: {
   );
   const malformed = entry.sessionPromotion !== undefined && (!receipt || !targetMatches);
   const promoted = receipt?.state === "activated" && targetMatches;
-  const eligible =
-    isDurableDashboardPromotionTarget(key, { ...entry, sessionPromotion: receipt }) &&
-    Boolean(entry.sessionId && entry.lifecycleRevision);
+  const unsupported = resolveSessionPromotionTargetSupport(
+    key,
+    { ...entry, sessionPromotion: receipt },
+    { admin: params.admin === true },
+  );
+  const eligible = !unsupported && Boolean(entry.sessionId && entry.lifecycleRevision);
   let authorized = false;
   try {
     authorized = params.authorize();
@@ -69,7 +75,7 @@ export function projectSessionPromotion(params: {
       : (receipt?.state ?? "none");
   const disabledReasons: string[] = [];
   if (!eligible) {
-    disabledReasons.push("unsupported-target");
+    disabledReasons.push(`unsupported-target:${unsupported ?? "no-revision"}`);
   }
   if (!authorized) {
     disabledReasons.push("current-human-authorization-required");

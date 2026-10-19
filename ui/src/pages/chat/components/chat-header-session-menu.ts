@@ -466,6 +466,9 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     if (this.session.promotionUncertain) {
       return t("chat.sessionHeader.promotion.uncertain");
     }
+    if (this.session.promotionDenied) {
+      return t("chat.sessionHeader.promotion.notAllowed");
+    }
     if (!status || status.effectiveClass === "unknown") {
       return t("chat.sessionHeader.capabilityUnknown");
     }

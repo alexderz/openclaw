@@ -1,3 +1,4 @@
+import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import { SESSION_ROW_DETAIL_FIELDS } from "../../packages/gateway-protocol/src/session-row-fields.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
@@ -13,6 +14,8 @@ import {
   projectSessionParticipant,
   projectSessionProfileInvolvement,
 } from "./session-identity-projection.js";
+import { isControlUiAdminClient, isControlUiHumanClient } from "./session-promotion-client.js";
+import { resolveSessionPromotionOwnership } from "./session-promotion-ownership.js";
 import { projectSessionPromotion } from "./session-promotion-projection.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
@@ -22,7 +25,6 @@ import {
   authorizeIncognitoSessionTarget,
   authorizeSessionAgentRun,
   resolveSessionVisibility,
-  authorizeOwnSessionMutation,
   type SessionSharingTarget,
 } from "./session-sharing-policy.js";
 import { prepareProjectedSessionSharing } from "./session-sharing.js";
@@ -154,6 +156,7 @@ export function prepareProjectedSessionPresentation(
   const profileId = profile
     ? projectSessionParticipant({ type: "profile", id: profile.id }, profiles).identity.id
     : undefined;
+  const promotionAdmin = isControlUiAdminClient(client ?? null);
   const viewer = (value: SessionSharingTarget) => ({
     visibility: resolveSessionVisibility(value.entry),
     ...(profileId && !value.entry.incognito && !isIncognitoSessionKey(value.canonicalKey)
@@ -168,8 +171,11 @@ export function prepareProjectedSessionPresentation(
       entry: value.entry,
       now,
       viewerProfileId: profile?.id,
+      admin: promotionAdmin,
+      // Mirrors sessions.promote: live Control UI human, method and role scopes, sharing and
+      // agent access, then the one shared promotion ownership rule (admin, own or lineage).
       authorize: () => {
-        if (!profile || !client?.connect) {
+        if (!profile || !client?.connect || !isControlUiHumanClient(client)) {
           return false;
         }
         const request = {
@@ -187,6 +193,8 @@ export function prepareProjectedSessionPresentation(
         }
         if (
           policyConfig.gateway?.roles &&
+          // Like session access authority, the gateway owner carries no assigned role policy.
+          profile.id !== GATEWAY_OWNER_PROFILE_ID &&
           (!sharing.policy ||
             !authorizeOperatorScopesForMethod("sessions.promote", sharing.policy.scopes, request)
               .allowed)
@@ -194,23 +202,23 @@ export function prepareProjectedSessionPresentation(
           return false;
         }
         if (
-          scope.sessionScope === "operator.sessions.write" &&
-          authorizeOwnSessionMutation({
-            client,
-            expectedProfileId: profile.id,
-            target: value,
-            isCreator: sharing.isCreator,
-          })
-        ) {
-          return false;
-        }
-        return (
-          !sharing.authorizeTarget(value) &&
-          !authorizeSessionAgentRun(
+          sharing.authorizeTarget(value) ||
+          authorizeSessionAgentRun(
             { cfg: policyConfig, client, target: value },
             { policy: sharing.policy },
           )
-        );
+        ) {
+          return false;
+        }
+        return resolveSessionPromotionOwnership({
+          admin: promotionAdmin,
+          cfg: policyConfig,
+          profileId: profile.id,
+          scopes: client.connect.scopes ?? [],
+          isCreator: sharing.isCreator,
+          target: { canonicalKey: value.canonicalKey, entry: value.entry },
+          readEntry: (query) => target(query)?.entry,
+        }).ok;
       },
     }),
     sendDisabledReason:

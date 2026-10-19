@@ -13,12 +13,14 @@ import {
 } from "../github-publication-requester.js";
 import { GatewayOperatorAccessUnavailableError } from "../operator-access-policy.js";
 import { prepareGatewaySessionAccessAuthority } from "../session-access-authority.js";
+import { isControlUiAdminClient } from "../session-promotion-client.js";
 import {
   prepareFreshHumanPromotionRequester,
   promotionDeviceGeneration,
   PromotionRequesterDeniedError,
   readPromotionPairedDevice,
 } from "../session-promotion-human.js";
+import { createSessionPromotionOwnerCheck } from "../session-promotion-owner-check.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { probeSessionEntryObligations } from "./sessions-promotion-entry-obligations.js";
 import { probeSessionPromotionQuiescence } from "./sessions-promotion-quiescence.js";
@@ -140,7 +142,13 @@ async function consumePendingPromotion(params: {
       return "revoked";
     }
   }
-  const sessionRef = { sessionKey: params.sessionKey, agentId: owner.agentId };
+  // The same ownership rule the request and the viewer projection use. The restored original
+  // basis has no connection: its admin scopes, re-proved against the current role, decide.
+  const sessionRef = {
+    sessionKey: params.sessionKey,
+    agentId: owner.agentId,
+    authorizeOwner: createSessionPromotionOwnerCheck(context, params.sessionKey),
+  };
   const releases: Array<() => void> = [];
   try {
     let access: Awaited<ReturnType<typeof prepareGatewaySessionAccessAuthority>> | undefined;
@@ -153,7 +161,8 @@ async function consumePendingPromotion(params: {
         requestParams: { sessionKey: params.sessionKey },
         client: humanOptions.client,
         context,
-        ownSessionOnly: true,
+        // Ownership is the promotion rule the requester policies below enforce.
+        ownSessionOnly: false,
         assertInvocationCurrent: assertHuman,
         hasCurrentClientAuthority: () => {
           assertHuman();
@@ -172,7 +181,13 @@ async function consumePendingPromotion(params: {
             return true;
           },
         } as Parameters<typeof captureGitHubPublicationRequester>[0],
-        sessionRef,
+        {
+          ...sessionRef,
+          // A live admission also needs the live, host-attested Control UI admin flag.
+          authorizeOwner: createSessionPromotionOwnerCheck(context, params.sessionKey, () =>
+            isControlUiAdminClient(humanOptions.client),
+          ),
+        },
       );
       releases.push(fresh.release);
     }

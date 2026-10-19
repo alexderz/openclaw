@@ -1,4 +1,5 @@
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
@@ -29,7 +30,21 @@ import {
 } from "./session-sharing-policy.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 
-type PublicationSession = { sessionKey: string; agentId: string };
+type PublicationSession = {
+  sessionKey: string;
+  agentId: string;
+  /**
+   * Replaces the publication creator restriction for every scope when a caller owns a stricter
+   * ownership rule (session promotion). Throws to deny; it never relaxes sharing or role checks.
+   */
+  authorizeOwner?: (owner: {
+    config: OpenClawConfig;
+    profileId: string;
+    aliases: ReadonlySet<string>;
+    scopes: readonly string[];
+    entry: SessionEntry;
+  }) => void;
+};
 type PreparedProfileIdentity = Awaited<ReturnType<typeof prepareUserProfileIdentity>>;
 type PreparedPublicationSession = Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
 
@@ -48,11 +63,11 @@ function assertPublicationIncognitoAccess(
 }
 
 async function preparePublicationSession(
-  session: PublicationSession,
+  { sessionKey, agentId }: PublicationSession,
   config: OpenClawConfig,
 ): Promise<PreparedPublicationSession> {
   try {
-    return await prepareSessionMutationFacts({ cfg: config, ...session });
+    return await prepareSessionMutationFacts({ cfg: config, sessionKey, agentId });
   } catch (error) {
     throw new GitHubPublicationRecoveryPendingError(
       "GitHub publication session authorization is unavailable; retry after session storage is ready.",
@@ -151,8 +166,16 @@ function prepareRequesterPolicy(
           { cause: error },
         );
       }
-      // Publication's creator restriction must preserve independently admitted capabilities.
-      if (
+      if (snapshot.actor.kind === "operator" && session.authorizeOwner) {
+        session.authorizeOwner({
+          config,
+          profileId: snapshot.actor.profileId,
+          aliases: current.aliases,
+          scopes: snapshot.scopes,
+          entry: facts.target.entry,
+        });
+      } else if (
+        // Publication's creator restriction must preserve independently admitted capabilities.
         snapshot.actor.kind === "operator" &&
         !roleScopesAllow({
           role: "operator",
@@ -167,10 +190,14 @@ function prepareRequesterPolicy(
         throw new GitHubPublicationRequesterUnavailableError();
       }
       if (
-        authorizePreparedSessionMutation({ cfg: config, client, ...session }, facts, {
-          policy: role,
-          aliases: current.aliases,
-        })
+        authorizePreparedSessionMutation(
+          { cfg: config, client, sessionKey: session.sessionKey, agentId: session.agentId },
+          facts,
+          {
+            policy: role,
+            aliases: current.aliases,
+          },
+        )
       ) {
         throw new GitHubPublicationRequesterUnavailableError();
       }

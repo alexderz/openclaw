@@ -3106,6 +3106,8 @@ export const en: TranslationMap & {
         pending: "Promotion pending",
         denied: "Promotion denied · limited",
         uncertain: "Promotion result unknown · check status",
+        notAllowed: "Promotion isn't allowed for this session",
+        notAllowedReason: "Promotion isn't allowed for this session: {reason}",
         action: "Promote to ordinary session…",
         cancel: "Cancel pending promotion…",
         check: "Check promotion status",

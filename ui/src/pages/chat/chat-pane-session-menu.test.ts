@@ -3,6 +3,7 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { loadSettings } from "../../app/settings.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
@@ -892,6 +893,103 @@ describe("promotion operation state is bound to connection, key and session iden
     await menu.updateComplete;
     expect(menu.session.promotionUncertain).toBeFalsy();
     expect(menu.session.promotionMessage).toBeUndefined();
+    container.remove();
+  });
+});
+
+describe("a definite Gateway refusal is a definite denial, not an unknown result", () => {
+  const refusing = (error: ConstructorParameters<typeof GatewayRequestError>[0]) =>
+    vi.fn(async () => {
+      throw new GatewayRequestError(error);
+    });
+
+  async function menuAfter(kind: "promote-session", fixture: ReturnType<typeof promotionFixture>) {
+    await fixture.pane.handleHeaderSessionAction({ kind }, fixture.session);
+    const container = document.body.appendChild(document.createElement("div"));
+    render(
+      fixture.pane.renderPaneHeader(
+        createPaneHeaderWorkspaceFixture(fixture.state),
+        fixture.session,
+        false,
+        undefined,
+        false,
+        null,
+      ),
+      container,
+    );
+    const menu = container.querySelector("openclaw-chat-header-session-menu")!;
+    await menu.updateComplete;
+    return { menu, container };
+  }
+
+  it("shows that promotion isn't allowed for a FORBIDDEN reply and refreshes the projection", async () => {
+    const fixture = promotionFixture(
+      refusing({ code: "FORBIDDEN", message: "Session promotion is not available." }),
+    );
+    const { menu, container } = await menuAfter("promote-session", fixture);
+    expect(menu.session.promotionUncertain).toBeFalsy();
+    expect(menu.session.promotionDenied).toBe(true);
+    const status = menu.querySelector(".session-capability-status")?.textContent ?? "";
+    expect(status).toContain(t("chat.sessionHeader.promotion.notAllowed"));
+    expect(status).not.toContain(t("chat.sessionHeader.promotion.uncertain"));
+    expect(menu.session.promotionMessage).toBe(t("chat.sessionHeader.promotion.notAllowed"));
+    expect(fixture.refresh).toHaveBeenCalled();
+    // Nothing is in doubt, so a later deliberate attempt is not blocked behind a status check.
+    await fixture.pane.handleHeaderSessionAction({ kind: "promote-session" }, fixture.session);
+    expect(fixture.request).toHaveBeenCalledTimes(2);
+    container.remove();
+  });
+
+  it("names the Gateway's unsupported-target reason for an INVALID_REQUEST reply", async () => {
+    const fixture = promotionFixture(
+      refusing({
+        code: "INVALID_REQUEST",
+        message: "Session promotion is not available for this target.",
+        details: { code: "SESSION_PROMOTION_UNSUPPORTED", reason: "incognito" },
+      }),
+    );
+    const { menu, container } = await menuAfter("promote-session", fixture);
+    expect(menu.session.promotionUncertain).toBeFalsy();
+    expect(menu.session.promotionDenied).toBe(true);
+    expect(menu.session.promotionMessage).toBe(
+      t("chat.sessionHeader.promotion.notAllowedReason", { reason: "incognito" }),
+    );
+    container.remove();
+  });
+
+  it("includes a reason the refreshed projection reports", async () => {
+    const fixture = promotionFixture(
+      refusing({ code: "FORBIDDEN", message: "Session promotion is not available." }),
+    );
+    fixture.refresh.mockImplementation(async () => {
+      const row = fixture.result.sessions[0]!;
+      row.promotion = {
+        ...row.promotion!,
+        canPromote: false,
+        disabledReasons: ["current-human-authorization-required"],
+      };
+    });
+    const { menu, container } = await menuAfter("promote-session", fixture);
+    expect(menu.session.promotionMessage).toBe(
+      t("chat.sessionHeader.promotion.notAllowedReason", {
+        reason: "current-human-authorization-required",
+      }),
+    );
+    container.remove();
+  });
+
+  it("keeps a retryable Gateway outage unknown and requires a status check", async () => {
+    const fixture = promotionFixture(
+      refusing({ code: "UNAVAILABLE", message: "Gateway restarting", retryable: true }),
+    );
+    const { menu, container } = await menuAfter("promote-session", fixture);
+    expect(menu.session.promotionUncertain).toBe(true);
+    expect(menu.session.promotionDenied).toBeFalsy();
+    expect(menu.querySelector(".session-capability-status")?.textContent ?? "").toContain(
+      t("chat.sessionHeader.promotion.uncertain"),
+    );
+    await fixture.pane.handleHeaderSessionAction({ kind: "promote-session" }, fixture.session);
+    expect(fixture.request).toHaveBeenCalledTimes(1);
     container.remove();
   });
 });

@@ -1,3 +1,4 @@
+import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import type { SidebarSessionMutationScope } from "../../components/app-sidebar-session-types.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
@@ -9,7 +10,13 @@ import {
 } from "../../lib/sessions/session-promotion-gate.ts";
 import { ChatPaneContext } from "./chat-pane-context.ts";
 
-export type PromotionUiState = { busy: boolean; uncertain: boolean; message?: string };
+export type PromotionUiState = {
+  busy: boolean;
+  uncertain: boolean;
+  /** The Gateway answered with a definite refusal; distinct from an unknown outcome. */
+  denied?: boolean;
+  message?: string;
+};
 export type PromotionKind = "promote-session" | "cancel-promotion" | "check-promotion";
 
 /**
@@ -52,6 +59,30 @@ type SessionPromotionHost = {
   title(row: GatewaySessionRow): string;
   requestUpdate(): void;
 };
+
+/**
+ * A Gateway reply that decided the request: a denial (FORBIDDEN, or INVALID_REQUEST for an
+ * unsupported target) or a changed target. Transport loss, timeouts and retryable outages are
+ * not decisions and stay "unknown".
+ */
+function definiteRefusal(
+  error: unknown,
+): { kind: "denied"; reason?: string } | { kind: "changed" } | undefined {
+  if (!(error instanceof GatewayRequestError) || error.retryable) {
+    return undefined;
+  }
+  const details = error.details as { code?: unknown; reason?: unknown } | undefined;
+  if (error.gatewayCode === "INVALID_REQUEST" && details?.code === "SESSION_PROMOTION_CONFLICT") {
+    return { kind: "changed" };
+  }
+  if (error.gatewayCode !== "FORBIDDEN" && error.gatewayCode !== "INVALID_REQUEST") {
+    return undefined;
+  }
+  return {
+    kind: "denied",
+    ...(typeof details?.reason === "string" ? { reason: details.reason } : {}),
+  };
+}
 
 /** Request, cancel and read-only status check for one session promotion handoff. */
 async function runSessionPromotion(
@@ -101,6 +132,7 @@ async function runSessionPromotion(
   host.outcomes.write(host.gateway, row, ui);
   host.requestUpdate();
   let submitted = false;
+  let decided = false;
   try {
     if (kind !== "check-promotion") {
       const confirmed = await showConfirmDialog({
@@ -165,6 +197,32 @@ async function runSessionPromotion(
     ui.uncertain = false;
     ui.message = t("chat.sessionHeader.promotion.checked");
   } catch (error) {
+    const refusal = submitted ? definiteRefusal(error) : undefined;
+    if (refusal) {
+      decided = true;
+      ui.uncertain = false;
+      ui.denied = refusal.kind === "denied";
+      // Show the Gateway's current projection; failing to refresh casts no doubt on the reply.
+      if (isCurrent()) {
+        await scope.sessions.refresh({ force: true }).catch(() => undefined);
+      }
+      const reasons = [
+        ...new Set([
+          ...(refusal.kind === "denied" && refusal.reason ? [refusal.reason] : []),
+          ...(current()?.promotion?.disabledReasons ?? []),
+        ]),
+      ];
+      ui.message =
+        refusal.kind === "changed"
+          ? t("chat.sessionHeader.promotion.stale")
+          : reasons.length
+            ? t("chat.sessionHeader.promotion.notAllowedReason", { reason: reasons.join("; ") })
+            : t("chat.sessionHeader.promotion.notAllowed");
+      if (isCurrent()) {
+        host.publishError(ui.message, owner);
+      }
+      return;
+    }
     ui.uncertain = submitted || kind === "check-promotion" || ui.uncertain;
     ui.message = ui.uncertain ? t("chat.sessionHeader.promotion.uncertain") : formatUiError(error);
     if (isCurrent()) {
@@ -172,7 +230,7 @@ async function runSessionPromotion(
     }
   } finally {
     // Retain uncertain state even when the pane changes during the request.
-    if (submitted && !isCurrent()) {
+    if (submitted && !decided && !isCurrent()) {
       ui.uncertain = true;
     }
     ui.busy = false;
