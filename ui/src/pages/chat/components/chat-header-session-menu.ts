@@ -75,6 +75,26 @@ const COMPACT_MENU_VIEW_BY_VALUE: Record<string, CompactMenuView> = {
   "compact:open-view": "view",
 };
 
+/**
+ * One glyph per capability state (peacock status vocabulary). The glyph is decoration only: the
+ * full words are the badge's accessible name, tooltip and live announcement, and open the details.
+ */
+const CAPABILITY_GLYPHS = {
+  delegated: "🔒",
+  ordinary: "👤",
+  pending: "⏳",
+  unknown: "⚪",
+  denied: "🔴",
+} as const;
+
+let capabilityDetailsIds = 0;
+
+/** Light DOM: each header (split panes included) needs its own aria-controls target. */
+function nextCapabilityDetailsId() {
+  capabilityDetailsIds += 1;
+  return `session-capability-details-${capabilityDetailsIds}`;
+}
+
 class ChatHeaderSessionMenu extends OpenClawLightDomElement {
   @property({ attribute: false }) session: SessionMenuData = EMPTY_SESSION_MENU_DATA;
   @property({ attribute: false }) worktreePath: string | null = null;
@@ -116,6 +136,8 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
   @property({ attribute: false }) onSettingsChange: (patch: Partial<UiSettings>) => void = () => {};
   @property({ attribute: false }) onAction: (action: HeaderMenuAction) => void = () => {};
   @state() private compactView: CompactMenuView = "root";
+  @state() private capabilityDetailsOpen = false;
+  private readonly capabilityDetailsId = nextCapabilityDetailsId();
   private readonly managementActions = new SessionMenuActions(
     this,
     () => ({
@@ -452,42 +474,58 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     this.onOpen();
   };
 
-  private capabilityLabel(): string {
+  private capabilityBadge(): { glyph: string; label: string } {
+    const badge = (glyph: keyof typeof CAPABILITY_GLYPHS, key: string) => ({
+      glyph: CAPABILITY_GLYPHS[glyph],
+      label: t(key),
+    });
     if (this.session.promotionBusy) {
-      return t("chat.sessionHeader.promotion.busy");
+      return badge("pending", "chat.sessionHeader.promotion.busy");
     }
     const status = this.session.capabilityStatus;
     if (this.session.promotionUncertain) {
-      return t("chat.sessionHeader.promotion.uncertain");
+      return badge("unknown", "chat.sessionHeader.promotion.uncertain");
     }
     if (this.session.promotionDenied) {
-      return t("chat.sessionHeader.promotion.notAllowed");
+      return badge("denied", "chat.sessionHeader.promotion.notAllowed");
     }
     if (!status || status.effectiveClass === "unknown") {
-      return t("chat.sessionHeader.capabilityUnknown");
+      return badge("unknown", "chat.sessionHeader.capabilityUnknown");
     }
     if (status.promotionState === "pending") {
-      return t("chat.sessionHeader.promotion.pending");
+      return badge("pending", "chat.sessionHeader.promotion.pending");
     }
     if (status.promotionState === "blocked" || status.promotionState === "revoked") {
-      return t("chat.sessionHeader.promotion.denied");
+      return badge("denied", "chat.sessionHeader.promotion.denied");
     }
     if (status.effectiveClass === "delegated") {
-      return t(
+      return badge(
+        "delegated",
         status.classScope === "requesting-human-direct-turns"
           ? "chat.sessionHeader.promotion.promotedForOther"
           : "chat.sessionHeader.capabilityDelegated",
       );
     }
     if (status.classScope === "requesting-human-direct-turns") {
-      return t("chat.sessionHeader.promotion.ordinaryDirectTurns");
+      return badge("ordinary", "chat.sessionHeader.promotion.ordinaryDirectTurns");
     }
-    return t(
+    return badge(
+      "ordinary",
       status.effectiveRestrictions.length || status.capabilities.sessionsSend !== "allowed"
         ? "chat.sessionHeader.promotion.ordinaryLimited"
         : "chat.sessionHeader.promotion.ordinary",
     );
   }
+
+  private readonly closeCapabilityDetailsOnEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || !this.capabilityDetailsOpen) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.capabilityDetailsOpen = false;
+    this.querySelector<HTMLButtonElement>(".session-capability-details-toggle")?.focus();
+  };
 
   private renderPromotionActions() {
     const status = this.session.capabilityStatus;
@@ -534,12 +572,42 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
 
   override render() {
     const menuLabel = t("chat.sidebar.sessionMenu", { session: this.session.label });
+    const capability = this.capabilityBadge();
+    const detailsLabel = t("chat.sessionHeader.promotion.details");
     return html`
-      <span class="session-capability-status" role="status" aria-live="polite" aria-atomic="true"
-        >${this.capabilityLabel()}</span
+      <span
+        class="session-capability-status"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-label=${capability.label}
+        title=${capability.label}
+        ><span class="session-capability-status__glyph" aria-hidden="true">${capability.glyph}</span
+        ><span class="sr-only">${capability.label}</span></span
       >
-      <details class="session-capability-details">
-        <summary>${t("chat.sessionHeader.promotion.details")}</summary>
+      <button
+        class="btn btn--ghost btn--icon chat-icon-btn session-capability-details-toggle"
+        type="button"
+        aria-label=${detailsLabel}
+        title=${detailsLabel}
+        aria-expanded=${String(this.capabilityDetailsOpen)}
+        aria-controls=${this.capabilityDetailsId}
+        @click=${() => {
+          this.capabilityDetailsOpen = !this.capabilityDetailsOpen;
+        }}
+        @keydown=${this.closeCapabilityDetailsOnEscape}
+      >
+        ${icons.info}
+      </button>
+      <div
+        id=${this.capabilityDetailsId}
+        class="session-capability-details"
+        role="region"
+        aria-label=${detailsLabel}
+        ?hidden=${!this.capabilityDetailsOpen}
+        @keydown=${this.closeCapabilityDetailsOnEscape}
+      >
+        <div class="session-capability-details__class">${capability.glyph} ${capability.label}</div>
         <div>${t("chat.sessionHeader.promotion.explanation")}</div>
         <div>${this.session.promotionMessage ?? ""}</div>
         <div>
@@ -555,7 +623,7 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
           ${t("chat.sessionHeader.promotion.send", { status: this.session.capabilityStatus?.capabilities.sessionsSend ?? "unknown" })}
         </div>
         <div>${this.session.capabilityStatus?.activationBoundary ?? ""}</div>
-      </details>
+      </div>
       <wa-dropdown
         class=${`session-menu chat-header-session-menu${this.compact ? " session-menu--compact chat-header-session-menu--compact" : ""}${this.compact && this.compactView === "sharing" ? " chat-header-session-menu--compact-sharing" : ""}`}
         placement="bottom-end"
