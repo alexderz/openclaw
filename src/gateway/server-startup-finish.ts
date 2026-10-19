@@ -207,11 +207,8 @@ export async function finishGatewayStartup(params: {
   kernel.setDispatchReady(true);
   startupTrace.mark("http.bound");
   if (!minimalTestGateway && !opts.updateCanary) {
-    const { startOpenClawDatabaseIntegrityVerifier } =
-      await import("../state/openclaw-database-verify.js");
-    registerGatewayLifetimeSidecars(startOpenClawDatabaseIntegrityVerifier({ env: process.env }));
-    const { startSessionPromotionSettlement } = await import("./session-promotion-settlement.js");
-    registerGatewayLifetimeSidecars(startSessionPromotionSettlement(gatewayRequestContext, log));
+    const { startGatewayStoreSidecars } = await import("./server-startup-store-sidecars.js");
+    await startGatewayStoreSidecars(registerGatewayLifetimeSidecars, gatewayRequestContext, log);
   }
   activateAgentDatabases();
   // Health can answer as soon as the listener binds. Discovery, remote-skill

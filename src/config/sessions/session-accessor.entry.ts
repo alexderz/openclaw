@@ -665,11 +665,8 @@ export async function updateResolvedSessionEntry<T>(
     updateResult = await update(entry, context);
     return entry;
   };
-  const patchOptions = {
-    replaceEntry: true,
-    skipMaintenance: true,
-    shouldCommit: options?.shouldCommit,
-  };
+  const shouldCommit = options?.shouldCommit;
+  const patchOptions = { replaceEntry: true, skipMaintenance: true, shouldCommit };
   const updated =
     captured && source
       ? await patchSessionEntryTarget(
