@@ -234,12 +234,10 @@ export function registerCliReplyCompletionTests({
         inputProvenance: { kind: "inter_session", sourceTool: "sessions_spawn" },
       });
 
-      try {
-        await run(context);
-        throw new Error("expected empty response");
-      } catch (error) {
-        expect(error).toMatchObject({ name: "FailoverError", reason: "empty_response" });
-      }
+      await expect(run(context)).rejects.toMatchObject({
+        name: "FailoverError",
+        reason: "empty_response",
+      });
       expect(supervisorSpawnMock).toHaveBeenCalledOnce();
     },
   );
@@ -268,12 +266,10 @@ export function registerCliReplyCompletionTests({
         terminalReplyExpectation: "required",
         inputProvenance: { kind: "inter_session", sourceTool: "subagent_settle" },
       });
-      try {
-        await run(context);
-        throw new Error("expected empty response");
-      } catch (error) {
-        expect(error).toMatchObject({ name: "FailoverError", reason: "empty_response" });
-      }
+      await expect(run(context)).rejects.toMatchObject({
+        name: "FailoverError",
+        reason: "empty_response",
+      });
       expect(supervisorSpawnMock).toHaveBeenCalledOnce();
     },
   );

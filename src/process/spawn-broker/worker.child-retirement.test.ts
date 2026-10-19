@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
@@ -8,6 +9,9 @@ import { describe, expect, it } from "vitest";
 const source = fs.readFileSync(new URL("./worker.ts", import.meta.url), "utf8");
 const start = source.indexOf("function waitForBrokerChildCompletion(");
 const end = source.indexOf("async function launch(", start);
+// A renamed helper or neighbour must fail loudly, not slice the wrong source.
+assert.ok(start >= 0, "waitForBrokerChildCompletion not found in worker.ts");
+assert.ok(end >= 0, "launch() not found after waitForBrokerChildCompletion in worker.ts");
 // 10.5 ships the native TypeScript 7 compiler, which has no JS transpile API.
 const code = stripTypeScriptTypes(source.slice(start, end));
 const waitForCompletion = new Function(code + "; return waitForBrokerChildCompletion;")() as (

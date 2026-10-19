@@ -35,6 +35,7 @@ import type {
   EmbeddedAgentQueueMessageOptions,
   EmbeddedAgentQueueMessageOutcome,
 } from "../../embedded-agent-runner/runs.js";
+import { FailoverError } from "../../failover-error.js";
 import type { AgentInternalEvent } from "../../internal-events.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
@@ -1061,6 +1062,41 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         content: childResult,
         idempotencyKey: "announce-dm-fallback-empty:text-direct",
       }),
+    );
+  });
+
+  it("hands a claude-cli NO_REPLY completion wake to the text fallback without replaying it", async () => {
+    vi.stubEnv("OPENCLAW_TEST_FAST", "1");
+    const emptyResponse = new FailoverError("CLI backend returned an empty response.", {
+      reason: "empty_response",
+      provider: "claude-cli",
+      model: "claude-opus-4-7",
+      attempts: [
+        {
+          provider: "claude-cli",
+          model: "claude-opus-4-7",
+          reason: "empty_response",
+          error: "CLI backend returned an empty response.",
+        },
+      ],
+    });
+    const callGateway = createGatewayMock(emptyResponse);
+    const sendMessage = createSendMessageMock();
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      internalEvents: taskCompletionEvents({
+        childSessionId: "child-session-id",
+        result: "child completion output",
+      }),
+    });
+    expectDeliveryPath(result, "direct");
+    const agentCalls = vi
+      .mocked(callGateway)
+      .mock.calls.filter(([opts]) => (opts as { method?: string }).method === "agent");
+    expect(agentCalls).toHaveLength(1);
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "child completion output", to: "dm:U123" }),
     );
   });
 

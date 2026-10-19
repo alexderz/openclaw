@@ -100,10 +100,22 @@ function isPermanentNonWriterAnnounceError(error: unknown): boolean {
   );
 }
 
+function isEmptyResponseAnnounceError(candidate: unknown): boolean {
+  return (
+    asOptionalObjectRecord(candidate)?.reason === "empty_response" ||
+    /CLI backend returned an empty response/i.test(summarizeDeliveryError(candidate))
+  );
+}
+
 function isTransientAnnounceDeliveryError(error: unknown): boolean {
   // Any committed platform send makes another attempt a possible duplicate;
   // permanent owner rejections also override transient-looking wrapped causes.
   if (hasAnnounceSendEvidence(error)) {
+    return false;
+  }
+  // An empty or NO_REPLY CLI answer is an incomplete announce, not a transport fault:
+  // replaying the turn cannot change it, and the text fallback owns delivery.
+  if (hasAnnounceErrorMatch(error, isEmptyResponseAnnounceError)) {
     return false;
   }
 
