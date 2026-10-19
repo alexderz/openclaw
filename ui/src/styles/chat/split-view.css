@@ -634,47 +634,72 @@
   white-space: normal;
 }
 
-/* Persistent capability status remains readable beside the existing More menu. */
+/* Persistent capability status: one glyph plus an icon-only details button, inline with the
+   other header actions. No wrapping: a second line overlapped the workspace label, avatars and
+   drawer toggle on phones. The words live in the accessible name, tooltip and details panel. */
 openclaw-chat-header-session-menu {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 0;
   min-width: 0;
-  max-width: min(100%, calc(100dvw - 80px));
 }
 .session-capability-status {
-  font-size: var(--font-size-xs, 12px);
-  overflow-wrap: anywhere;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  font-size: 14px;
+  line-height: 1;
+}
+.chat-pane__actions .chat-icon-btn.session-capability-details-toggle {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  flex: 0 0 auto;
   color: var(--text-muted);
 }
-.session-capability-details {
+.session-capability-details-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* An overlay under the header, so opening it never moves the header row. It anchors to the
+   header row (not the full-height pane region), so it fits the pane width at any size. */
+.chat-pane__header:has(.session-capability-details) {
   position: relative;
-  max-width: min(28rem, 100%);
-  inline-size: min(28rem, calc(100dvw - 80px));
-  min-width: 0;
+}
+.session-capability-details {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 6px;
   box-sizing: border-box;
+  inline-size: min(28rem, calc(100% - 12px));
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--wa-color-surface-raised, var(--card));
+  box-shadow: var(--shadow-md, 0 6px 20px rgb(0 0 0 / 18%));
+  color: var(--text);
   white-space: normal;
   font-size: var(--font-size-xs, 12px);
   overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
 }
-.session-capability-details > summary {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
+.session-capability-details[hidden] {
+  display: none;
 }
-.session-capability-details > summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.session-capability-details ul {
+  margin: 0;
+  padding-inline-start: 1.2em;
 }
-.session-capability-details[open] {
-  flex: 0 1 auto;
-  max-inline-size: min(28rem, calc(100dvw - 80px));
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+.session-capability-details__class {
+  font-weight: 600;
 }
 .session-promotion-action,
 .chat-header-session-menu--compact .session-menu__item.session-promotion-action {
@@ -682,12 +707,4 @@ openclaw-chat-header-session-menu {
   flex-basis: auto;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-@container (max-width: 480px) {
-  .session-capability-details {
-    max-width: 100%;
-  }
-  .session-capability-status {
-    max-width: 100%;
-  }
 }
