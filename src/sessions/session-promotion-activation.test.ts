@@ -71,9 +71,9 @@ describe("pending promotion activation transaction", () => {
       await expect(
         activatePendingSessionPromotion({ ...p, probeBlockers: () => [] }),
       ).rejects.toBeInstanceOf(SessionPromotionConflictError);
-      await expect(
-        revokePendingSessionPromotion({ ...p, reason: "ended", adminBasisAllowed: false }),
-      ).rejects.toBeInstanceOf(SessionPromotionConflictError);
+      await expect(revokePendingSessionPromotion({ ...p, reason: "ended" })).rejects.toBeInstanceOf(
+        SessionPromotionConflictError,
+      );
     } finally {
       update.mockRestore();
     }
@@ -206,6 +206,80 @@ describe("pending promotion activation transaction", () => {
     ).rejects.toMatchObject({ reason: "admin-basis-unavailable" });
     expect(loadSessionEntry(scope)?.sessionPromotion).toBeUndefined();
   });
+  it("lets an admin-only intent be cancelled or revoked after its admin basis is gone, granting nothing", async () => {
+    const intent = async (requestId: string) => {
+      const scope = {
+        // Operator roles are configured when the request is accepted...
+        cfg: { gateway: { roles: { definitions: {} } } } as never,
+        agentId: "main",
+        env: {
+          ...process.env,
+          OPENCLAW_STATE_DIR: fs.realpathSync(dirs.make("promotion-admin-basis-gone-")),
+        },
+        sessionKey: "agent:main:subagent:task",
+      };
+      await upsertSessionEntryCore(scope, {
+        sessionId: "session",
+        updatedAt: 1,
+        lifecycleRevision: "before",
+        spawnDepth: 1,
+        spawnedBy: "agent:main:dashboard:parent",
+      });
+      await requestSessionPromotion({
+        scope,
+        expectedSessionId: "session",
+        expectedLifecycleRevision: "before",
+        requester: ada,
+        requestId,
+        assertCurrent: () => {},
+        now: 2,
+      });
+      // ...and removed afterwards: the admin basis can no longer be restored.
+      return { ...scope, cfg: {} };
+    };
+    const ada = {
+      version: 1 as const,
+      actor: { kind: "operator" as const, profileId: "ada" },
+      scopes: ["operator.admin"],
+      grant: null,
+    };
+    const identity = { expectedSessionId: "session", expectedLifecycleRevision: "before" };
+
+    const settled = await intent("settled");
+    await expect(
+      activatePendingSessionPromotion({
+        scope: settled,
+        ...identity,
+        requestId: "settled",
+        assertCurrent: () => {},
+        probeBlockers: () => [],
+      }),
+    ).rejects.toMatchObject({ reason: "dashboard-only" });
+    expect(
+      await revokePendingSessionPromotion({
+        scope: settled,
+        ...identity,
+        requestId: "settled",
+        reason: "original-basis-ended",
+        now: 3,
+      }),
+    ).toMatchObject({ state: "revoked", reason: "original-basis-ended" });
+    expect(loadSessionEntry(settled)).toMatchObject({ lifecycleRevision: "before" });
+
+    const cancelled = await intent("cancelled");
+    expect(
+      await requestSessionPromotion({
+        scope: cancelled,
+        ...identity,
+        requester: ada,
+        requestId: "cancelled",
+        action: "cancel",
+        assertCurrent: () => {},
+        now: 3,
+      }),
+    ).toMatchObject({ state: "cancelled" });
+    expect(loadSessionEntry(cancelled)).toMatchObject({ lifecycleRevision: "before" });
+  });
   it("revokes a pending intent terminally; it is never revived by a later activation or replay", async () => {
     const p = await fixture();
     const revoked = await revokePendingSessionPromotion({
@@ -214,7 +288,6 @@ describe("pending promotion activation transaction", () => {
       expectedLifecycleRevision: p.expectedLifecycleRevision,
       requestId: p.requestId,
       reason: "original-basis-ended",
-      adminBasisAllowed: false,
       now: 4,
     });
     expect(revoked).toMatchObject({ state: "revoked", reason: "original-basis-ended" });
@@ -342,7 +415,6 @@ describe("pending promotion activation transaction", () => {
           expectedLifecycleRevision: p.expectedLifecycleRevision,
           requestId: p.requestId,
           reason: "x",
-          adminBasisAllowed: false,
           ...change,
         }),
       ).rejects.toThrow();

@@ -3,7 +3,9 @@ import {
   errorShape,
   validateSessionsPromoteParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { resolveSessionEntryAccessTarget } from "../../config/sessions/session-accessor.js";
 import {
+  decodeSessionPromotion,
   SessionPromotionCancelDeniedError,
   SessionPromotionConflictError,
   SessionPromotionUnsupportedError,
@@ -97,6 +99,23 @@ export function sessionPromotionRefusalReason(error: unknown): string {
   return `unexpected:${name.replace(/[^A-Za-z0-9_]/g, "") || "unknown"}`;
 }
 
+/**
+ * The profile that may cancel this request id as its requester: the pending intent's requester,
+ * or the requester recorded on an already-cancelled one, so a retried cancel stays idempotent.
+ */
+function promotionRequesterProfileId(entry: { sessionPromotion?: unknown }, requestId: string) {
+  const promotion = decodeSessionPromotion(entry.sessionPromotion);
+  if (promotion?.requestId !== requestId) {
+    return undefined;
+  }
+  if (promotion.state === "pending") {
+    return promotion.requester.actor.kind === "operator"
+      ? promotion.requester.actor.profileId
+      : undefined;
+  }
+  return promotion.state === "cancelled" ? promotion.profileId : undefined;
+}
+
 export const sessionPromotionHandlers: GatewayRequestHandlers = {
   "sessions.promote": async (options) => {
     const { params, respond, context } = options;
@@ -136,6 +155,21 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
       preparedAccess.assertPreparationCurrent();
       assertHumanCurrent();
       access.assertCurrent();
+      const action = params.action ?? "request";
+      // Read from the authoritative row; the state owner re-checks the requester under the writer.
+      const cancellingRequester =
+        action === "cancel"
+          ? promotionRequesterProfileId(
+              resolveSessionEntryAccessTarget(
+                { cfg, agentId: owner.agentId, sessionKey: params.key },
+                { keyFormat: "agent-qualified" },
+              ).entry ?? {},
+              params.requestId,
+            )
+          : undefined;
+      const ownerCheck = createSessionPromotionOwnerCheck(context, params.key, () =>
+        isControlUiAdminClient(options.client),
+      );
       // This admission captures the existing immutable role/grant basis and prepares
       // current identity, promotion ownership, agent access and session sharing facts.
       const admitted = await captureGitHubPublicationRequester(
@@ -149,9 +183,14 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
         {
           sessionKey: params.key,
           agentId: owner.agentId,
-          authorizeOwner: createSessionPromotionOwnerCheck(context, params.key, () =>
-            isControlUiAdminClient(options.client),
-          ),
+          // Cancelling grants nothing: the requester may cancel their own intent even after the
+          // basis that made the session theirs to promote has gone. Sharing, role and agent
+          // access still apply, and the state owner still admits only the requester or owner.
+          authorizeOwner: (ownerFacts) => {
+            if (cancellingRequester !== ownerFacts.profileId) {
+              ownerCheck(ownerFacts);
+            }
+          },
         },
       );
       release = admitted.release;
@@ -161,7 +200,6 @@ export const sessionPromotionHandlers: GatewayRequestHandlers = {
         admitted.requester.assertCurrent();
       };
       assertCurrent();
-      const action = params.action ?? "request";
       // A new intent records the device's pairing incarnation, so a later unpair or re-pair ends
       // it. Unreadable pairing state cannot prove that binding: refuse rather than record none.
       // Cancelling never depends on the device.

@@ -550,3 +550,60 @@ describe("cancelling a pending intent", () => {
     });
   });
 });
+
+describe("an admin-only intent whose admin basis was removed", () => {
+  it("is revoked at settlement and stays cancellable by its requester, granting nothing", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const SECOND = "agent:main:subagent:worker-2";
+      await seedLiveTree();
+      await seed(SECOND, delegatedBy(MOLTING));
+      // Operator roles are configured when Ada, an administrator, requests both intents.
+      const before = await createWorld(rolesConfig);
+      try {
+        const ada = before.person("ada", "admin");
+        for (const [key, requestId] of [
+          [SUBAGENT, "ada-sub"],
+          [SECOND, "ada-second"],
+        ]) {
+          expect(await before.promote(ada.client, key, requestId)).toMatchObject({
+            ok: true,
+            payload: { state: "pending" },
+          });
+        }
+      } finally {
+        await before.projection.dispose();
+      }
+      // The roles configuration is removed: Ada's admin basis can no longer be restored.
+      const after = await createWorld({});
+      try {
+        expect(
+          await activateSessionPromotionAfterSettlement({
+            context: after.context,
+            sessionKey: SUBAGENT,
+          }),
+        ).toBe("revoked");
+        expect(after.promotion(SUBAGENT)).toMatchObject({ state: "revoked" });
+        expect(loadSessionEntry({ agentId: "main", sessionKey: SUBAGENT })).toMatchObject({
+          lifecycleRevision: "before",
+        });
+
+        // Ada, no longer an administrator anywhere, cancels her own intent; others cannot.
+        const ada = after.person("ada", "write");
+        const bob = after.person("bob", "write");
+        expect(await after.promote(bob.client, SECOND, "ada-second", "cancel")).toMatchObject(
+          FORBIDDEN,
+        );
+        expect(after.promotion(SECOND)).toMatchObject({ state: "pending" });
+        expect(await after.promote(ada.client, SECOND, "ada-second", "cancel")).toMatchObject({
+          ok: true,
+          payload: { state: "cancelled" },
+        });
+        expect(loadSessionEntry({ agentId: "main", sessionKey: SECOND })).toMatchObject({
+          lifecycleRevision: "before",
+        });
+      } finally {
+        await after.projection.dispose();
+      }
+    });
+  });
+});

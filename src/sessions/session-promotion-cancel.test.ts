@@ -67,6 +67,38 @@ describe("session promotion cancel authority", () => {
     expect(entry.sessionPromotion).toMatchObject({ state: "pending" });
   });
 
+  it("lets the requester cancel an admin-only intent without the admin basis, and no one else", () => {
+    const subagent = { ...target, key: "agent:main:subagent:child" };
+    const entry = {
+      sessionId: "s1",
+      lifecycleRevision: "r1",
+      spawnedBy: "agent:main:dashboard:root",
+    } as never as Record<string, unknown>;
+    applySessionPromotionRequest({
+      entry: entry as never,
+      target: subagent,
+      requester: requester("ada", admin),
+      requestId: "request-1",
+      now: 1,
+      assertCurrent: () => {},
+      adminBasisAllowed: true,
+    });
+    const cancelBy = (who: ReturnType<typeof requester>) =>
+      applySessionPromotionRequest({
+        entry: entry as never,
+        target: subagent,
+        requester: who,
+        requestId: "request-1",
+        action: "cancel",
+        now: 2,
+        assertCurrent: () => {},
+        adminBasisAllowed: false,
+      });
+    expect(() => cancelBy(requester("carol", admin))).toThrow(SessionPromotionCancelDeniedError);
+    expect(entry.sessionPromotion).toMatchObject({ state: "pending" });
+    expect(cancelBy(requester("ada", admin)).state).toBe("cancelled");
+  });
+
   it("lets the gateway owner cancel as an administrator", () => {
     const entry = pendingEntry();
     expect(cancel(entry, requester(GATEWAY_OWNER_PROFILE_ID, admin)).state).toBe("cancelled");
