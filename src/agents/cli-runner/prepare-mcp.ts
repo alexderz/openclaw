@@ -1,5 +1,6 @@
 import type { McpLoopbackRequestContext } from "../../gateway/mcp-grant-store.js";
 import type { resolveMcpLoopbackScopedTools } from "../../gateway/mcp-http.runtime.js";
+import { readRunSessionEffectiveAdmission } from "../admitted-run-context.js";
 import type { ResolvedCliBackend } from "../cli-backends.js";
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
 import { resolveExecConfigState } from "../exec-defaults.js";
@@ -34,6 +35,8 @@ export function resolveCliNativeMcpPolicy(
     agentId: options.policyAgentId,
   });
   return resolveConversationCapabilityProfile({
+    // Same immutable class the run was admitted under; the live row is never reread.
+    sessionEffectiveAdmission: readRunSessionEffectiveAdmission(run),
     ...projectNativeMcpRunContext(run),
     config: options.config,
     sessionKey: options.policySessionKey,
