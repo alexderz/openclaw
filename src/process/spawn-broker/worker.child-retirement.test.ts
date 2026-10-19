@@ -19,7 +19,7 @@ function child(connected = true, stdio: PassThrough[] | undefined = []) {
     connected,
     exitCode: null,
     signalCode: null,
-    stdio,
+    stdio: stdio as PassThrough[] | undefined,
   });
 }
 

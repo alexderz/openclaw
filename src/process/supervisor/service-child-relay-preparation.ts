@@ -23,6 +23,7 @@ export type ServiceChildRelayParams = ProcessAdapterConstruction & {
   secretInput?: SpawnSecretInput;
   stderrDestination?: Writable;
   stdoutConsumption?: "awaited";
+  terminateOnHostLoss?: true;
   oomScoreWrapperSelected: boolean;
   onWorkerMessage?: (message: unknown) => void;
   windowsShellCommand?: string;
