@@ -22,6 +22,7 @@ import {
 } from "../../../components/session-menu-compact.ts";
 import type { SessionCreatedActor } from "../../../components/session-owner-chip.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerSessionPromotionEnglish } from "../../../i18n/locales/en-session-promotion.ts";
 import {
   canRequestPromotion,
   pendingCancelRequestId,
@@ -33,6 +34,8 @@ import {
   selectChatSessionSharingItem,
   type ChatSessionSharingProps,
 } from "./chat-session-sharing.ts";
+
+registerSessionPromotionEnglish();
 
 export type HeaderMenuAction =
   | SessionManagementAction
