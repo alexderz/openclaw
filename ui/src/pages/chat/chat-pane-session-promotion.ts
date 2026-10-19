@@ -3,12 +3,15 @@ import type { GatewaySessionRow } from "../../api/types.ts";
 import type { SidebarSessionMutationScope } from "../../components/app-sidebar-session-types.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { t } from "../../i18n/index.ts";
+import { registerSessionPromotionEnglish } from "../../i18n/locales/en-session-promotion.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import {
   canRequestPromotion,
   pendingCancelRequestId,
 } from "../../lib/sessions/session-promotion-gate.ts";
 import { ChatPaneContext } from "./chat-pane-context.ts";
+
+registerSessionPromotionEnglish();
 
 export type PromotionUiState = {
   busy: boolean;
