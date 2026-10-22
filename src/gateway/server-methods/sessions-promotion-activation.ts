@@ -1,4 +1,5 @@
 import { resolveSessionEntryAccessTarget } from "../../config/sessions/session-accessor.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { decodeSessionPromotion } from "../../sessions/session-promotion-state.js";
 import {
   activatePendingSessionPromotion,
@@ -35,6 +36,47 @@ type ActivationOptions = Pick<
 export type SessionPromotionAdmissionOutcome = "unchanged" | "activated" | "revoked";
 
 type Restored = Awaited<ReturnType<typeof restoreGitHubPublicationRequester>>;
+
+const log = createSubsystemLogger("gateway/session-promotion");
+/** Last reported blocker set per pending request; every chat attempt lands here. */
+const reportedBlockers = new Map<string, string>();
+
+const promotionReportKey = (sessionKey: string, requestId: string) =>
+  `${sessionKey}\u0000${requestId}`;
+
+function forgetPromotionReport(sessionKey: string, requestId: string): void {
+  reportedBlockers.delete(promotionReportKey(sessionKey, requestId));
+}
+
+/** Names what keeps a pending intent waiting, once per distinct set; no content or profiles. */
+function reportPromotionBlocked(
+  sessionKey: string,
+  requestId: string,
+  stage: "pre-check" | "commit" | "basis",
+  blockers: ReadonlyArray<{ code: string; owner?: string; field?: string }>,
+): void {
+  const named = [
+    ...new Set(
+      blockers.map(
+        (b) =>
+          `${b.code}${b.field ? `:${b.field}` : ""}${b.owner && !b.field ? `@${b.owner}` : ""}`,
+      ),
+    ),
+  ];
+  const signature = `${stage} ${named.join(",")}`;
+  const reportKey = promotionReportKey(sessionKey, requestId);
+  if (reportedBlockers.get(reportKey) === signature) {
+    return;
+  }
+  reportedBlockers.delete(reportKey);
+  reportedBlockers.set(reportKey, signature);
+  if (reportedBlockers.size > 256) {
+    reportedBlockers.delete(reportedBlockers.keys().next().value as string);
+  }
+  log.info(
+    `session promotion still pending for ${sessionKey}: ${stage} blocked by ${named.join(", ") || "unknown"}`,
+  );
+}
 
 /**
  * Shared activation helper behind BOTH entrypoints. It never invents authority:
@@ -106,10 +148,14 @@ async function consumePendingPromotion(params: {
     });
   // Advisory and read-only: every chat attempt and owner release lands here. Skip the identity
   // and grant restores below while the session is visibly busy.
-  if (
-    probeSessionEntryObligations(entry).length > 0 ||
-    (await probeOwners({ quick: true })).blockers.length > 0
-  ) {
+  const rowBlockers = probeSessionEntryObligations(entry);
+  if (rowBlockers.length > 0) {
+    reportPromotionBlocked(target.canonicalKey, pending.requestId, "pre-check", rowBlockers);
+    return "unchanged";
+  }
+  const ownerBlockers = (await probeOwners({ quick: true })).blockers;
+  if (ownerBlockers.length > 0) {
+    reportPromotionBlocked(target.canonicalKey, pending.requestId, "pre-check", ownerBlockers);
     return "unchanged";
   }
   // The original device incarnation ending (unpaired, or paired again / re-keyed since) is a
@@ -129,6 +175,9 @@ async function consumePendingPromotion(params: {
   if (deviceId) {
     const device = await readOriginalDevice(deviceId);
     if (device === "unknown") {
+      reportPromotionBlocked(target.canonicalKey, pending.requestId, "basis", [
+        { code: "original-device-unreadable" },
+      ]);
       return "unchanged";
     }
     if (device !== "paired") {
@@ -140,6 +189,7 @@ async function consumePendingPromotion(params: {
         reason: device,
         signal: params.signal,
       });
+      forgetPromotionReport(target.canonicalKey, pending.requestId);
       return "revoked";
     }
   }
@@ -217,6 +267,10 @@ async function consumePendingPromotion(params: {
             allowedScopes: pending.requester.scopes,
           })
         ) {
+          // Awaits the recorded human's next fresh turn; say so instead of staying silent.
+          reportPromotionBlocked(target.canonicalKey, pending.requestId, "basis", [
+            { code: human ? "original-scope-ceiling-denies" : "original-basis-unprovable" },
+          ]);
           return "unchanged";
         }
         basis = "fresh-human-rebound";
@@ -226,6 +280,9 @@ async function consumePendingPromotion(params: {
         !(error.cause instanceof UserProfileNotFoundError)
       ) {
         // An identity read failed without proving the basis ended: stay pending, never revoke.
+        reportPromotionBlocked(target.canonicalKey, pending.requestId, "basis", [
+          { code: "requester-identity-unreadable" },
+        ]);
         return "unchanged";
       } else if (error instanceof GitHubPublicationRequesterUnavailableError) {
         // Provably ended (revoked grant, role downgrade, merged identity): terminal, never revived.
@@ -237,9 +294,13 @@ async function consumePendingPromotion(params: {
           reason: "original-basis-ended",
           signal: params.signal,
         });
+        forgetPromotionReport(target.canonicalKey, pending.requestId);
         return "revoked";
       } else {
         // Profile or session storage unavailable: stay pending, honestly not active.
+        reportPromotionBlocked(target.canonicalKey, pending.requestId, "basis", [
+          { code: "requester-storage-unavailable" },
+        ]);
         return "unchanged";
       }
     }
@@ -280,6 +341,17 @@ async function consumePendingPromotion(params: {
         ...probeSessionEntryObligations(lockedEntry).map((blocker) => blocker.code),
       ],
     });
+    if (!result.activated && result.blockers.length > 0) {
+      reportPromotionBlocked(
+        target.canonicalKey,
+        pending.requestId,
+        "commit",
+        result.blockers.map((code) => ({ code })),
+      );
+    }
+    if (result.activated) {
+      forgetPromotionReport(target.canonicalKey, pending.requestId);
+    }
     return result.activated ? "activated" : "unchanged";
   } finally {
     for (const release of releases.toReversed()) {
