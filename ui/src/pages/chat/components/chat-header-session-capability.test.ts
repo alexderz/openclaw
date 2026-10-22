@@ -269,7 +269,7 @@ it("shows a pending promotion's blocker and offers Cancel only to a viewer who m
       "Session messaging: checked when used",
     ],
     Status: [
-      "Starts on your next fresh turn",
+      "Starts on the next fresh turn",
       "Waiting for running work to settle and an access re-check",
     ],
   });
@@ -282,7 +282,8 @@ it("shows a pending promotion's blocker and offers Cancel only to a viewer who m
   menu.session = { ...menu.session, capabilityStatus: promotionProjection("unauthorized-pending") };
   await menu.updateComplete;
   expect(bubbleButtons(menu)).toEqual([]);
-  expect(facts(menu).Status?.[0]).toBe("Starts on your next fresh turn");
+  expect(facts(menu).Status?.[0]).toBe("Starts on the next fresh turn");
+  expect(facts(menu)["Why not"]).toEqual(["Needs your current authorization"]);
 });
 
 it("keeps an unknown Gateway code verbatim and offers a status check when the result is unknown", async () => {
