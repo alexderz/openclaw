@@ -729,8 +729,9 @@ suite.define(() => {
                   break;
                 }
               }
-              const luminance = ([r, g, b]: number[]) =>
-                [r, g, b]
+              const luminance = (rgbValues: number[]) =>
+                rgbValues
+                  .slice(0, 3)
                   .map((channel) => channel / 255)
                   .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
                   .reduce((sum, c, index) => sum + c * [0.2126, 0.7152, 0.0722][index]!, 0);
