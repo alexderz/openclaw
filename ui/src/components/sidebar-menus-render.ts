@@ -303,9 +303,12 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
         promotionUncertain: promotionOutcome?.uncertain,
         promotionDenied: promotionOutcome?.denied,
         promotionMessage: promotionOutcome?.message,
-        promotionDisabledReason: host.connected
-          ? undefined
-          : t("sessionsView.actionRequiresConnection"),
+        promotionDisabledReason:
+          host.connected &&
+          context?.gateway.snapshot.phase === "connected" &&
+          context.gateway.snapshot.client
+            ? undefined
+            : t("sessionsView.actionRequiresConnection"),
         pinned: false,
         unread: false,
         archived: false,
@@ -496,8 +499,9 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
               break;
             case "promote-session":
             case "cancel-promotion": {
-              // The shared request re-checks the live row, busy and uncertain state itself.
-              const row = currentPromotionRow();
+              // The row this menu showed: a cancel stays bound to the intent it displayed, and
+              // the shared request re-checks the live row, busy and uncertain state itself.
+              const row = promotionRow;
               if (row && context) {
                 void runSidebarSessionPromotion(action.kind, row, {
                   gateway: context.gateway,
