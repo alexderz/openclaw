@@ -6,6 +6,7 @@ import { gatewayPresentationScope } from "../app/gateway-presentation-scope.ts";
 import { isMobileNavLayout } from "../app/mobile-nav-layout.ts";
 import { patchSettings } from "../app/settings.ts";
 import { isUpdateActionable } from "../app/update-schedule-projection.ts";
+import { t } from "../i18n/index.ts";
 import { normalizeAgentLabel } from "../lib/agents/display.ts";
 import { openEditor } from "../lib/editor-links.ts";
 import { isGatewayMethodAdvertised } from "../lib/gateway-methods.ts";
@@ -33,7 +34,13 @@ import { formatSidebarTimestamp } from "./app-sidebar-session-catalogs.ts";
 import { canRetryGatewayStatus } from "./gateway-status.ts";
 import "../styles/sidebar-menus.css";
 import { sessionMenuReasons } from "./session-menu-access.ts";
+import type { SessionMenuData } from "./session-menu-actions.ts";
 import type { SessionMenuAction } from "./session-menu.ts";
+import { renderPromotionMenuItems } from "./session-promotion-menu.ts";
+import {
+  runSidebarSessionPromotion,
+  sessionPromotionOutcomes,
+} from "./session-promotion-request.ts";
 import {
   isSidebarAttentionDismissed,
   isUpdateAttentionForced,
@@ -228,6 +235,11 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
       (row) => row.key === menu.session.key && row.sessionId === menu.session.sessionId,
     );
   const pluginSession = currentPluginSession();
+  // Promotion reads the canonical list, never the roster presentation copy.
+  const currentPromotionRow = () =>
+    context?.sessions.state.result?.sessions.find(
+      (row) => row.key === menu.session.key && row.sessionId === menu.session.sessionId,
+    );
   // Appearance editing keeps this menu open. Refresh its row without adopting
   // a replacement session that happens to reuse the captured key.
   const session =
@@ -276,6 +288,34 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
     }),
     ...(!assignmentAccess.allowed ? { "assign-owner": assignmentAccess.reason } : {}),
   };
+  const promotionRow = batchRows ? undefined : currentPromotionRow();
+  const promotionOutcome =
+    promotionRow && context
+      ? sessionPromotionOutcomes.read(context.gateway, promotionRow)
+      : undefined;
+  const promotionSession: SessionMenuData | null = promotionRow
+    ? {
+        label: session.label,
+        key: promotionRow.key,
+        sessionId: promotionRow.sessionId ?? null,
+        capabilityStatus: promotionRow.promotion,
+        promotionBusy: promotionOutcome?.busy,
+        promotionUncertain: promotionOutcome?.uncertain,
+        promotionDenied: promotionOutcome?.denied,
+        promotionMessage: promotionOutcome?.message,
+        promotionDisabledReason: host.connected
+          ? undefined
+          : t("sessionsView.actionRequiresConnection"),
+        pinned: false,
+        unread: false,
+        archived: false,
+        snoozedUntil: null,
+        category: null,
+        icon: null,
+        color: null,
+        categoryClearReturnsToGroups: false,
+      }
+    : null;
   return keyed(
     menu,
     html`
@@ -317,6 +357,11 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
         .groups=${host.knownSessionGroups()}
         .currentOwner=${session.owner?.actor ?? null}
         .work=${batchRows ? null : controller.sessionMenuWork}
+        .promotionItems=${
+          promotionSession
+            ? renderPromotionMenuItems(promotionSession, { includeCheck: false })
+            : nothing
+        }
         .pluginActions=${
           !batchRows && context?.plugins && pluginSession
             ? pluginSessionMenuActions(context.plugins, pluginSession)
@@ -449,6 +494,22 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
             case "stop-cloud-worker":
               void host.sessionOrganizer.stopCloudWorker(session);
               break;
+            case "promote-session":
+            case "cancel-promotion": {
+              // The shared request re-checks the live row, busy and uncertain state itself.
+              const row = currentPromotionRow();
+              if (row && context) {
+                void runSidebarSessionPromotion(action.kind, row, {
+                  gateway: context.gateway,
+                  sessionData: host.sessionData,
+                  title: session.label,
+                  requestUpdate: () => host.requestUpdate(),
+                });
+              } else {
+                showToast({ message: t("chat.sessionHeader.promotion.stale") });
+              }
+              break;
+            }
             case "delete":
               void host.sessionOrganizer.deleteSession(session);
               break;

@@ -1,9 +1,10 @@
 import { html, nothing } from "lit";
 import type { SessionCapabilityStatus } from "../../../api/types.ts";
 import type { SessionMenuData } from "../../../components/session-menu-actions.ts";
+import type { PromotionMenuActionKind } from "../../../components/session-promotion-menu.ts";
 import { t } from "../../../i18n/index.ts";
 
-export type PromotionActionKind = "promote-session" | "cancel-promotion" | "check-promotion";
+export type PromotionActionKind = PromotionMenuActionKind;
 
 const KEY = "chat.sessionHeader.promotion";
 
