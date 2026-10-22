@@ -355,6 +355,63 @@ messages or grant authenticated Control UI permissions. For link lifecycle, pagi
 backup behavior, and login-proxy configuration, see
 [Public session transcripts](/web/urls#public-session-transcripts).
 
+### Promote a delegated session
+
+A session started by an agent, such as a `sessions_spawn` child or a visible
+dashboard session created with `visible: true`, is _delegated_: its turns keep the
+spawning session's tool-policy ceiling and the sub-agent restriction layer (for
+example, no `sessions_send`, `message`, or `cron`). Promotion turns such a session
+into an ordinary session in place. It keeps the conversation, history, and
+dashboard; it does not stop running work.
+
+The chat header shows a capability glyph next to its session menu: 🔒 delegated
+(also when a promotion applies to someone else), ⏳ promotion pending or being
+submitted, 👤 ordinary, 🔴 promotion denied, blocked, or revoked, and ⚪ unknown.
+Select the glyph to open **Session info**, which
+lists the type, permissions, promotion status, and any reason promotion is
+unavailable, then select **Promote**. A delegated row's **⋯** menu (or right-click
+menu) in the sidebar offers the same **Promote to ordinary session…** action.
+Confirm with **Promote session**.
+
+- **Who can promote:** only a person signed in to the Control UI with
+  `operator.sessions.write` and write access to the session. Agents, tools,
+  automations, and plugins cannot request or complete a promotion. Non-admins can
+  promote their own durable dashboard sessions, or an agent-created dashboard
+  session whose parent chain leads back to one of their sessions (or, for the
+  Gateway owner, to an agent's main session). The Gateway owner, or an admin on a
+  Gateway with `gateway.roles` configured, can also promote other delegated
+  sessions, such as sub-agent runs, from a live Control UI admin connection. Other
+  admins can promote dashboard sessions they can access, but not sub-agent runs
+  or other non-dashboard sessions. Incognito and external (ACP)
+  sessions, and sessions that were never delegated, cannot be promoted.
+- **When it takes effect:** the request is recorded as **Promotion pending** and
+  activates only after the session's accepted work has settled, including its
+  sub-agents, background processes, and queued input: when that work finishes, or
+  at your next directly typed turn once the session is quiet. The
+  ordinary class starts with your next fresh turn after activation; a turn
+  already running or queued keeps its delegated limits. A Gateway restart keeps
+  the pending request. While it waits, **Session info**
+  shows what it is waiting for. **Cancel pending promotion…** withdraws only the
+  pending request; the original requester or the Gateway owner can cancel it.
+- **What changes:** after activation, chat turns that the promoting person types
+  directly in the Control UI run as an ordinary session on the embedded and
+  Claude CLI/MCP tool paths, without the inherited ceiling or the sub-agent
+  restriction layer. Completion wakes, automation, inbound `sessions_send`
+  messages, other people's turns, plugin harnesses, compaction, and Gateway tool
+  RPCs keep the delegated limits. Spawn depth for further children also stays the
+  same. Promotion does not change pinning.
+- **What still applies:** the person's role, global and agent tool policy,
+  resource policy, and sandbox. Promotion never grants more than an ordinary session would get.
+
+If the person's access, role, or device pairing ends before activation, or they
+are shown to no longer own the session, the pending request is revoked and must
+be made again. If the Gateway only cannot read that proof, such as unreadable
+lineage, pairing, or identity storage, the request stays pending. An agent cannot promote its own session. When a delegated
+limit blocks something the person wants to do in that session themselves, the
+agent can point them to the 🔒 glyph or the sidebar **⋯** menu. Promotion does
+not lift limits for turns the agent runs on its own, and not every session is
+eligible.
+
 ### Session placement
 
 Hover a cloud session in the sidebar to see its provider and profile. When known, a compact line below them shows the operating system, machine class, vCPU count, and memory in GB. The placement badge tooltip includes the same machine details; unavailable fields are omitted.
