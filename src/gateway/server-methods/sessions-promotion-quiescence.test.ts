@@ -355,6 +355,83 @@ describe("probeSessionPromotionQuiescence", () => {
     rows.get("self")!.delivery = { status: "in_progress" };
     expect(await codes()).toContain("delegation-custody");
   });
+  it("reads a settled descendant's incarnation from its store entry when the registry row has none", async () => {
+    // A finished run recorded before child identities existed (be79a005 -> dashboard:aa7f3655).
+    const child = "agent:main:dashboard:aa7f3655";
+    const rows = new Map([
+      [
+        "9fb7a867",
+        {
+          runId: "9fb7a867",
+          requesterSessionKey: params().sessionKey,
+          childSessionKey: child,
+          cleanupCompletedAt: 2,
+          expectsCompletionMessage: true,
+          execution: { status: "terminal", endedAt: 1 },
+          delivery: { status: "delivered" },
+        },
+      ],
+    ]);
+    owners.snapshot.mockImplementation(async (_memory, select, consume) =>
+      consume(select(rows), rows),
+    );
+    owners.resolveStore.mockImplementation((scope: { agentId: string; sessionKey: string }) => ({
+      storePath: `/test/store/${scope.agentId}`,
+      canonicalKey: scope.sessionKey,
+      storeKey: scope.sessionKey,
+      storeKeys: [scope.sessionKey],
+      entry: { sessionId: "02b2ddfb" },
+    }));
+    const input = {
+      ...params(),
+      context: {
+        ...params().context,
+        getRuntimeConfig: () => ({}),
+      } as unknown as SessionPromotionProbeParams["context"],
+    };
+    expect(await codes(input)).toEqual([]);
+    // The adopted incarnation is probed like a recorded one.
+    owners.embedded.mockImplementation((sessionId: string) => sessionId === "02b2ddfb");
+    expect(await probeSessionPromotionBlockers(input)).toEqual([
+      { code: "embedded", owner: "embedded-runs", sessionKey: child },
+    ]);
+  });
+  it("still blocks an unsettled identity-less descendant that has no store entry", async () => {
+    const child = "agent:main:dashboard:aa7f3655";
+    const rows = new Map([
+      [
+        "9fb7a867",
+        {
+          runId: "9fb7a867",
+          requesterSessionKey: params().sessionKey,
+          childSessionKey: child,
+          expectsCompletionMessage: true,
+          execution: { status: "running" },
+        },
+      ],
+    ]);
+    owners.snapshot.mockImplementation(async (_memory, select, consume) =>
+      consume(select(rows), rows),
+    );
+    const blockers = await probeSessionPromotionBlockers({
+      ...params(),
+      context: {
+        ...params().context,
+        getRuntimeConfig: () => ({}),
+      } as unknown as SessionPromotionProbeParams["context"],
+    });
+    expect(blockers).toEqual(
+      expect.arrayContaining([
+        {
+          code: "delegation-custody",
+          owner: "subagent-registry",
+          sessionKey: child,
+          runId: "9fb7a867",
+        },
+        { code: "session-incarnation-unavailable", owner: "session-identity", sessionKey: child },
+      ]),
+    );
+  });
   it("re-reads every synchronous owner at the commit, so work that appeared after the probe still blocks", async () => {
     const probe = await probeSessionPromotionQuiescence(params());
     expect(probe.blockers).toEqual([]);
