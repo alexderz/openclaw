@@ -18,6 +18,10 @@ const enSessionPromotion = {
         cancel: "Cancel pending promotion…",
         check: "Check promotion status",
         details: "Session info",
+        sidebar: {
+          limited: "Limited session",
+          pending: "Promotion pending",
+        },
         explanation:
           "Promotion keeps this conversation, history and board. It takes effect only after accepted work settles; it does not stop work or grant tools beyond ordinary policy.",
         info: {

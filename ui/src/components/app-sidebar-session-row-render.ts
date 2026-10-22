@@ -29,6 +29,7 @@ import type {
 } from "./app-sidebar-session-catalogs.ts";
 import type { SessionPullRequestIndicatorsController } from "./app-sidebar-session-pr-indicators.ts";
 import type { SidebarSessionProjection } from "./app-sidebar-session-projection.ts";
+import { renderSidebarPromotionTick } from "./app-sidebar-session-promotion-tick.ts";
 import {
   rowDemandsVisibility,
   sidebarSessionMetaId,
@@ -380,6 +381,7 @@ export function renderRecentSession(params: {
   const indicators = renderSidebarSessionIndicators(host, session, display, icon);
   const { running, stateId, metaId, pullRequest, persistentIndicator, childrenExpanded } =
     indicators;
+  const mark = renderSidebarPromotionTick(session, [stateId, metaId]);
   const openMenuFromEvent = (event: MouseEvent | KeyboardEvent) =>
     handleContextMenuEvent(
       event,
@@ -487,12 +489,12 @@ export function renderRecentSession(params: {
         class="sidebar-recent-session__link"
         draggable="false"
         aria-current=${session.visuallyActive ? "page" : nothing}
-        aria-describedby=${[stateId, metaId].filter(Boolean).join(" ") || nothing}
+        aria-describedby=${mark.describedBy || nothing}
         @click=${(event: MouseEvent) => host.handleSessionRowClick(event, session)}
       >
         ${persistentIndicator}
         <span class="sidebar-recent-session__text">
-          <span class="sidebar-recent-session__title-row">${marqueeLabel}</span>
+          <span class="sidebar-recent-session__title-row">${mark.tick}${marqueeLabel}</span>
           <span class="sidebar-recent-session__details">
             ${
               session.channelPresentation

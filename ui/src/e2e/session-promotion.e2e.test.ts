@@ -14,6 +14,7 @@ import {
   installMockGateway,
   requireRecord,
   sessionsListResponse,
+  waitForMobileSidebarDrawerOpen,
 } from "./session-management.test-support.ts";
 
 const suite = createSessionManagementE2eSuite();
@@ -582,4 +583,216 @@ suite.define(() => {
     },
     90_000,
   );
+
+  /** One limited, one pending and one ordinary row, as the Gateway projects them for this viewer. */
+  const TICK_ROWS = [
+    {
+      key: "agent:main:dashboard:tick-limited",
+      label: "Limited worker",
+      promotion: promotionProjection("authorized-none"),
+      mark: "limited",
+      description: "Limited session",
+    },
+    {
+      key: "agent:main:dashboard:tick-pending",
+      label: "Pending handoff",
+      promotion: promotionProjection("authorized-pending"),
+      mark: "pending",
+      description: "Promotion pending",
+    },
+    {
+      key: "agent:main:dashboard:tick-ordinary",
+      label: "Ordinary chat",
+      promotion: standardRow,
+      mark: undefined,
+      description: undefined,
+    },
+  ] as const;
+  const TICK_VIEWPORTS = [
+    { name: "desktop", width: 1280, height: 900, scale: 1, touch: false },
+    { name: "phone390", width: 390, height: 844, scale: 2, touch: true },
+  ] as const;
+
+  it.each(
+    TICK_VIEWPORTS.flatMap((viewport) =>
+      (["light", "dark"] as const).map((colorScheme) => ({
+        viewport,
+        colorScheme,
+        label: `${viewport.name} ${colorScheme}`,
+      })),
+    ),
+  )(
+    "marks only limited and pending sidebar rows with an amber tick: $label",
+    async ({ viewport, colorScheme }) => {
+      const context = await suite.browser.newContext({
+        colorScheme,
+        viewport: { width: viewport.width, height: viewport.height },
+        deviceScaleFactor: viewport.scale,
+        hasTouch: viewport.touch,
+        locale: "en-US",
+        serviceWorkers: "block",
+      });
+      const page = await context.newPage();
+      const now = Date.now();
+      await installMockGateway(page, {
+        sessionKey: TICK_ROWS[2].key,
+        operatorScopes: ["operator.read", "operator.write", "operator.admin"],
+        featureMethods: ["chat.metadata", "chat.startup", "sessions.promote"],
+        methodResponses: {
+          "sessions.list": sessionsListResponse(
+            TICK_ROWS.map((row, index) => ({
+              ...sessionRow(row.key, row.label, now - index * 1000),
+              promotion: { ...row.promotion, lifecycleRevision: "proof-revision" },
+            })),
+          ),
+        },
+      });
+      const name = `sidebar-tick-${viewport.name}-${colorScheme}`;
+      try {
+        await page.goto(controlUiSessionUrl(suite.server.baseUrl, TICK_ROWS[2].key));
+        if (viewport.touch) {
+          await page
+            .locator(".topbar-nav-toggle:visible, .chat-pane__nav-toggle:visible")
+            .first()
+            .click();
+          await waitForMobileSidebarDrawerOpen(page);
+        }
+        const rowFor = (rowKey: string) =>
+          page.locator(`.sidebar-recent-session[data-session-key="${rowKey}"]`);
+        for (const row of TICK_ROWS) {
+          await rowFor(row.key).locator(".sidebar-recent-session__name").waitFor();
+        }
+        const nameLeft: number[] = [];
+        for (const row of TICK_ROWS) {
+          const host = rowFor(row.key);
+          const ticks = host.locator(".sidebar-session-promotion-tick");
+          const link = host.locator(".sidebar-recent-session__link");
+          const described = await link.evaluate((element) =>
+            (element.getAttribute("aria-describedby") ?? "")
+              .split(" ")
+              .filter(Boolean)
+              .map((id) => document.getElementById(id)?.textContent?.trim()),
+          );
+          const nameBox = (await host.locator(".sidebar-recent-session__name").boundingBox())!;
+          nameLeft.push(nameBox.x);
+          if (!row.mark) {
+            expect(await ticks.count(), row.label).toBe(0);
+            expect(described, row.label).not.toContain("Limited session");
+            expect(described, row.label).not.toContain("Promotion pending");
+            continue;
+          }
+          expect(await ticks.count(), row.label).toBe(1);
+          const tick = ticks.first();
+          expect(await tick.getAttribute("class")).toContain(
+            "sidebar-session-promotion-tick--" + row.mark,
+          );
+          // Not color-only: the words are the link's description and the tick's tooltip.
+          expect(await tick.getAttribute("title")).toBe(row.description);
+          expect(await tick.getAttribute("aria-hidden")).toBe("true");
+          expect(described, row.label).toContain(row.description);
+          const tickBox = (await tick.boundingBox())!;
+          expect(Math.round(tickBox.width)).toBe(3);
+          expect(tickBox.height).toBeGreaterThanOrEqual(12);
+          // In the gutter before the title, vertically on the title line, never under the text.
+          expect(tickBox.x + tickBox.width).toBeLessThanOrEqual(nameBox.x + 0.5);
+          expect(tickBox.x).toBeGreaterThanOrEqual(0);
+          expect(tickBox.y).toBeGreaterThanOrEqual(nameBox.y - 4);
+          expect(tickBox.y + tickBox.height).toBeLessThanOrEqual(nameBox.y + nameBox.height + 4);
+          const style = await tick.evaluate((element) => {
+            const computed = getComputedStyle(element);
+            return {
+              color: computed.backgroundColor,
+              image: computed.backgroundImage,
+              warn: getComputedStyle(document.documentElement).getPropertyValue("--warn").trim(),
+            };
+          });
+          if (row.mark === "pending") {
+            expect(style.image).toContain("repeating-linear-gradient");
+          } else {
+            expect(style.image).toBe("none");
+            // WCAG 1.4.11 non-text contrast against the first opaque sidebar background.
+            const contrast = await tick.evaluate((element) => {
+              const canvas = document.createElement("canvas");
+              canvas.width = 1;
+              canvas.height = 1;
+              const context2d = canvas.getContext("2d", { willReadFrequently: true })!;
+              const rgb = (color: string) => {
+                context2d.clearRect(0, 0, 1, 1);
+                context2d.fillStyle = color;
+                context2d.fillRect(0, 0, 1, 1);
+                return [...context2d.getImageData(0, 0, 1, 1).data];
+              };
+              let background = [0, 0, 0, 0];
+              for (let node = element.parentElement; node; node = node.parentElement) {
+                background = rgb(getComputedStyle(node).backgroundColor);
+                if (background[3] === 255) {
+                  break;
+                }
+              }
+              const luminance = ([r, g, b]: number[]) =>
+                [r, g, b]
+                  .map((channel) => channel / 255)
+                  .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+                  .reduce((sum, c, index) => sum + c * [0.2126, 0.7152, 0.0722][index]!, 0);
+              const [a, b] = [
+                luminance(rgb(getComputedStyle(element).backgroundColor)),
+                luminance(background),
+              ];
+              return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+            });
+            expect(contrast, row.label + " tick contrast").toBeGreaterThanOrEqual(3);
+          }
+          expect(style.warn).not.toBe("");
+        }
+        // Costs no title width: every title starts at the same x, marked or not.
+        expect(Math.max(...nameLeft) - Math.min(...nameLeft)).toBeLessThan(0.5);
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth),
+          "no horizontal page overflow",
+        ).toBeLessThanOrEqual(viewport.width);
+        await captureUiProof(suite, page, name + ".png");
+      } catch (error) {
+        await captureUiProof(suite, page, name + "-failure.png");
+        throw error;
+      } finally {
+        await context.close();
+      }
+    },
+    90_000,
+  );
+
+  it("offers Pin for an activated promotion and leaves its row unmarked", async () => {
+    const { context, page, gateway } = await openHandoffPage(
+      VIEWPORTS[0],
+      "promoted-requester",
+      undefined,
+      false,
+      {
+        // The stored entry keeps spawnedBy; the Gateway's pin verdict is the activated promotion.
+        row: { spawnedBy: "agent:main:main", pinnable: true },
+        methods: ["sessions.patch"],
+      },
+    );
+    try {
+      const row = page.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
+      await row.locator(".sidebar-recent-session__name").waitFor();
+      expect(await row.locator(".sidebar-session-promotion-tick").count()).toBe(0);
+      await row.click({ button: "right" });
+      const menu = page.locator("openclaw-session-menu");
+      const pin = menu.locator('wa-dropdown-item[value="toggle-pin"]');
+      await pin.waitFor({ state: "visible" });
+      expect(await pin.getAttribute("disabled")).toBeNull();
+      await pin.click();
+      await expect
+        .poll(async () =>
+          (await gateway.getRequests("sessions.patch")).map((request) =>
+            requireRecord(requireRecord(request).params),
+          ),
+        )
+        .toEqual([expect.objectContaining({ key, pinned: true })]);
+      await captureUiProof(suite, page, "session-promotion-activated-pin.png");
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
 });

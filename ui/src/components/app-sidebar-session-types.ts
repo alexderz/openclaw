@@ -121,6 +121,8 @@ export type SidebarRecentSession = {
   kind?: string;
   pinned: boolean;
   pinnable: boolean;
+  /** Viewer-projected promotion class: a limited (delegated) row or one with a pending promotion. */
+  promotionMark?: SidebarPromotionMark;
   snoozedUntil?: number;
   archived?: boolean;
   visibility?: SessionVisibility;
@@ -321,6 +323,18 @@ export const SIDEBAR_SESSION_SEE_LESS_THRESHOLD = 30;
 
 export function sidebarSessionMetaId(key: string): string {
   return `sidebar-session-meta-${encodeURIComponent(key)}`;
+}
+
+export type SidebarPromotionMark = "limited" | "pending";
+
+/** Ordinary rows stay unmarked; pending wins over the delegated class it still carries. */
+export function resolveSidebarPromotionMark(
+  promotion: { effectiveClass?: string; promotionState?: string } | undefined,
+): SidebarPromotionMark | undefined {
+  if (promotion?.promotionState === "pending") {
+    return "pending";
+  }
+  return promotion?.effectiveClass === "delegated" ? "limited" : undefined;
 }
 
 export function sidebarSessionStateId(key: string): string {

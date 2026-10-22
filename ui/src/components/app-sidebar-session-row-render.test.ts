@@ -96,3 +96,32 @@ it("keeps Online facepiles idle until presence or time-sensitive ordering change
   expect(updates).toHaveBeenCalledTimes(2);
   expect(facepile.querySelector(".viewer-facepile")?.getAttribute("aria-label")).toBe("ada");
 });
+
+it.each([
+  ["limited", "Limited session"],
+  ["pending", "Promotion pending"],
+  [undefined, undefined],
+] as const)("marks a %s row with the type tick and its description", (mark, words) => {
+  const { host, container } = createHost();
+  host.sidebarAgentsMode = "chip";
+  const session = projectSidebarSession({ key: "agent:main:dashboard:typed" });
+  session.promotionMark = mark;
+  render(renderRecentSession({ host, session }), container);
+  const tick = container.querySelector(".sidebar-session-promotion-tick");
+  const link = container.querySelector(".sidebar-recent-session__link")!;
+  const described = (link.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .map((id) => container.querySelector(`[id="${id}"]`)?.textContent);
+  if (!mark) {
+    expect(tick).toBeNull();
+    expect(described).toEqual([]);
+    return;
+  }
+  expect(tick?.classList.contains(`sidebar-session-promotion-tick--${mark}`)).toBe(true);
+  expect(tick?.getAttribute("title")).toBe(words);
+  expect(tick?.getAttribute("aria-hidden")).toBe("true");
+  // Inside the title row, before the name: the tick never joins the link's accessible name.
+  expect(tick?.parentElement?.classList.contains("sidebar-recent-session__title-row")).toBe(true);
+  expect(described).toEqual([words]);
+});
