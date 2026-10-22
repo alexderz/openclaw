@@ -1,4 +1,4 @@
-import { html, nothing } from "lit";
+import { html, nothing, type TemplateResult } from "lit";
 import { property, state } from "lit/decorators.js";
 import { keyed } from "lit/directives/keyed.js";
 import { t } from "../i18n/index.ts";
@@ -33,6 +33,8 @@ export type SessionMenuWork = {
 
 export type SessionMenuAction =
   | SessionManagementAction
+  | { kind: "promote-session" }
+  | { kind: "cancel-promotion" }
   | { kind: "open-pr"; url: string }
   | { kind: "plugin"; id: string }
   | { kind: "stop-cloud-worker" };
@@ -68,6 +70,8 @@ class SessionMenu extends OpenClawLightDomElement {
   @property({ attribute: false }) currentOwner: SessionCreatedActor | null = null;
   @property({ attribute: false }) work: SessionMenuWork | null = null;
   @property({ attribute: false }) pluginActions: readonly PluginSessionMenuAction[] = [];
+  /** Promote or cancel items rendered by the lazy host, which also owns their gate and copy. */
+  @property({ attribute: false }) promotionItems: TemplateResult | typeof nothing = nothing;
   @property({ attribute: false }) onAction: (action: SessionMenuAction) => void = () => {};
   @property({ attribute: false }) onClose: () => void = () => {};
   @state() private compactView: CompactSessionMenuView = "root";
@@ -140,7 +144,10 @@ class SessionMenu extends OpenClawLightDomElement {
       }
       return;
     }
-    if (value === "stop-cloud-worker") {
+    if (
+      value === "stop-cloud-worker" ||
+      ((value === "promote-session" || value === "cancel-promotion") && this.selectionCount === 1)
+    ) {
       this.runAction({ kind: value });
       return;
     }
@@ -221,6 +228,7 @@ class SessionMenu extends OpenClawLightDomElement {
                       </div>`
                     : nothing
                 }
+                ${batch ? nothing : this.promotionItems}
                 ${this.managementActions.renderPrimaryActions()}
                 <div class="session-menu__separator" role="separator"></div>
                 ${this.managementActions.renderOrganizationActions()}

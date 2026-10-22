@@ -60,6 +60,8 @@ async function openHandoffPage(
   look: {
     colorScheme?: "light" | "dark";
     promotion?: ReturnType<typeof promotionProjection>;
+    row?: Partial<ReturnType<typeof sessionRow>>;
+    methods?: string[];
   } = {},
 ) {
   const context = await suite.browser.newContext({
@@ -75,12 +77,13 @@ async function openHandoffPage(
     sessionKey: key,
     hasMultipleSessionSharingIdentities: crowdedHeader,
     operatorScopes: ["operator.read", "operator.write", "operator.admin"],
-    featureMethods: ["chat.metadata", "chat.startup", "sessions.promote"],
+    featureMethods: ["chat.metadata", "chat.startup", "sessions.promote", ...(look.methods ?? [])],
     methodResponses: {
       "sessions.list": sessionsListResponse([
         {
           ...sessionRow(key, "Handoff candidate", Date.now()),
           ...(crowdedHeader ? crowdedHeaderRow : {}),
+          ...look.row,
           promotion: {
             ...(look.promotion ?? promotionProjection(kind)),
             lifecycleRevision: "proof-revision",
@@ -374,6 +377,122 @@ suite.define(() => {
     },
     90_000,
   );
+
+  it("promotes from the sidebar row menu through the same confirm and request as the header", async () => {
+    const { context, page, gateway } = await openHandoffPage(VIEWPORTS[0], "authorized-none");
+    try {
+      const row = page.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
+      await expect.poll(() => row.count()).toBe(1);
+      await row.click({ button: "right" });
+      const menu = page.locator("openclaw-session-menu");
+      const promote = menu.locator('wa-dropdown-item[value="promote-session"]');
+      await promote.waitFor({ state: "visible" });
+      expect(await promote.getAttribute("disabled")).toBeNull();
+      // The status check stays in the chat header; the row menu only offers the request.
+      expect(await menu.locator('wa-dropdown-item[value="check-promotion"]').count()).toBe(0);
+      await captureUiProof(suite, page, "session-promotion-sidebar-menu.png");
+      await promote.click();
+      const confirm = page.getByRole("button", { name: "Promote session", exact: true });
+      await confirm.waitFor({ state: "visible" });
+      await captureUiProof(suite, page, "session-promotion-sidebar-confirm.png");
+      await confirm.click();
+      await expect.poll(async () => (await gateway.getRequests("sessions.promote")).length).toBe(1);
+      const [request] = await gateway.getRequests("sessions.promote");
+      expect(requireRecord(request!.params)).toEqual({
+        key,
+        expectedSessionId: expect.any(String),
+        expectedLifecycleRevision: "proof-revision",
+        requestId: expect.any(String),
+        action: "request",
+      });
+    } catch (error) {
+      await captureUiProof(suite, page, "session-promotion-sidebar-failure.png");
+      throw error;
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
+
+  it("disables the sidebar Promote with the reason when this viewer may not promote", async () => {
+    const { context, page, gateway } = await openHandoffPage(VIEWPORTS[0], "restricted-viewer");
+    try {
+      const row = page.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
+      await expect.poll(() => row.count()).toBe(1);
+      await row.click({ button: "right" });
+      const menu = page.locator("openclaw-session-menu");
+      const promote = menu.locator('wa-dropdown-item[value="promote-session"]');
+      await promote.waitFor({ state: "visible" });
+      expect(await promote.getAttribute("disabled")).not.toBeNull();
+      expect(await promote.getAttribute("title")).toContain("current-human-authorization-required");
+      await promote.click({ force: true });
+      expect(await page.locator(".exec-approval-actions").count()).toBe(0);
+      expect(await gateway.getRequests("sessions.promote")).toHaveLength(0);
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
+
+  it("shows nothing promotion-related for a standard session in the header or sidebar", async () => {
+    const { context, page } = await openHandoffPage(
+      VIEWPORTS[0],
+      "authorized-none",
+      undefined,
+      false,
+      {
+        promotion: {
+          ...promotionProjection("authorized-none"),
+          historicalOrigin: "ordinary",
+          effectiveClass: "ordinary",
+          classScope: "all-turns",
+          canPromote: false,
+          disabledReasons: ["unsupported-target:not-delegated"],
+        },
+      },
+    );
+    try {
+      await page.getByRole("button", menuName).click();
+      const header = page.locator("openclaw-chat-header-session-menu");
+      await header.locator('wa-dropdown-item[value="rename"]').waitFor({ state: "visible" });
+      expect(await header.locator(".session-promotion-action").count()).toBe(0);
+      expect(await header.textContent()).not.toContain("Check promotion status");
+      await page.keyboard.press("Escape");
+      const row = page.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
+      await row.click({ button: "right" });
+      const menu = page.locator("openclaw-session-menu");
+      await menu.locator('wa-dropdown-item[value="rename"]').waitFor({ state: "visible" });
+      expect(await menu.locator(".session-promotion-action").count()).toBe(0);
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
+
+  it("offers Pin when the Gateway reports a registry-linked dashboard row pinnable", async () => {
+    const { context, page } = await openHandoffPage(
+      VIEWPORTS[0],
+      "authorized-none",
+      undefined,
+      false,
+      {
+        // spawnedBy comes from the subagent-run registry; the stored entry is still a root.
+        row: { spawnedBy: "agent:main:main", pinnable: true },
+        methods: ["sessions.patch"],
+      },
+    );
+    try {
+      await page.getByRole("button", menuName).click();
+      const pin = page.locator(
+        'openclaw-chat-header-session-menu wa-dropdown-item[value="toggle-pin"]',
+      );
+      await pin.waitFor({ state: "visible" });
+      expect(await pin.getAttribute("title")).not.toBe(
+        "Only root sessions can be pinned; pin the parent session instead.",
+      );
+      expect(await pin.getAttribute("disabled")).toBeNull();
+      await captureUiProof(suite, page, "session-promotion-pinnable-header.png");
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
 
   /** A natively ordinary row, as projectSessionPromotion returns it for a never-delegated key. */
   const standardRow = {

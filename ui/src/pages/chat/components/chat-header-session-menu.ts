@@ -21,12 +21,13 @@ import {
   type CompactSessionMenuView,
 } from "../../../components/session-menu-compact.ts";
 import type { SessionCreatedActor } from "../../../components/session-owner-chip.ts";
+import {
+  isPromotionMenuAction,
+  promotionActionAllowed,
+  renderPromotionMenuItems,
+} from "../../../components/session-promotion-menu.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerSessionPromotionEnglish } from "../../../i18n/locales/en-session-promotion.ts";
-import {
-  canRequestPromotion,
-  pendingCancelRequestId,
-} from "../../../lib/sessions/session-promotion-gate.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import {
   canManageChatSessionSharing,
@@ -175,28 +176,15 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     },
   );
 
-  /** The one gate for the menu items and the info bubble buttons. */
   private promotionActionAllowed(kind: PromotionActionKind): boolean {
-    const status = this.session.capabilityStatus;
-    return Boolean(
-      !this.session.promotionBusy &&
-      !this.session.promotionDisabledReason &&
-      (kind === "check-promotion" ||
-        (this.session.key &&
-          this.session.sessionId &&
-          !this.session.promotionUncertain &&
-          (kind === "cancel-promotion"
-            ? pendingCancelRequestId(status)
-            : canRequestPromotion(status)))),
-    );
+    return promotionActionAllowed(this.session, kind);
   }
 
   private readonly handleSelect = (event: MenuSelectEvent) => {
     const promotionValue = event.detail.item.value ?? "";
-    if (["promote-session", "cancel-promotion", "check-promotion"].includes(promotionValue)) {
-      const kind = promotionValue as PromotionActionKind;
-      if (this.promotionActionAllowed(kind)) {
-        this.onAction({ kind });
+    if (isPromotionMenuAction(promotionValue)) {
+      if (this.promotionActionAllowed(promotionValue)) {
+        this.onAction({ kind: promotionValue });
       }
       return;
     }
@@ -539,47 +527,7 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
   };
 
   private renderPromotionActions() {
-    const status = this.session.capabilityStatus;
-    const pending = status?.promotionState === "pending";
-    const identified = Boolean(this.session.key && this.session.sessionId);
-    const unavailableReason = pending
-      ? !identified || !pendingCancelRequestId(status)
-        ? t("chat.sessionHeader.promotion.cancelUnavailable")
-        : undefined
-      : status?.disabledReasons.join("; ") ||
-        (!identified || !canRequestPromotion(status)
-          ? t("chat.sessionHeader.promotion.unavailable")
-          : undefined);
-    const reason =
-      this.session.promotionDisabledReason ??
-      (this.session.promotionBusy ? t("chat.sessionHeader.promotion.busy") : unavailableReason);
-    return html`
-      ${
-        // No capability status is no promotion offer: an unknown session shows no disabled item.
-        (status && status.effectiveClass !== "ordinary") || pending
-          ? html`
-              <wa-dropdown-item
-                class="session-menu__item session-promotion-action"
-                value=${pending ? "cancel-promotion" : "promote-session"}
-                ?disabled=${Boolean(reason) || Boolean(this.session.promotionUncertain)}
-                title=${reason ?? ""}
-              >
-                <span class="session-menu__text"
-                  >${t(pending ? "chat.sessionHeader.promotion.cancel" : "chat.sessionHeader.promotion.action")}</span
-                >
-              </wa-dropdown-item>
-              ${reason ? html`<div class="session-menu__info" role="note">${reason}</div>` : nothing}
-            `
-          : nothing
-      }
-      <wa-dropdown-item
-        class="session-menu__item session-promotion-action"
-        value="check-promotion"
-        ?disabled=${Boolean(this.session.promotionBusy || this.session.promotionDisabledReason)}
-      >
-        <span class="session-menu__text">${t("chat.sessionHeader.promotion.check")}</span>
-      </wa-dropdown-item>
-    `;
+    return renderPromotionMenuItems(this.session, { includeCheck: true });
   }
 
   private readonly closeCapabilityDetailsOnOutsidePointer = (event: PointerEvent) => {

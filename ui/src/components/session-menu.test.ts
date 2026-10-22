@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { html } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { ApplicationContextProvider } from "../test-helpers/application-context.ts";
@@ -250,6 +251,40 @@ describe("session menu", () => {
       selectMenuValue(menu, "compact:back");
       await menu.updateComplete;
     }
+  });
+
+  it("lets the Gateway's pin verdict outrank the tree-child fallback for pin and snooze", async () => {
+    const onAction = vi.fn<(action: SessionMenuAction) => void>();
+    const menu = await mountMenu({
+      snoozeAllowed: true,
+      session: { isChild: true, pinnable: true },
+      onAction,
+    });
+    expect(menuItemLabels(menu)).toEqual(expect.arrayContaining(["Pin session", "Snooze"]));
+    menuItem(menu, "Pin session").click();
+    expect(onAction).toHaveBeenCalledWith({ kind: "toggle-pin" });
+    menu.session = { ...menu.session, isChild: false, pinnable: false };
+    await menu.updateComplete;
+    expect(menuItemLabels(menu)).not.toContain("Pin session");
+    expect(menuItemLabels(menu)).not.toContain("Snooze");
+  });
+
+  it("renders host promotion items for one session and dispatches them, never for a batch", async () => {
+    const onAction = vi.fn<(action: SessionMenuAction) => void>();
+    const promotionItems = html`<wa-dropdown-item
+      class="session-menu__item session-promotion-action"
+      value="promote-session"
+      ><span class="session-menu__text">Promote to ordinary session…</span></wa-dropdown-item
+    >`;
+    const menu = await mountMenu({ promotionItems, onAction });
+    expect(menuItemLabels(menu)[0]).toBe("Promote to ordinary session…");
+    selectMenuValue(menu, "promote-session");
+    expect(onAction).toHaveBeenCalledWith({ kind: "promote-session" });
+    onAction.mockClear();
+    const batch = await mountMenu({ promotionItems, onAction, selectionCount: 2 });
+    expect(menuItemLabels(batch)).not.toContain("Promote to ordinary session…");
+    selectMenuValue(batch, "promote-session");
+    expect(onAction).not.toHaveBeenCalled();
   });
 
   it("describes the active session and its stable fork boundary", async () => {

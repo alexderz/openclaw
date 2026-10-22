@@ -310,3 +310,47 @@ it("keeps an unknown Gateway code verbatim and offers a status check when the re
   menu.querySelector<HTMLButtonElement>('[data-promotion-action="check-promotion"]')!.click();
   expect(onAction).toHaveBeenCalledWith({ kind: "check-promotion" });
 });
+
+it("lists Check promotion status only for a session with a promotion record or request", async () => {
+  const menu = await mountMenu({ key: "k", sessionId: "s" });
+  const promotionItems = async (session: Partial<SessionMenuData>) => {
+    menu.session = {
+      ...menu.session,
+      capabilityStatus: undefined,
+      promotionBusy: false,
+      promotionUncertain: false,
+      ...session,
+    };
+    await menu.updateComplete;
+    return [...menu.querySelectorAll("wa-dropdown-item.session-promotion-action")].map((item) =>
+      item.getAttribute("value"),
+    );
+  };
+  const standard = {
+    ...promotionStatus,
+    historicalOrigin: "ordinary",
+    effectiveClass: "ordinary",
+    classScope: "all-turns",
+    canPromote: false,
+    disabledReasons: ["unsupported-target:not-delegated"],
+  } satisfies NonNullable<SessionMenuData["capabilityStatus"]>;
+  // Ordinary sessions without a promotion record show nothing promotion-related.
+  expect(await promotionItems({})).toEqual([]);
+  expect(await promotionItems({ capabilityStatus: standard })).toEqual([]);
+  expect(menu.textContent).not.toContain("Check promotion status");
+  expect(
+    await promotionItems({ capabilityStatus: promotionProjection("authorized-none") }),
+  ).toEqual(["promote-session", "check-promotion"]);
+  expect(
+    await promotionItems({ capabilityStatus: promotionProjection("promoted-requester") }),
+  ).toEqual(["check-promotion"]);
+  expect(
+    await promotionItems({ capabilityStatus: { ...standard, promotionState: "revoked" } }),
+  ).toEqual(["check-promotion"]);
+  expect(await promotionItems({ capabilityStatus: standard, promotionUncertain: true })).toEqual([
+    "check-promotion",
+  ]);
+  expect(await promotionItems({ capabilityStatus: standard, promotionBusy: true })).toEqual([
+    "check-promotion",
+  ]);
+});

@@ -1,4 +1,4 @@
-import { html, render } from "lit";
+import { html, nothing, render, type TemplateResult } from "lit";
 import { afterEach } from "vitest";
 import type { ApplicationContext } from "../app/context.ts";
 import type { SessionMenuData } from "../components/session-menu-actions.ts";
@@ -51,6 +51,7 @@ export async function mountMenu(
     onClose?: () => void;
     actionDisabledReasons?: Partial<Record<SessionMenuActionKind, string>>;
     forkFromLastCompleted?: boolean;
+    promotionItems?: TemplateResult;
   } = {},
 ): Promise<SessionMenuElement> {
   const container = options.context
@@ -97,6 +98,7 @@ export async function mountMenu(
       .currentOwner=${options.currentOwner ?? null}
       .work=${options.work ?? null}
       .pluginActions=${options.pluginActions ?? []}
+      .promotionItems=${options.promotionItems ?? nothing}
       .onAction=${options.onAction ?? (() => {})}
       .onClose=${options.onClose ?? (() => {})}
     ></openclaw-session-menu>`,
