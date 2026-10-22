@@ -40,7 +40,7 @@ const enSessionPromotion = {
         permission: {
           allTurnsStandard: "Standard: every turn",
           allTurnsLimited: "Delegated limits: every turn",
-          yourTurnsLimited: "Delegated limits: your turns",
+          yourTurnsLimited: "Delegated limits: your turns (standard for the requester)",
           directTurnsStandard: "Standard: your direct chat turns",
           otherTurnsLimited: "Limited: wakes, automation, other sessions and people",
           roleAndSandbox: "Your role, resource policy and sandbox still apply",
@@ -50,7 +50,7 @@ const enSessionPromotion = {
           originDelegated: "Started as delegated",
         },
         state: {
-          pending: "Starts on your next fresh turn",
+          pending: "Starts on the next fresh turn",
           activated: "Promoted",
           revoked: "Promotion revoked",
           blocked: "Blocked",
@@ -66,7 +66,7 @@ const enSessionPromotion = {
           incognito: "Incognito sessions can't be promoted",
           acp: "External (ACP) sessions can't be promoted",
           notDelegated: "Already a standard session",
-          dashboardOnly: "Only dashboard conversations (admins: any)",
+          dashboardOnly: "Only dashboard sessions, unless you're an admin",
           noRevision: "Session has no revision yet",
         },
         busy: "Checking or submitting promotion…",

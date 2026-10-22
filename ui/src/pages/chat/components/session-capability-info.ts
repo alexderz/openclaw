@@ -138,17 +138,21 @@ export function renderSessionCapabilityDetails(props: CapabilityDetailsProps) {
     ...(transient ? [props.capabilityLabel] : []),
     ...(session.promotionMessage ? [session.promotionMessage] : []),
   ];
-  const offersPromote =
-    status && status.promotionState !== "pending" && status.effectiveClass !== "ordinary";
-  const why = offersPromote
-    ? [
-        ...(session.promotionDisabledReason ? [session.promotionDisabledReason] : []),
-        ...capabilityDisabledLabels(status),
-        ...(!session.key || !session.sessionId || !status.lifecycleRevision
-          ? [t(`${KEY}.unavailable`)]
-          : []),
-      ]
-    : [];
+  const pending = status?.promotionState === "pending";
+  const offersPromote = status && !pending && status.effectiveClass !== "ordinary";
+  // A pending row this viewer may not cancel still says why, from the projected reasons.
+  const why =
+    pending && !status.canCancel
+      ? capabilityDisabledLabels(status)
+      : offersPromote
+        ? [
+            ...(session.promotionDisabledReason ? [session.promotionDisabledReason] : []),
+            ...capabilityDisabledLabels(status),
+            ...(!session.key || !session.sessionId || !status.lifecycleRevision
+              ? [t(`${KEY}.unavailable`)]
+              : []),
+          ]
+        : [];
   const row = (label: string, values: string[]) => {
     const unique = [...new Set(values)];
     return unique.length
