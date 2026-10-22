@@ -2,7 +2,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { SystemRunExecutionContext } from "../../packages/gateway-protocol/src/system-run-execution-context.js";
 import { normalizeChatChannelId } from "../channels/ids.js";
-import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import type { ExecHost } from "../infra/exec-approvals.js";
 import {
   isDangerousHostEnvOverrideVarName,
@@ -138,31 +137,13 @@ export function resolveExecNotificationDefaults(defaults?: ExecToolDefaults) {
   let subagentSession: Promise<boolean> | undefined;
   const resolveSubagentSession = () =>
     (subagentSession ??= (async () => {
-      if (
-        !notifySessionKey ||
-        !defaults?.config ||
-        !notifyAgentSession?.rest.startsWith("dashboard:")
-      ) {
-        return isSubagentEnvelopeSession(notifySessionKey);
+      // A dashboard chat stays a conversation even when another session opened it.
+      // spawnDepth and spawnedBy are history, not a reason to drop its exec wake.
+      if (notifyAgentSession?.rest.startsWith("dashboard:")) {
+        return false;
       }
-      const { readSessionEntriesFromStoreInWorker } =
-        await import("../config/sessions/session-entry-read-runtime.js");
-      const read = await readSessionEntriesFromStoreInWorker({
-        agentId: notifyAgentSession.agentId,
-        sessionKeys: [notifySessionKey],
-        snapshotFields: [],
-        storePath: resolveSessionStorePathCore(defaults.config.session?.store, {
-          agentId: notifyAgentSession.agentId,
-        }),
-      });
-      return isSubagentEnvelopeSession(notifySessionKey, {
-        entry: read.entries.find(({ sessionKey }) => sessionKey === notifySessionKey)?.entry,
-      });
-    })().catch(() => {
-      // Identity enrichment must not prevent exec; retry the worker on the next call.
-      subagentSession = undefined;
       return isSubagentEnvelopeSession(notifySessionKey);
-    }));
+    })());
   const notifyDeliveryContext = normalizeDeliveryContext({
     channel: defaults?.messageProvider,
     to: defaults?.currentChannelId,

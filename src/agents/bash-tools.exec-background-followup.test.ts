@@ -87,7 +87,11 @@ test("starts and notifies when the session worker fails, then resolves child ide
       throw new Error("Expected a background process");
     }
     await waitForExecScope(sessionKey);
-    expect(enqueueSessionEventMock).toHaveBeenCalledTimes(recovered ? 0 : 1);
+    // A spawned dashboard (spawnDepth 1) still wakes. Only a subagent: key stays passive.
+    expect(enqueueSessionEventMock).toHaveBeenCalledTimes(1);
+    expect(String(started.content?.[0] && "text" in started.content[0] ? started.content[0].text : "")).toContain(
+      "Completion wakes this conversation",
+    );
     const result = await processTool.execute("collect", {
       action: "poll",
       sessionId: started.details.sessionId,
@@ -98,4 +102,28 @@ test("starts and notifies when the session worker fails, then resolves child ide
       exitCode: 1,
     });
   }
+});
+
+test("does not wake a hidden subagent session when a background exec finishes", async () => {
+  const sessionKey = "agent:main:subagent:hidden-exec";
+  const exec = createExecTool({
+    config: {},
+    host: "gateway",
+    security: "full",
+    ask: "off",
+    sessionKey,
+    scopeKey: sessionKey,
+    notifyOnExit: true,
+    allowBackground: true,
+  });
+  enqueueSessionEventMock.mockClear();
+  const started = await exec.execute("hidden-subagent", {
+    command: nodeCommand('process.stdout.write("EXEC_STARTED"); process.exitCode = 1'),
+    background: true,
+  });
+  expect(started.details.status).toBe("running");
+  expect(String(started.content?.[0] && "text" in started.content[0] ? started.content[0].text : "")).toContain(
+    "does not wake it",
+  );
+  expect(enqueueSessionEventMock).not.toHaveBeenCalled();
 });

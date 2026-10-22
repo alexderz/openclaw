@@ -8,7 +8,7 @@ import { resolveEventSessionKeyForPolicy } from "../infra/event-session-routing.
 import { readExecRequestOwners, withExecRequestOwners } from "../infra/exec-request-context.js";
 import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEventWithReceipt } from "../infra/system-events.js";
-import { logWarn } from "../logger.js";
+import { logInfo, logWarn } from "../logger.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { isSubagentSessionKey } from "../sessions/session-key-utils.js";
 import { recordNotifyOnExitRemoval, tail, type ProcessSession } from "./bash-process-registry.js";
@@ -131,7 +131,11 @@ export function maybeNotifyOnExit(
     }
     return;
   }
-  // Subagent results remain available to process poll and the announce owner.
+  // Hidden subagent results stay with process poll and the announce owner.
+  // A dashboard session must not reach this branch; log so a dropped wake is visible.
+  logInfo(
+    `exec: completion ${session.id} queued without a wake for subagent session ${sessionKey}`,
+  );
   const remove = enqueueSystemEventWithReceipt(
     eventText,
     session.agentId ? withSystemEventOwner(eventOptions, session.agentId) : eventOptions,
