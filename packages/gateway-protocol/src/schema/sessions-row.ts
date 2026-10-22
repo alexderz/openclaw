@@ -196,6 +196,8 @@ export const SessionRowSchema = Type.Object(
     archiveReason: Type.Optional(SessionEntryArchiveReasonSchema),
     pinned: Type.Optional(Type.Boolean()),
     pinnedAt: Type.Optional(Type.Number()),
+    /** Gateway pin/snooze root-session verdict from the stored entry; clients prefer it to lineage. */
+    pinnable: Type.Optional(Type.Boolean()),
     snoozedUntil: Type.Optional(Type.Number()),
     snoozedAt: Type.Optional(Type.Number()),
     unread: Type.Optional(Type.Boolean()),
