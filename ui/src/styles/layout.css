@@ -4894,25 +4894,22 @@ html.openclaw-native-macos:not(.openclaw-native-nav):not(.openclaw-native-web-ch
   background: repeating-linear-gradient(
     to bottom,
     var(--sidebar-promotion-tick-color) 0 3px,
-    transparent 3px 5.5px
+    transparent 3px 5px
   );
 }
 
-/* A wider hover target for the tooltip; the click still lands on the row link. */
+/* A wider hover target for the tooltip, kept off a leading indicator; clicks still reach the link. */
 .sidebar-session-promotion-tick::before {
   content: "";
   position: absolute;
-  inset: -3px -3px;
+  inset: -3px -3px -3px -1px;
 }
 
+/* Forced colors would paint the bar as Canvas; draw it in the row's own forced text color. */
 @media (forced-colors: active) {
   .sidebar-session-promotion-tick {
+    --sidebar-promotion-tick-color: currentColor;
     forced-color-adjust: none;
-    background: CanvasText;
-  }
-
-  .sidebar-session-promotion-tick--pending {
-    background: repeating-linear-gradient(to bottom, CanvasText 0 3px, transparent 3px 5.5px);
   }
 }
 
