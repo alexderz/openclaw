@@ -118,6 +118,23 @@ export function decodeSessionPromotion(value: unknown): SessionPromotion | undef
   }
 }
 
+/** The stored receipt is a valid activation of exactly this row's current identity. */
+export function isActivatedSessionPromotionFor(
+  key: string,
+  entry: { sessionId?: string; lifecycleRevision?: string; sessionPromotion?: unknown },
+): boolean {
+  if (entry.sessionPromotion === undefined) {
+    return false;
+  }
+  const receipt = decodeSessionPromotion(entry.sessionPromotion);
+  return (
+    receipt?.state === "activated" &&
+    receipt.target.key === key &&
+    receipt.target.sessionId === entry.sessionId &&
+    receipt.toLifecycleRevision === entry.lifecycleRevision
+  );
+}
+
 export class SessionPromotionConflictError extends Error {
   constructor() {
     super("Session promotion target or request changed.");
