@@ -85,6 +85,23 @@ type GatewayApprovalResult = Awaited<ReturnType<typeof processGatewayAllowlist>>
 const BACKGROUND_EXEC_FOLLOW_UP =
   "Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.";
 
+function execBackgroundFollowUp(params: {
+  notifyOnExit: boolean;
+  notifyOnExitEmptySuccess: boolean;
+  subagentSession: boolean;
+}): string {
+  if (!params.notifyOnExit) {
+    return `${BACKGROUND_EXEC_FOLLOW_UP} ${EXEC_MANUAL_COLLECTION_FOLLOW_UP}`;
+  }
+  if (params.subagentSession) {
+    return `${BACKGROUND_EXEC_FOLLOW_UP} This session is a hidden subagent, so completion does not wake it. Use process poll, or the parent announce, to collect the result.`;
+  }
+  if (params.notifyOnExitEmptySuccess) {
+    return `Completion will wake this conversation automatically. If only waiting remains, report that the job is running and end this turn; do not keep polling. ${BACKGROUND_EXEC_FOLLOW_UP}`;
+  }
+  return `${BACKGROUND_EXEC_FOLLOW_UP} Completion wakes this conversation on output or failure; empty successful jobs are silent (tools.exec.notifyOnExitEmptySuccess=false). Arrange continuation or collect the result before ending the turn if empty success matters.`;
+}
+
 /** Creates an exec tool instance with runtime defaults and approval policy wiring. */
 export function createExecTool(defaults?: ExecToolDefaults) {
   const secretEgressEnabled = isSecretEgressProxyActive();
@@ -161,12 +178,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
     notifyDeliveryContext,
     notifyFromConversationTurn,
   } = resolveExecNotificationDefaults(defaults);
-  const backgroundFollowUp =
-    notifyOnExit && notifyOnExitEmptySuccess
-      ? `Completion will wake this conversation automatically. If only waiting remains, report that the job is running and end this turn; do not keep polling. ${BACKGROUND_EXEC_FOLLOW_UP}`
-      : notifyOnExit
-        ? `${BACKGROUND_EXEC_FOLLOW_UP} Completion wakes this conversation on output or failure; empty successful jobs are silent (tools.exec.notifyOnExitEmptySuccess=false). Arrange continuation or collect the result before ending the turn if empty success matters.`
-        : `${BACKGROUND_EXEC_FOLLOW_UP} ${EXEC_MANUAL_COLLECTION_FOLLOW_UP}`;
+
   const approvalRunningNoticeMs = resolveApprovalRunningNoticeMs(defaults?.approvalRunningNoticeMs);
   // Derive agentId only when sessionKey is an agent session key.
   const parsedAgentSession = parseAgentSessionKey(defaults?.sessionKey);
@@ -249,6 +261,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
       const startedAt = Date.now();
       let execCommandOverride: string | undefined;
       let gatewayApproval: GatewayApprovalResult | undefined;
+      let subagentSession = false;
       let approvalReview: ExecToolApprovalReview | undefined;
       const foregroundFallbackWarning =
         !backgroundAvailable && (params.background === true || typeof params.yieldMs === "number")
@@ -560,7 +573,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           });
         }
 
-        const subagentSession =
+        subagentSession =
           notifyOnExit && allowBackground ? await resolveSubagentSession() : false;
         assertSourceActive();
         run = await runExecProcess({
@@ -703,7 +716,11 @@ export function createExecTool(defaults?: ExecToolDefaults) {
                     type: "text",
                     text: `${getWarningText()}Command still running (session ${run.session.id}, pid ${
                       run.session.pid ?? "n/a"
-                    }). ${backgroundFollowUp}`,
+                    }). ${execBackgroundFollowUp({
+                      notifyOnExit,
+                      notifyOnExitEmptySuccess,
+                      subagentSession,
+                    })}`,
                   },
                 ],
                 details: {
@@ -714,7 +731,11 @@ export function createExecTool(defaults?: ExecToolDefaults) {
                   cwd: run.session.cwd,
                   tail: run.session.tail,
                   // Structured callers receive details without the visible content.
-                  followUp: backgroundFollowUp,
+                  followUp: execBackgroundFollowUp({
+                    notifyOnExit,
+                    notifyOnExitEmptySuccess,
+                    subagentSession,
+                  }),
                 },
               },
           approvalReview,
