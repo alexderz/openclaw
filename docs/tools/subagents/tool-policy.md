@@ -43,6 +43,13 @@ their communication stays on the announce chain.
 `sessions_history` remains a bounded, redacted recall view here too — it
 is neither a raw transcript dump nor a prose-only rendering.
 
+A person can [promote](/web/control-ui/sessions-and-sidebar#promote-a-delegated-session) a
+delegated session in the Control UI. After activation, that person's directly
+typed Control UI turns skip the inherited requester policy and this restriction
+layer; completion wakes, automation, inbound `sessions_send`, and other people's
+turns keep them. Global and agent tool policy, sandbox, and the person's role
+still apply. Agents cannot promote sessions.
+
 By default, sub-agents below depth `5` receive `sessions_spawn`, `subagents`,
 `sessions_list`, and `sessions_history` so they can manage their children.
 
