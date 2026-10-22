@@ -363,6 +363,9 @@ export async function probeSessionPromotionQuiescence(
       ),
     );
     target.storePath = store?.storePath;
+    // Older registry rows carry no child identity. The descendant's stored row names its current
+    // incarnation, so its owners can be read; with no stored row it stays unknown and blocks.
+    target.sessionId ??= store?.entry?.sessionId;
     target.aliases = store
       ? [store.canonicalKey, store.storeKey, ...store.storeKeys].filter(Boolean)
       : undefined;
