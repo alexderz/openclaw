@@ -40,6 +40,7 @@ import type { ControlUiRegistration } from "../plugins/control-ui-capability.ts"
 import { sidebarPluginTabs } from "./app-sidebar-nav-menus.ts";
 import {
   SIDEBAR_SESSION_NO_ATTENTION,
+  resolveSidebarPromotionMark,
   type SidebarRecentSession,
   type SidebarSessionSortMode,
   type SidebarSessionStatusFilter,
@@ -208,6 +209,7 @@ export function buildSidebarSessionNavigationState(input: {
       kind: row.kind,
       pinned: row.pinned === true,
       pinnable: isPinnableUiSessionRow(row),
+      promotionMark: resolveSidebarPromotionMark(row.promotion),
       snoozedUntil: row.snoozedUntil,
       archived: row.archived === true,
       visibility: row.visibility,
