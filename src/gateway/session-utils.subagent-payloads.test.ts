@@ -165,6 +165,8 @@ describe("session list subagent payload reads", () => {
         // but its stored entry has no spawnedBy, so the Gateway still lets it be pinned.
         const dashboardKey = "agent:main:dashboard:registry-child";
         const subagentKey = "agent:main:subagent:registry-child";
+        // A promoted delegated child keeps its spawn lineage and nesting but becomes pinnable.
+        const promotedKey = "agent:main:subagent:promoted-child";
         const storePath = resolveSessionStorePathCore(undefined, { agentId: "main" });
         setRuntimeConfigSnapshot(cfg, cfg);
         try {
@@ -179,6 +181,33 @@ describe("session list subagent payload reads", () => {
           replaceSessionEntrySync(
             { storePath, sessionKey: subagentKey },
             { sessionId: "subagent", updatedAt: now, spawnedBy: parentKey },
+          );
+          replaceSessionEntrySync(
+            { storePath, sessionKey: promotedKey },
+            {
+              sessionId: "promoted",
+              updatedAt: now,
+              spawnedBy: parentKey,
+              spawnDepth: 1,
+              lifecycleRevision: "after-handoff",
+              pinnedAt: now - 1,
+              sessionPromotion: {
+                version: 1,
+                state: "activated",
+                requestId: "request",
+                acceptedAt: 1,
+                target: {
+                  agentId: "main",
+                  key: promotedKey,
+                  sessionId: "promoted",
+                  fromLifecycleRevision: "before-handoff",
+                },
+                boundary: "settlement-or-fresh-human-input",
+                profileId: "human",
+                activatedAt: 2,
+                toLifecycleRevision: "after-handoff",
+              },
+            },
           );
           for (const [runId, childSessionKey] of [
             ["dashboard-run", dashboardKey],
@@ -206,6 +235,11 @@ describe("session list subagent payload reads", () => {
             pinned: true,
           });
           expect(subagent).toMatchObject({ spawnedBy: parentKey, pinnable: false, pinned: false });
+          expect((await rowReader.snapshot(promotedKey, { now })).row).toMatchObject({
+            spawnedBy: parentKey,
+            pinnable: true,
+            pinned: true,
+          });
         } finally {
           await rowReader.dispose();
           resetConfigRuntimeState();

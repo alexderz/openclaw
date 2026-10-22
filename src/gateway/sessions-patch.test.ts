@@ -450,6 +450,80 @@ describe("gateway sessions patch", () => {
     );
   });
 
+  describe("activated promotion pins", () => {
+    const key = "agent:main:dashboard:promoted";
+    const receiptBase = {
+      version: 1,
+      requestId: "request",
+      acceptedAt: 1,
+      target: { agentId: "main", key, sessionId: "child", fromLifecycleRevision: "r1" },
+      boundary: "settlement-or-fresh-human-input",
+    } as const;
+    const activated = {
+      ...receiptBase,
+      state: "activated",
+      profileId: "human",
+      activatedAt: 2,
+      toLifecycleRevision: "r2",
+    } as const;
+    const pending = {
+      ...receiptBase,
+      state: "pending",
+      requester: {
+        version: 1,
+        actor: { kind: "operator", profileId: "human" },
+        scopes: ["operator.sessions.write"],
+        grant: null,
+      },
+    } as const;
+    const child = (sessionPromotion?: unknown): SessionEntry =>
+      ({
+        sessionId: "child",
+        updatedAt: 1,
+        lifecycleRevision: "r2",
+        spawnedBy: MAIN_SESSION_KEY,
+        spawnDepth: 1,
+        ...(sessionPromotion ? { sessionPromotion } : {}),
+      }) as SessionEntry;
+
+    test("pins and unpins an activated promotion without touching its lineage", async () => {
+      const pinned = expectPatchOk(
+        await runPatch({
+          storeKey: key,
+          store: { [key]: child(activated) },
+          patch: { key, pinned: true },
+        }),
+      );
+      expect(pinned.pinnedAt).toEqual(expect.any(Number));
+      expect(pinned.spawnedBy).toBe(MAIN_SESSION_KEY);
+      expect(pinned.spawnDepth).toBe(1);
+
+      const unpinned = expectPatchOk(
+        await runPatch({
+          storeKey: key,
+          store: { [key]: { ...child(activated), pinnedAt: 10 } },
+          patch: { key, pinned: false },
+        }),
+      );
+      expect(unpinned.pinnedAt).toBeUndefined();
+      expect(unpinned.spawnedBy).toBe(MAIN_SESSION_KEY);
+    });
+
+    test.each([
+      ["none", undefined],
+      ["pending", pending],
+    ] as const)("still rejects a delegated child pin with promotion %s", async (_name, receipt) => {
+      expectPatchError(
+        await runPatch({
+          storeKey: key,
+          store: { [key]: child(receipt) },
+          patch: { key, pinned: true },
+        }),
+        "cannot pin a child session; pin its parent session instead",
+      );
+    });
+  });
+
   test.each([{ pinned: false }, { label: "Child task" }] as const)(
     "clears stale child pins on a metadata or unpin patch: %j",
     async (patch) => {
