@@ -97,6 +97,11 @@ export const EMPTY_SESSION_MENU_DATA: SessionMenuData = {
   categoryClearReturnsToGroups: false,
 };
 
+/** A known pin verdict (the Gateway's, when projected) outranks the tree-child fallback. */
+function sessionPinAllowed(session: SessionMenuData): boolean {
+  return session.pinnable ?? session.isChild !== true;
+}
+
 type SessionMenuActionsHost = ReactiveControllerHost &
   HTMLElement & { updateComplete: Promise<unknown> };
 
@@ -188,7 +193,7 @@ export class SessionMenuActions {
       case "copy-session-id":
         return batch || !session.sessionId;
       case "toggle-pin":
-        return batch || session.pinnable === false || session.isChild === true || session.archived;
+        return batch || !sessionPinAllowed(session) || session.archived;
       case "snooze":
       case "wake":
         return (
@@ -395,7 +400,7 @@ export class SessionMenuActions {
     const count = String(selectionCount);
     return html`
       ${
-        batch || session.pinnable === false || session.isChild
+        batch || !sessionPinAllowed(session)
           ? nothing
           : this.renderItem(
               "toggle-pin",

@@ -520,6 +520,7 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     archiveReason: entry?.archiveReason,
     pinned: pinnedAt !== undefined,
     pinnedAt,
+    pinnable,
     snoozedUntil: pinnable ? entry?.snoozedUntil : undefined,
     snoozedAt: pinnable ? entry?.snoozedAt : undefined,
     unread: deriveSessionUnread(entry),

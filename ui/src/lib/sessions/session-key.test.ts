@@ -335,4 +335,12 @@ describe("session pin eligibility", () => {
   ])("projects pin eligibility for %j", (row, expected) => {
     expect(isPinnableUiSessionRow(row)).toBe(expected);
   });
+  it("prefers the Gateway's projected pin verdict over a registry spawnedBy overlay", () => {
+    const row = { key: "agent:main:dashboard:molting", spawnedBy: "agent:main:main" };
+    expect(isPinnableUiSessionRow(row)).toBe(false);
+    expect(isPinnableUiSessionRow({ ...row, pinnable: true })).toBe(true);
+    expect(isPinnableUiSessionRow({ key: "agent:main:dashboard:root", pinnable: false })).toBe(
+      false,
+    );
+  });
 });

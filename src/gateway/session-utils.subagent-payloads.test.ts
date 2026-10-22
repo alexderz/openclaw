@@ -156,6 +156,64 @@ describe("session list subagent payload reads", () => {
     });
   });
 
+  test("projects the stored pin verdict when a registry run overlays spawnedBy (DER-544)", async () => {
+    await withStateDirEnv("openclaw-registry-pinnable-projection-", async () => {
+      await withEnvAsync({ OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" }, async () => {
+        const now = Date.now();
+        const parentKey = "agent:main:main";
+        // A durable dashboard session started by a spawn: the registry names its requester,
+        // but its stored entry has no spawnedBy, so the Gateway still lets it be pinned.
+        const dashboardKey = "agent:main:dashboard:registry-child";
+        const subagentKey = "agent:main:subagent:registry-child";
+        const storePath = resolveSessionStorePathCore(undefined, { agentId: "main" });
+        setRuntimeConfigSnapshot(cfg, cfg);
+        try {
+          replaceSessionEntrySync(
+            { storePath, sessionKey: parentKey },
+            { sessionId: "parent", updatedAt: now },
+          );
+          replaceSessionEntrySync(
+            { storePath, sessionKey: dashboardKey },
+            { sessionId: "dashboard", updatedAt: now, pinnedAt: now - 1 },
+          );
+          replaceSessionEntrySync(
+            { storePath, sessionKey: subagentKey },
+            { sessionId: "subagent", updatedAt: now, spawnedBy: parentKey },
+          );
+          for (const [runId, childSessionKey] of [
+            ["dashboard-run", dashboardKey],
+            ["subagent-run", subagentKey],
+          ] as const) {
+            await addSubagentRunForTests({
+              runId,
+              childSessionKey,
+              controllerSessionKey: parentKey,
+              requesterSessionKey: parentKey,
+              requesterDisplayKey: "main",
+              task: runId,
+              cleanup: "keep",
+              createdAt: now - 100,
+              startedAt: now - 50,
+            });
+          }
+          subagentRegistryState.clearSubagentRunsReadCacheForTest();
+          await (await rowReader.ready()).ensureMaterialized();
+          const dashboard = (await rowReader.snapshot(dashboardKey, { now })).row;
+          const subagent = (await rowReader.snapshot(subagentKey, { now })).row;
+          expect(dashboard).toMatchObject({
+            spawnedBy: parentKey,
+            pinnable: true,
+            pinned: true,
+          });
+          expect(subagent).toMatchObject({ spawnedBy: parentKey, pinnable: false, pinned: false });
+        } finally {
+          await rowReader.dispose();
+          resetConfigRuntimeState();
+        }
+      });
+    });
+  });
+
   test("projects lifecycle ownership and lineage without parsing retained task payloads", async () => {
     await withStateDirEnv("openclaw-lifecycle-registry-projection-", async () => {
       await withEnvAsync({ OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" }, async () => {
