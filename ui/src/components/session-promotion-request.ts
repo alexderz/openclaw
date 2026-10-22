@@ -101,6 +101,11 @@ export async function runSessionPromotion(
   row: GatewaySessionRow,
   host: SessionPromotionHost,
 ): Promise<void> {
+  // A request already in flight or in doubt owns this target; touch no surface's scope.
+  const existing = host.outcomes.read(host.gateway, row);
+  if (existing?.busy || (kind !== "check-promotion" && existing?.uncertain)) {
+    return;
+  }
   const scope = host.captureScope();
   if (!scope) {
     host.publishError(t("sessionsView.actionRequiresConnection"));
@@ -127,10 +132,7 @@ export async function runSessionPromotion(
     cancel
       ? Boolean(cancelRequestId) && pendingCancelRequestId(current()?.promotion) === cancelRequestId
       : canRequestPromotion(current()?.promotion);
-  let ui = host.outcomes.read(host.gateway, row);
-  if (ui?.busy || (kind !== "check-promotion" && ui?.uncertain)) {
-    return;
-  }
+  let ui = existing;
   if (
     !isCurrent() ||
     (kind !== "check-promotion" &&

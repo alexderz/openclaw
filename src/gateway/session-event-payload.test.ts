@@ -213,6 +213,17 @@ it.each(["user", null] as const)(
   },
 );
 
+it.each([true, false])(
+  "carries the Gateway pin verdict pinnable=%s into session change events",
+  (pinnable) => {
+    expect(
+      buildGatewaySessionSnapshot({
+        sessionRow: { key: "agent:main:dashboard:pin", kind: "direct", updatedAt: 1, pinnable },
+      }).pinnable,
+    ).toBe(pinnable);
+  },
+);
+
 it.each([false, true])(
   "serializes lifecycle starts without prior timing, deriving liveness from the owner (active=%s)",
   (active) => {

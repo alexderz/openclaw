@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import type { GatewaySessionRow } from "../api/types.ts";
 import {
   PENDING_REQUEST_ID,
   promotionProjection,
@@ -60,7 +61,8 @@ async function openHandoffPage(
   look: {
     colorScheme?: "light" | "dark";
     promotion?: ReturnType<typeof promotionProjection>;
-    row?: Partial<ReturnType<typeof sessionRow>>;
+    /** Extra wire fields for the one row, such as a registry spawnedBy overlay. */
+    row?: Partial<GatewaySessionRow>;
     methods?: string[];
   } = {},
 ) {
