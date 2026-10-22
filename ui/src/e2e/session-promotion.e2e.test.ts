@@ -57,8 +57,13 @@ async function openHandoffPage(
     effective: { class: "delegated" },
   },
   crowdedHeader = false,
+  look: {
+    colorScheme?: "light" | "dark";
+    promotion?: ReturnType<typeof promotionProjection>;
+  } = {},
 ) {
   const context = await suite.browser.newContext({
+    colorScheme: look.colorScheme ?? "light",
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: viewport.scale,
     hasTouch: viewport.touch,
@@ -76,7 +81,10 @@ async function openHandoffPage(
         {
           ...sessionRow(key, "Handoff candidate", Date.now()),
           ...(crowdedHeader ? crowdedHeaderRow : {}),
-          promotion: { ...promotionProjection(kind), lifecycleRevision: "proof-revision" },
+          promotion: {
+            ...(look.promotion ?? promotionProjection(kind)),
+            lifecycleRevision: "proof-revision",
+          },
         },
       ]),
       "sessions.promote": promoteResponse,
@@ -131,7 +139,8 @@ suite.define(() => {
         await expect
           .poll(() => host.locator('[role="status"]').textContent())
           .toContain("Delegated · limited");
-        const detailsToggle = host.getByRole("button", { name: "Session capability details" });
+        // The capability glyph is the info button; its name is the capability in words.
+        const detailsToggle = host.getByRole("button", { name: "Delegated · limited" });
         await detailsToggle.focus();
         await page.keyboard.press("Enter");
         await expect.poll(() => detailsToggle.getAttribute("aria-expanded")).toBe("true");
@@ -188,7 +197,7 @@ suite.define(() => {
         await expect
           .poll(() => header.locator(".chat-pane__participants .viewer-avatar").count())
           .toBeGreaterThan(0);
-        const toggle = host.getByRole("button", { name: "Session capability details" });
+        const toggle = host.getByRole("button", { name: "Delegated · limited" });
         const neighbours = {
           workspace: header.locator(".chat-pane__workspace-chip"),
           owner: header.locator(".session-owner-chip--header"),
@@ -204,7 +213,7 @@ suite.define(() => {
           return bounds!;
         };
         const headerBefore = await box(header);
-        const own = { badge: await box(badge, "badge"), toggle: await box(toggle, "toggle") };
+        const own = { toggle: await box(toggle, "toggle") };
         expect(own.toggle.width).toBeGreaterThanOrEqual(44);
         expect(own.toggle.height).toBeGreaterThanOrEqual(44);
         const intersects = (
@@ -241,7 +250,7 @@ suite.define(() => {
             expect(intersects(ownBox, bounds), ownName + " overlaps " + name).toBe(false);
           }
         }
-        expect(intersects(own.badge, own.toggle), "badge overlaps details button").toBe(false);
+        expect(await box(badge), "the badge is the info button").toEqual(own.toggle);
         expect(
           await page.evaluate(() => document.documentElement.scrollWidth),
           "no horizontal page overflow",
@@ -252,7 +261,7 @@ suite.define(() => {
         await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
         // The panel overlays the conversation; opening it must not push the header around.
         expect(await box(header)).toEqual(headerBefore);
-        expect(await box(badge)).toEqual(own.badge);
+        expect(await box(badge)).toEqual(own.toggle);
         // Visible on top of the conversation, not clipped by or painted under a pane ancestor.
         const panel = host.locator(".session-capability-details");
         const panelBox = await box(panel, "details panel");
@@ -358,6 +367,93 @@ suite.define(() => {
         expect(await gateway.getRequests("sessions.promote")).toHaveLength(0);
       } catch (error) {
         await captureUiProof(suite, page, "session-promotion-" + kind + "-failure.png");
+        throw error;
+      } finally {
+        await context.close();
+      }
+    },
+    90_000,
+  );
+
+  /** A natively ordinary row, as projectSessionPromotion returns it for a never-delegated key. */
+  const standardRow = {
+    ...promotionProjection("authorized-none"),
+    historicalOrigin: "ordinary",
+    effectiveClass: "ordinary",
+    classScope: "all-turns",
+    canPromote: false,
+    disabledReasons: ["unsupported-target:not-delegated"],
+  } satisfies ReturnType<typeof promotionProjection>;
+  const BUBBLE_STATES = [
+    {
+      name: "standard",
+      kind: "authorized-none",
+      promotion: standardRow,
+      glyph: "Ordinary · policy-limited",
+    },
+    { name: "delegated", kind: "authorized-none", glyph: "Delegated · limited" },
+    { name: "pending", kind: "authorized-pending", glyph: "Promotion pending" },
+  ] as const;
+
+  it.each(
+    [VIEWPORTS[0], VIEWPORTS[1]].flatMap((viewport) =>
+      (["light", "dark"] as const).flatMap((colorScheme) =>
+        BUBBLE_STATES.map((state) => ({
+          viewport,
+          colorScheme,
+          state,
+          label: `${state.name} ${viewport.name} ${colorScheme}`,
+        })),
+      ),
+    ),
+  )(
+    "opens the info bubble from the capability glyph: $label",
+    async ({ viewport, colorScheme, state }) => {
+      const { context, page, host } = await openHandoffPage(
+        viewport,
+        state.kind,
+        undefined,
+        false,
+        { colorScheme, ...("promotion" in state ? { promotion: state.promotion } : {}) },
+      );
+      const name = `session-info-${state.name}-${viewport.name}-${colorScheme}`;
+      try {
+        const toggle = host.getByRole("button", { name: state.glyph, exact: true });
+        await toggle.click();
+        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
+        const panel = host.locator(".session-capability-details");
+        await panel.waitFor({ state: "visible" });
+        const panelBox = (await panel.boundingBox())!;
+        expect(panelBox.x).toBeGreaterThanOrEqual(0);
+        expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(viewport.width);
+        const actions = panel.locator("[data-promotion-action]");
+        expect(
+          await actions.evaluateAll((buttons) =>
+            buttons.map((button) => (button as HTMLElement).dataset.promotionAction),
+          ),
+        ).toEqual(
+          state.name === "standard"
+            ? []
+            : state.name === "pending"
+              ? ["cancel-promotion"]
+              : ["promote-session"],
+        );
+        for (const box of await actions.evaluateAll((buttons) =>
+          buttons.map((button) => (button as HTMLElement).offsetHeight),
+        )) {
+          expect(box).toBeGreaterThanOrEqual(44);
+        }
+        await captureUiProof(suite, page, name + ".png");
+        if (state.name === "delegated") {
+          await panel.locator('[data-promotion-action="promote-session"]').click();
+          await page
+            .getByRole("button", { name: "Promote session", exact: true })
+            .waitFor({ state: "visible" });
+          await expectDialogButtonsAtLeast44(page);
+          expect(await panel.isHidden()).toBe(true);
+        }
+      } catch (error) {
+        await captureUiProof(suite, page, name + "-failure.png");
         throw error;
       } finally {
         await context.close();

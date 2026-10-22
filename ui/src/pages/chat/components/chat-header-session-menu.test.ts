@@ -50,8 +50,7 @@ it("offers explicit promotion and accessible live capability details in both lay
         capabilityStatus: promotionStatus,
       } satisfies Partial<SessionMenuData>,
     });
-    const status = menu.querySelector(".session-capability-status")!;
-    expect(status.getAttribute("role")).toBe("status");
+    expect(menu.querySelector('[role="status"]')?.getAttribute("aria-live")).toBe("polite");
     expect(menu.querySelector(".session-capability-details")?.textContent).toContain(
       "Delegated tools",
     );
@@ -101,13 +100,9 @@ it("tells the truth about who the promoted class covers and keeps a revoke re-re
   };
   expect(await show("promoted-requester")).toContain("Ordinary · your chat turns only");
   const details = menu.querySelector(".session-capability-details")?.textContent ?? "";
-  expect(details).toContain(
-    "Completion wakes, automation, messages from other sessions and other people's turns stay limited",
-  );
-  // Paths the promotion does not reach are named, so the badge is not read as full parity.
-  expect(details).toContain(
-    "plugin agent harnesses (such as Codex), background and compaction runs, and the sub-agent spawn limit",
-  );
+  expect(details).toContain("Standard: your direct chat turns");
+  // Turns the promotion does not reach are named, so the badge is not read as full parity.
+  expect(details).toContain("Limited: wakes, automation, other sessions and people");
   expect(await show("promoted-other-viewer")).toContain("Promoted for someone else");
   expect(await show("revoked-authorized")).toContain("Promotion denied · limited");
   const action = menu.querySelector('wa-dropdown-item[value="promote-session"]');

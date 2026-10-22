@@ -34,6 +34,10 @@ import {
   selectChatSessionSharingItem,
   type ChatSessionSharingProps,
 } from "./chat-session-sharing.ts";
+import {
+  renderSessionCapabilityDetails,
+  type PromotionActionKind,
+} from "./session-capability-info.ts";
 
 registerSessionPromotionEnglish();
 
@@ -80,7 +84,7 @@ const COMPACT_MENU_VIEW_BY_VALUE: Record<string, CompactMenuView> = {
 
 /**
  * One glyph per capability state (peacock status vocabulary). The glyph is decoration only: the
- * full words are the badge's accessible name, tooltip and live announcement, and open the details.
+ * full words are the toggle's accessible name, tooltip and live announcement.
  */
 const CAPABILITY_GLYPHS = {
   delegated: "🔒",
@@ -171,24 +175,28 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     },
   );
 
+  /** The one gate for the menu items and the info bubble buttons. */
+  private promotionActionAllowed(kind: PromotionActionKind): boolean {
+    const status = this.session.capabilityStatus;
+    return Boolean(
+      !this.session.promotionBusy &&
+      !this.session.promotionDisabledReason &&
+      (kind === "check-promotion" ||
+        (this.session.key &&
+          this.session.sessionId &&
+          !this.session.promotionUncertain &&
+          (kind === "cancel-promotion"
+            ? pendingCancelRequestId(status)
+            : canRequestPromotion(status)))),
+    );
+  }
+
   private readonly handleSelect = (event: MenuSelectEvent) => {
     const promotionValue = event.detail.item.value ?? "";
     if (["promote-session", "cancel-promotion", "check-promotion"].includes(promotionValue)) {
-      const status = this.session.capabilityStatus;
-      if (
-        !this.session.promotionBusy &&
-        !this.session.promotionDisabledReason &&
-        (promotionValue === "check-promotion" ||
-          (this.session.key &&
-            this.session.sessionId &&
-            !this.session.promotionUncertain &&
-            (promotionValue === "cancel-promotion"
-              ? pendingCancelRequestId(status)
-              : canRequestPromotion(status))))
-      ) {
-        this.onAction({
-          kind: promotionValue as "promote-session" | "cancel-promotion" | "check-promotion",
-        });
+      const kind = promotionValue as PromotionActionKind;
+      if (this.promotionActionAllowed(kind)) {
+        this.onAction({ kind });
       }
       return;
     }
@@ -574,26 +582,48 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     `;
   }
 
+  private readonly closeCapabilityDetailsOnOutsidePointer = (event: PointerEvent) => {
+    if (!event.composedPath().includes(this)) {
+      this.capabilityDetailsOpen = false;
+    }
+  };
+
+  override updated(changed: Map<PropertyKey, unknown>) {
+    super.updated(changed);
+    if (changed.has("capabilityDetailsOpen")) {
+      // Tap or click anywhere else closes the bubble, as on a phone there is no Escape key.
+      document.removeEventListener("pointerdown", this.closeCapabilityDetailsOnOutsidePointer);
+      if (this.capabilityDetailsOpen) {
+        document.addEventListener("pointerdown", this.closeCapabilityDetailsOnOutsidePointer);
+      }
+    }
+  }
+
+  override disconnectedCallback() {
+    document.removeEventListener("pointerdown", this.closeCapabilityDetailsOnOutsidePointer);
+    super.disconnectedCallback();
+  }
+
+  private runBubblePromotionAction(kind: PromotionActionKind) {
+    if (!this.promotionActionAllowed(kind)) {
+      return;
+    }
+    if (kind !== "check-promotion") {
+      // The confirm dialog takes focus; the bubble would only sit behind it.
+      this.capabilityDetailsOpen = false;
+    }
+    this.onAction({ kind });
+  }
+
   override render() {
     const menuLabel = t("chat.sidebar.sessionMenu", { session: this.session.label });
     const capability = this.capabilityBadge();
-    const detailsLabel = t("chat.sessionHeader.promotion.details");
     return html`
-      <span
-        class="session-capability-status"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
+      <button
+        class="btn btn--ghost btn--icon chat-icon-btn session-capability-status session-capability-details-toggle"
+        type="button"
         aria-label=${capability.label}
         title=${capability.label}
-        ><span class="session-capability-status__glyph" aria-hidden="true">${capability.glyph}</span
-        ><span class="sr-only">${capability.label}</span></span
-      >
-      <button
-        class="btn btn--ghost btn--icon chat-icon-btn session-capability-details-toggle"
-        type="button"
-        aria-label=${detailsLabel}
-        title=${detailsLabel}
         aria-expanded=${String(this.capabilityDetailsOpen)}
         aria-controls=${this.capabilityDetailsId}
         @click=${() => {
@@ -601,33 +631,21 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
         }}
         @keydown=${this.closeCapabilityDetailsOnEscape}
       >
-        ${icons.info}
+        <span class="session-capability-status__glyph" aria-hidden="true">${capability.glyph}</span
+        ><span class="sr-only">${capability.label}</span>
       </button>
-      <div
-        id=${this.capabilityDetailsId}
-        class="session-capability-details"
-        role="region"
-        aria-label=${detailsLabel}
-        ?hidden=${!this.capabilityDetailsOpen}
-        @keydown=${this.closeCapabilityDetailsOnEscape}
+      <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+        >${capability.label}</span
       >
-        <div class="session-capability-details__class">${capability.glyph} ${capability.label}</div>
-        <div>${t("chat.sessionHeader.promotion.explanation")}</div>
-        <div>${this.session.promotionMessage ?? ""}</div>
-        <div>
-          ${this.session.capabilityStatus?.historicalOrigin === "delegated" ? t("chat.sessionHeader.promotion.origin") : ""}
-        </div>
-        <div>
-          ${this.session.capabilityStatus?.classScope === "requesting-human-direct-turns" ? t("chat.sessionHeader.promotion.scope") : ""}
-        </div>
-        <ul>
-          ${[...(this.session.capabilityStatus?.disabledReasons ?? []), ...(this.session.capabilityStatus?.pendingBlockers ?? []), ...(this.session.capabilityStatus?.effectiveRestrictions ?? [])].map((reason) => html`<li>${reason}</li>`)}
-        </ul>
-        <div>
-          ${t("chat.sessionHeader.promotion.send", { status: this.session.capabilityStatus?.capabilities.sessionsSend ?? "unknown" })}
-        </div>
-        <div>${this.session.capabilityStatus?.activationBoundary ?? ""}</div>
-      </div>
+      ${renderSessionCapabilityDetails({
+        id: this.capabilityDetailsId,
+        open: this.capabilityDetailsOpen,
+        session: this.session,
+        capabilityLabel: capability.label,
+        actionAllowed: (kind) => this.promotionActionAllowed(kind),
+        onAction: (kind) => this.runBubblePromotionAction(kind),
+        onKeydown: this.closeCapabilityDetailsOnEscape,
+      })}
       <wa-dropdown
         class=${`session-menu chat-header-session-menu${this.compact ? " session-menu--compact chat-header-session-menu--compact" : ""}${this.compact && this.compactView === "sharing" ? " chat-header-session-menu--compact-sharing" : ""}`}
         placement="bottom-end"

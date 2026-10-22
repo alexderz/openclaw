@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { html, render } from "lit";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   EMPTY_SESSION_MENU_DATA,
   type SessionMenuData,
@@ -26,13 +26,17 @@ afterEach(() => {
   }
 });
 
-async function mountMenu(session: Partial<SessionMenuData>): Promise<HeaderMenuElement> {
+async function mountMenu(
+  session: Partial<SessionMenuData>,
+  onAction: (action: unknown) => void = () => {},
+): Promise<HeaderMenuElement> {
   const container = document.createElement("div");
   containers.push(container);
   document.body.append(container);
   render(
     html`<openclaw-chat-header-session-menu
       .session=${{ ...EMPTY_SESSION_MENU_DATA, label: "Test session", ...session }}
+      .onAction=${onAction}
     ></openclaw-chat-header-session-menu>`,
     container,
   );
@@ -54,12 +58,14 @@ it("compacts the capability badge to one glyph that keeps the full words as its 
     };
     await menu.updateComplete;
     const status = menu.querySelector(".session-capability-status")!;
+    const live = menu.querySelector('[role="status"]')!;
     return {
       glyph: status.querySelector('[aria-hidden="true"]')?.textContent?.trim(),
       name: status.getAttribute("aria-label"),
       title: status.getAttribute("title"),
-      role: status.getAttribute("role"),
-      live: status.getAttribute("aria-live"),
+      tag: status.tagName,
+      announced: live.textContent?.trim(),
+      live: live.getAttribute("aria-live"),
     };
   };
   const cases: Array<[Partial<SessionMenuData>, string, string]> = [
@@ -116,28 +122,49 @@ it("compacts the capability badge to one glyph that keeps the full words as its 
       glyph,
       name,
       title: name,
-      role: "status",
+      tag: "BUTTON",
+      announced: name,
       live: "polite",
     });
-    // The words travel with the glyph: announced by the live region and shown in the details.
+    // The words travel with the glyph: its name, tooltip and the live announcement.
     expect(menu.querySelector(".session-capability-status")?.textContent).toContain(name);
-    expect(menu.querySelector(".session-capability-details")?.textContent).toContain(name);
   }
 });
 
-it("opens the same capability details from an icon-only, keyboard-operable button", async () => {
+const facts = (menu: HeaderMenuElement) =>
+  Object.fromEntries(
+    [...menu.querySelectorAll(".session-capability-details__facts dt")].map((term) => [
+      term.textContent?.trim(),
+      [
+        ...(term.nextElementSibling?.querySelectorAll("li").length
+          ? term.nextElementSibling.querySelectorAll("li")
+          : [term.nextElementSibling!]),
+      ].map((node) => node.textContent?.replace(/\s+/g, " ").trim()),
+    ]),
+  );
+const bubbleButtons = (menu: HeaderMenuElement) =>
+  [
+    ...menu.querySelectorAll<HTMLButtonElement>(
+      ".session-capability-details [data-promotion-action]",
+    ),
+  ].map((button) => ({
+    kind: button.dataset.promotionAction,
+    label: button.textContent?.trim(),
+    disabled: button.disabled,
+  }));
+
+it("makes the capability glyph itself the keyboard-operable info button; no separate ⓘ", async () => {
   const menu = await mountMenu({ key: "k", sessionId: "s", capabilityStatus: promotionStatus });
   const toggle = menu.querySelector<HTMLButtonElement>("button.session-capability-details-toggle")!;
   const panel = menu.querySelector<HTMLElement>(".session-capability-details")!;
-  expect(toggle.getAttribute("aria-label")).toBe("Session capability details");
-  expect(toggle.getAttribute("title")).toBe("Session capability details");
-  // Icon only (the shared ⓘ info icon): the name comes from aria-label, not visible text.
-  expect(toggle.textContent?.trim()).toBe("");
-  expect(toggle.querySelector("svg")).not.toBeNull();
+  expect(menu.querySelectorAll("button.session-capability-details-toggle")).toHaveLength(1);
+  expect(toggle.classList.contains("session-capability-status")).toBe(true);
+  expect(toggle.getAttribute("aria-label")).toBe("Delegated · limited");
+  expect(toggle.querySelector('[aria-hidden="true"]')?.textContent?.trim()).toBe("🔒");
+  expect(toggle.querySelector("svg")).toBeNull();
   expect(toggle.getAttribute("aria-controls")).toBe(panel.id);
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   expect(panel.hidden).toBe(true);
-  expect(panel.textContent).toContain("Delegated tools");
 
   toggle.click();
   await menu.updateComplete;
@@ -150,4 +177,135 @@ it("opens the same capability details from an icon-only, keyboard-operable butto
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   expect(panel.hidden).toBe(true);
   expect(document.activeElement).toBe(toggle);
+
+  // A tap elsewhere closes it (phones have no Escape key); a tap inside does not.
+  toggle.click();
+  await menu.updateComplete;
+  panel.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true }));
+  await menu.updateComplete;
+  expect(panel.hidden).toBe(false);
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true }));
+  await menu.updateComplete;
+  expect(panel.hidden).toBe(true);
+});
+
+it("shows a standard session as type and permissions only, with no promote button", async () => {
+  const menu = await mountMenu({
+    key: "k",
+    sessionId: "s",
+    capabilityStatus: {
+      ...promotionStatus,
+      historicalOrigin: "ordinary",
+      effectiveClass: "ordinary",
+      classScope: "all-turns",
+      canPromote: false,
+      disabledReasons: ["unsupported-target:not-delegated"],
+      effectiveRestrictions: ["current-role-grants-resource-policy-and-sandbox-still-apply"],
+      capabilities: { sessionsSend: "unknown" },
+    },
+  });
+  expect(facts(menu)).toEqual({
+    Type: ["Standard"],
+    Permissions: [
+      "Standard: every turn",
+      "Your role, resource policy and sandbox still apply",
+      "Session messaging: checked when used",
+    ],
+  });
+  expect(bubbleButtons(menu)).toEqual([]);
+});
+
+it("offers Promote on a delegated session through the same action as the menu", async () => {
+  const onAction = vi.fn();
+  const menu = await mountMenu(
+    { key: "k", sessionId: "s", capabilityStatus: promotionProjection("authorized-none") },
+    onAction,
+  );
+  menu.querySelector<HTMLButtonElement>(".session-capability-details-toggle")!.click();
+  await menu.updateComplete;
+  expect(facts(menu)).toEqual({
+    Type: ["Limited (delegated)"],
+    Permissions: [
+      "Delegated limits: every turn",
+      "Your role, resource policy and sandbox still apply",
+      "Session messaging: checked when used",
+    ],
+  });
+  expect(bubbleButtons(menu)).toEqual([
+    { kind: "promote-session", label: "Promote", disabled: false },
+  ]);
+  menu.querySelector<HTMLButtonElement>('[data-promotion-action="promote-session"]')!.click();
+  await menu.updateComplete;
+  expect(onAction).toHaveBeenCalledWith({ kind: "promote-session" });
+  // The confirm dialog takes over; the bubble does not linger behind it.
+  expect(menu.querySelector<HTMLElement>(".session-capability-details")!.hidden).toBe(true);
+});
+
+it("disables Promote with a short reason when this viewer may not promote", async () => {
+  const onAction = vi.fn();
+  const menu = await mountMenu(
+    { key: "k", sessionId: "s", capabilityStatus: promotionProjection("restricted-viewer") },
+    onAction,
+  );
+  expect(facts(menu)["Why not"]).toEqual(["Needs your current authorization"]);
+  expect(bubbleButtons(menu)).toEqual([
+    { kind: "promote-session", label: "Promote", disabled: true },
+  ]);
+  menu.querySelector<HTMLButtonElement>('[data-promotion-action="promote-session"]')!.click();
+  expect(onAction).not.toHaveBeenCalled();
+});
+
+it("shows a pending promotion's blocker and offers Cancel only to a viewer who may cancel", async () => {
+  const onAction = vi.fn();
+  const menu = await mountMenu(
+    { key: "k", sessionId: "s", capabilityStatus: promotionProjection("authorized-pending") },
+    onAction,
+  );
+  expect(facts(menu)).toEqual({
+    Type: ["Pending promotion"],
+    Permissions: [
+      "Delegated limits: every turn",
+      "Your role, resource policy and sandbox still apply",
+      "Session messaging: checked when used",
+    ],
+    Status: [
+      "Starts on your next fresh turn",
+      "Waiting for running work to settle and an access re-check",
+    ],
+  });
+  expect(bubbleButtons(menu)).toEqual([
+    { kind: "cancel-promotion", label: "Cancel promotion", disabled: false },
+  ]);
+  menu.querySelector<HTMLButtonElement>('[data-promotion-action="cancel-promotion"]')!.click();
+  expect(onAction).toHaveBeenCalledWith({ kind: "cancel-promotion" });
+
+  menu.session = { ...menu.session, capabilityStatus: promotionProjection("unauthorized-pending") };
+  await menu.updateComplete;
+  expect(bubbleButtons(menu)).toEqual([]);
+  expect(facts(menu).Status?.[0]).toBe("Starts on your next fresh turn");
+});
+
+it("keeps an unknown Gateway code verbatim and offers a status check when the result is unknown", async () => {
+  const onAction = vi.fn();
+  const menu = await mountMenu(
+    {
+      key: "k",
+      sessionId: "s",
+      promotionUncertain: true,
+      capabilityStatus: {
+        ...promotionProjection("authorized-none"),
+        canPromote: false,
+        disabledReasons: ["some-future-reason"],
+      },
+    },
+    onAction,
+  );
+  expect(facts(menu)["Why not"]).toEqual(["some-future-reason"]);
+  expect(facts(menu).Status).toEqual(["Promotion result unknown · check status"]);
+  expect(bubbleButtons(menu)).toEqual([
+    { kind: "promote-session", label: "Promote", disabled: true },
+    { kind: "check-promotion", label: "Check status", disabled: false },
+  ]);
+  menu.querySelector<HTMLButtonElement>('[data-promotion-action="check-promotion"]')!.click();
+  expect(onAction).toHaveBeenCalledWith({ kind: "check-promotion" });
 });
