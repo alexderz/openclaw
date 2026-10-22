@@ -8,7 +8,9 @@ import type { SessionEntry } from "./types.js";
 // Durable dashboard sessions auto-parent to the agent main root for flow-up
 // notices and sidebar threads; that lineage does not make them nested children.
 // An activated promotion makes a delegated session pinnable while its spawn
-// lineage (spawnedBy, parent link and sidebar nesting) stays as it is.
+// lineage (spawnedBy, parent link and sidebar nesting) stays as it is. The pin
+// lasts as long as that activation matches the row: a new lifecycle revision
+// (reset) makes the child delegated again, and its next patch drops the pin.
 export function isPinnableSessionEntry(
   storeKey: string,
   entry:

@@ -509,6 +509,27 @@ describe("gateway sessions patch", () => {
       expect(unpinned.spawnedBy).toBe(MAIN_SESSION_KEY);
     });
 
+    test("drops the pin once a new lifecycle revision no longer matches the activation", async () => {
+      const reset = { ...child(activated), lifecycleRevision: "r3", pinnedAt: 10 };
+      expectPatchError(
+        await runPatch({
+          storeKey: key,
+          store: { [key]: { ...reset } },
+          patch: { key, pinned: true },
+        }),
+        "cannot pin a child session; pin its parent session instead",
+      );
+      const relabeled = expectPatchOk(
+        await runPatch({
+          storeKey: key,
+          store: { [key]: { ...reset } },
+          patch: { key, label: "Reset" },
+        }),
+      );
+      expect(relabeled.pinnedAt).toBeUndefined();
+      expect(relabeled.spawnedBy).toBe(MAIN_SESSION_KEY);
+    });
+
     test.each([
       ["none", undefined],
       ["pending", pending],
