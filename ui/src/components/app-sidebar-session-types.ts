@@ -13,7 +13,7 @@ import type {
   SessionOwner,
 } from "../../../packages/gateway-protocol/src/schema/sessions.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import type { GatewaySessionRow, SessionRunStatus } from "../api/types.ts";
+import type { GatewaySessionRow, SessionCapabilityStatus, SessionRunStatus } from "../api/types.ts";
 import type { ApplicationContext } from "../app/context.ts";
 import type { BoardFace } from "../lib/board/settings.ts";
 import type { SessionRowAttention } from "../lib/session-attention.ts";
@@ -329,7 +329,7 @@ export type SidebarPromotionMark = "limited" | "pending";
 
 /** Ordinary rows stay unmarked; pending wins over the delegated class it still carries. */
 export function resolveSidebarPromotionMark(
-  promotion: { effectiveClass?: string; promotionState?: string } | undefined,
+  promotion: SessionCapabilityStatus | undefined,
 ): SidebarPromotionMark | undefined {
   if (promotion?.promotionState === "pending") {
     return "pending";
