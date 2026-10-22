@@ -634,9 +634,9 @@
   white-space: normal;
 }
 
-/* Persistent capability status: one glyph plus an icon-only details button, inline with the
-   other header actions. No wrapping: a second line overlapped the workspace label, avatars and
-   drawer toggle on phones. The words live in the accessible name, tooltip and details panel. */
+/* Persistent capability status: one glyph that is itself the info button, inline with the other
+   header actions. No wrapping: a second line overlapped the workspace label, avatars and drawer
+   toggle on phones. The words live in the accessible name, tooltip and info bubble. */
 openclaw-chat-header-session-menu {
   display: flex;
   flex-wrap: nowrap;
@@ -644,15 +644,11 @@ openclaw-chat-header-session-menu {
   gap: 0;
   min-width: 0;
 }
-.session-capability-status {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
+.session-capability-status__glyph {
   font-size: 14px;
   line-height: 1;
 }
+.session-capability-details-toggle,
 .chat-pane__actions .chat-icon-btn.session-capability-details-toggle {
   width: 44px;
   min-width: 44px;
@@ -696,10 +692,33 @@ openclaw-chat-header-session-menu {
 }
 .session-capability-details ul {
   margin: 0;
-  padding-inline-start: 1.2em;
+  padding-inline-start: 1.1em;
 }
-.session-capability-details__class {
-  font-weight: 600;
+/* Label column and value column; values wrap, labels never do. */
+.session-capability-details__facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 4px;
+  margin: 0;
+}
+.session-capability-details__facts dt {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.session-capability-details__facts dd {
+  margin: 0;
+  min-width: 0;
+}
+.session-capability-details__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.session-capability-details__action {
+  min-height: 44px;
+  padding-inline: 14px;
 }
 .session-promotion-action,
 .chat-header-session-menu--compact .session-menu__item.session-promotion-action {
