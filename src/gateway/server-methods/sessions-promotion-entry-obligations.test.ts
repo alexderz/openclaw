@@ -24,6 +24,35 @@ describe("durable session-row obligations", () => {
     expect(codes({ ...quiet, pendingDeliveryNotice: acknowledged() })).toEqual([]);
     expect(codes({ ...quiet, abortedLastRun: true, status: "killed" })).toEqual([]);
   });
+  it("does not block on run tombstones or a reply mode left without its claim", () => {
+    // Shape of a live 2026.10.5 row whose pending promotion never activated.
+    const settled = {
+      ...quiet,
+      status: "done",
+      abortedLastRun: false,
+      activeWriterRunId: "run-finished",
+      restartRecoverySourceReplyDeliveryMode: "automatic",
+      restartRecoveryTerminalRunIds: ["run-a", "run-b"],
+    } as InternalSessionEntry;
+    expect(probeSessionEntryObligations(settled)).toEqual([]);
+  });
+  it("names the open recovery field, and only it, beside settled history", () => {
+    expect(
+      probeSessionEntryObligations({
+        ...quiet,
+        restartRecoveryTerminalRunIds: ["run-a"],
+        restartRecoverySourceReplyDeliveryMode: "automatic",
+        restartRecoveryDeliveryRunId: "run-b",
+      } as InternalSessionEntry),
+    ).toEqual([
+      {
+        code: "restart-recovery",
+        owner: "session-row",
+        field: "restartRecoverySourceReplyDeliveryMode",
+      },
+      { code: "restart-recovery", owner: "session-row", field: "restartRecoveryDeliveryRunId" },
+    ]);
+  });
   it("treats a missing or unreadable row as a blocker, never as quiet", () => {
     expect(codes(undefined)).toEqual(["session-row-unavailable"]);
     const hostile = new Proxy(quiet, {
@@ -46,7 +75,28 @@ describe("durable session-row obligations", () => {
     ["pending-transcript-repair", { pendingTranscriptRepair: [{}] }],
     ["restart-recovery", { restartRecoveryDeliveryReceiptState: "terminal-pending" }],
     ["restart-recovery", { restartRecoveryHarnessCompletion: {} }],
-    ["restart-recovery", { restartRecoveryTerminalRunIds: ["run"] }],
+    ["restart-recovery", { restartRecoveryDeliveryRunId: "run" }],
+    ["restart-recovery", { restartRecoveryDeliverySourceRunId: "run" }],
+    ["restart-recovery", { restartRecoveryRuns: [{ runId: "run" }] }],
+    ["restart-recovery", { restartRecoveryForceSafeTools: true }],
+    ["restart-recovery", { restartRecoveryOperatorSource: {} }],
+    ["restart-recovery", { restartRecoverySourceIngress: "control-ui" }],
+    [
+      "restart-recovery",
+      {
+        restartRecoverySourceReplyDeliveryMode: "automatic",
+        restartRecoveryDeliverySourceRunId: "run",
+      },
+    ],
+    [
+      "restart-recovery",
+      { restartRecoveryTerminalDeliveryEvidence: [{ runId: "run", harnessCompletion: {} }] },
+    ],
+    // A queued delivery retry reads this evidence under the original lifecycle revision.
+    [
+      "restart-recovery",
+      { restartRecoveryTerminalDeliveryEvidence: [{ runId: "run", transcriptRunId: "run" }] },
+    ],
     ["restart-recovery", { someFutureField: 1, restartRecoverySomethingNew: true }],
     ["interrupted-run-awaiting-recovery", { abortedLastRun: true }],
     ["lifecycle-run-open", { lifecycleRunId: "run" }],

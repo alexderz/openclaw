@@ -15,8 +15,19 @@ const mocks = vi.hoisted(() => ({
   originalCurrent: vi.fn(),
   paired: vi.fn(),
   database: vi.fn(),
+  info: vi.fn(),
   releases: [] as string[],
 }));
+vi.mock("../../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (name: string) =>
+      name === "gateway/session-promotion"
+        ? { ...actual.createSubsystemLogger(name), info: mocks.info }
+        : actual.createSubsystemLogger(name),
+  };
+});
 vi.mock("../../infra/device-pairing.js", () => ({ getPairedDevice: mocks.paired }));
 vi.mock("../../state/openclaw-state-db.paths.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/openclaw-state-db.paths.js")>()),
@@ -227,6 +238,66 @@ describe("fresh-human admission activation boundary", () => {
     expect(mocks.restore).not.toHaveBeenCalled();
   });
 
+  it("activates a fresh human turn on a row holding only settled restart-recovery history", async () => {
+    // The live 2026.10.5 row shape that stayed pending: settled run, stale writer id, a reply
+    // mode left behind by its cleared claim and terminal tombstones.
+    const entry = {
+      sessionId: "session",
+      lifecycleRevision: "before",
+      sessionPromotion: pending,
+      status: "done",
+      abortedLastRun: false,
+      activeWriterRunId: "run-finished",
+      restartRecoverySourceReplyDeliveryMode: "automatic",
+      restartRecoveryTerminalRunIds: ["run-a", "run-b"],
+    };
+    mocks.target.mockReturnValue({
+      entry,
+      storePath: "/store",
+      canonicalKey: key,
+      storeKey: key,
+      storeKeys: [],
+    });
+    let recheck: readonly string[] | undefined;
+    mocks.activate.mockImplementationOnce(async (params) => {
+      params.assertCurrent();
+      await params.probeBlockers({ add: vi.fn() });
+      recheck = params.recheckBlockers?.(entry);
+      return { activated: true, blockers: [], promotion: { state: "activated" } };
+    });
+    expect(await run(fixture().options)).toBe("activated");
+    expect(recheck).toEqual([]);
+    expect(mocks.info).not.toHaveBeenCalled();
+  });
+
+  it("keeps a row with open restart recovery pending and says why, once per blocker set", async () => {
+    mocks.target.mockReturnValue({
+      entry: {
+        sessionId: "session",
+        lifecycleRevision: "before",
+        sessionPromotion: { ...pending, requestId: "request-open-recovery" },
+        restartRecoverySourceReplyDeliveryMode: "automatic",
+        restartRecoveryTerminalRunIds: ["run-a"],
+        restartRecoveryDeliveryRunId: "run-recovering",
+        restartRecoveryDeliverySourceRunId: "run-source",
+      },
+      storePath: "/store",
+      canonicalKey: key,
+      storeKey: key,
+      storeKeys: [],
+    });
+    expect(await run(fixture().options)).toBe("unchanged");
+    expect(await run(fixture().options)).toBe("unchanged");
+    expect(mocks.activate).not.toHaveBeenCalled();
+    expect(mocks.info).toHaveBeenCalledTimes(1);
+    const [message] = mocks.info.mock.calls[0] as [string];
+    expect(message).toContain(key);
+    expect(message).toContain("restart-recovery:restartRecoveryDeliveryRunId");
+    expect(message).toContain("restart-recovery:restartRecoverySourceReplyDeliveryMode");
+    expect(message).not.toContain("restartRecoveryTerminalRunIds");
+    expect(message).not.toContain("alice");
+  });
+
   it("probes owners outside the fence, then re-checks owners and the locked row synchronously at the commit", async () => {
     const watch = { add: vi.fn() };
     const recheck = vi.fn(() => [{ code: "queue", owner: "session-queues" }]);
@@ -293,6 +364,9 @@ describe("fresh-human admission activation boundary", () => {
     });
     expect(await run(fixture().options)).toBe("unchanged");
     expect(mocks.activate).not.toHaveBeenCalled();
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.stringContaining("basis blocked by original-scope-ceiling-denies"),
+    );
   });
 
   it("records terminal revocation when the original basis provably ended and never revives it", async () => {
@@ -463,6 +537,10 @@ describe("owner settlement entrypoint (no live human)", () => {
     expect(await settle()).toBe("unchanged");
     expect(mocks.activate).not.toHaveBeenCalled();
     expect(mocks.revoke).not.toHaveBeenCalled();
+    // Waiting for the recorded human is reported, not silent.
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.stringContaining("basis blocked by original-basis-unprovable"),
+    );
   });
   it("revokes terminally when the original basis provably ended, and stays quiet while blocked", async () => {
     mocks.restore.mockRejectedValue(new GitHubPublicationRequesterUnavailableError());

@@ -1,15 +1,44 @@
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { hasLiveAgentRunContext } from "../../infra/agent-run-registry.js";
 
+/**
+ * `restartRecovery*` fields that can outlive their claim without owing any effect. Everything
+ * else under the prefix, including any field added later, stays a blocker. Terminal delivery
+ * evidence is not here: a queued delivery retry still reads it under the original revision.
+ */
+function isSettledRestartRecoveryField(
+  entry: InternalSessionEntry,
+  field: string,
+  value: unknown,
+): boolean {
+  switch (field) {
+    // Tombstones of runs that must never execute again, matched by run id and sessionId only.
+    case "restartRecoveryTerminalRunIds":
+      return true;
+    case "restartRecoveryDeliveryReceiptState":
+      return value === "delivered-terminal";
+    // An attribute of a source claim; the claim itself (DeliveryRunId/DeliverySourceRunId) still
+    // blocks. Left behind without it, the mode describes no work.
+    case "restartRecoverySourceReplyDeliveryMode":
+      return (
+        entry.restartRecoveryDeliveryRunId === undefined &&
+        entry.restartRecoveryDeliverySourceRunId === undefined
+      );
+    default:
+      return false;
+  }
+}
+
 export type SessionEntryObligationBlocker = { code: string; owner: "session-row"; field?: string };
 
 /**
  * Durable obligations that live on the session row itself and survive a Gateway restart before
  * any in-memory owner has been rebuilt. Their owners compare `sessionId`/`lifecycleRevision`, so
  * rotating the revision under them would drop or suppress the effect. Anything present is a
- * blocker; only a recognized, finished terminal state (`delivered-terminal`) is not. Unreadable
- * input is a blocker too. Pure and synchronous: callable outside the fence as an advisory
- * pre-check and again inside it, on the row the commit will rewrite, as the authoritative one.
+ * blocker; only recognized settled history (see `isSettledRestartRecoveryField`) is not.
+ * Unreadable input is a blocker too. Pure and synchronous: callable outside the fence as an
+ * advisory pre-check and again inside it, on the row the commit will rewrite, as the
+ * authoritative one.
  */
 export function probeSessionEntryObligations(
   entry: InternalSessionEntry | undefined,
@@ -46,7 +75,7 @@ export function probeSessionEntryObligations(
       if (!field.startsWith("restartRecovery") || value === undefined) {
         continue;
       }
-      if (field === "restartRecoveryDeliveryReceiptState" && value === "delivered-terminal") {
+      if (isSettledRestartRecoveryField(entry, field, value)) {
         continue;
       }
       add("restart-recovery", field);
