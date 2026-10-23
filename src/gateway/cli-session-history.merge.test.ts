@@ -42,6 +42,64 @@ describe("imported Claude history merge", () => {
     ).toEqual([{ ...localMessage, __openclaw: { ...localMeta, ...importedMeta } }]);
   });
 
+  it("keeps a queued input after the reply it waited behind", () => {
+    const start = Date.parse("2026-10-23T22:59:04.907Z");
+    const meta = (externalId: string) => ({
+      importedFrom: "claude-cli",
+      externalId,
+      cliSessionId: "s-1",
+    });
+    const first = { role: "user", content: "What's going", timestamp: start };
+    const firstReply = {
+      role: "assistant",
+      content: [{ type: "text", text: "Here's where it stands." }],
+      timestamp: start + 107_000,
+    };
+    // Accepted 1.5 s after the first send, recorded when it ran after the reply.
+    const queued = {
+      role: "user",
+      content: "What's going on",
+      timestamp: start + 1_500,
+      __openclaw: { id: "local-queued", recordTimestampMs: start + 107_500 },
+    };
+    const queuedReply = {
+      role: "assistant",
+      content: [{ type: "text", text: "Your message came through twice." }],
+      timestamp: start + 120_000,
+    };
+    // A native-only tool call expands the index into timestamp order.
+    const toolCall = {
+      role: "assistant",
+      content: [{ type: "toolcall", id: "toolu_1", name: "Bash", arguments: { command: "ls" } }],
+      timestamp: start + 50_000,
+      __openclaw: meta("a-tool"),
+    };
+
+    const merged = mergeImportedChatHistoryMessages({
+      localMessages: [first, firstReply, queued, queuedReply],
+      importedMessages: [
+        { ...first, __openclaw: meta("u-first") },
+        toolCall,
+        { ...firstReply, __openclaw: meta("a-first") },
+        {
+          role: "user",
+          content: queued.content,
+          timestamp: start + 108_000,
+          __openclaw: meta("u-queued"),
+        },
+        { ...queuedReply, __openclaw: meta("a-queued") },
+      ],
+    }) as { content: unknown }[];
+
+    expect(merged.map((message) => message.content)).toEqual([
+      first.content,
+      toolCall.content,
+      firstReply.content,
+      queued.content,
+      queuedReply.content,
+    ]);
+  });
+
   describe("a run with several native end_turn segments", () => {
     const start = Date.parse("2026-10-22T10:00:00.000Z");
     const meta = (externalId: string) => ({

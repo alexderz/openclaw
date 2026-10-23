@@ -299,6 +299,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     if (pending?.key !== draftKey) {
       return;
     }
+    // Clears the waiting state even when the send is no longer allowed.
+    requestUpdate();
     const target = state.composerTextarea;
     sendDraft(
       target?.isConnected ? target.value : (props.getDraft?.() ?? props.draft),
@@ -335,6 +337,7 @@ export function renderChatComposer(props: ChatComposerProps) {
         followUpModeOverride,
         timer: setTimeout(() => state.flushCompositionSend?.(), COMPOSITION_SEND_TIMEOUT_MS),
       };
+      requestUpdate();
       return;
     }
     sendDraft(draft, submissionAction, followUpModeOverride);
@@ -485,7 +488,10 @@ export function renderChatComposer(props: ChatComposerProps) {
     if (replayed) {
       // A Send during the replay meant the message already sent; leave the
       // words it missed in the composer instead of sending them alone.
-      cancelCompositionSend(state);
+      if (state.compositionSend) {
+        cancelCompositionSend(state);
+        requestUpdate();
+      }
     } else if (state.compositionSend) {
       flushCompositionSend(true);
     }
@@ -691,7 +697,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     alternateFollowUpMode,
     suggestionComposer: props.suggestionComposer,
     submissionLabel: goalComposer.submissionLabel,
-    sending: props.sending,
+    // Waiting for the IME to commit is part of sending: show it, take no new Send.
+    sending: props.sending || state.compositionSend?.key === draftKey,
     voiceActive: props.realtimeTalkActive,
     voiceStatus: props.realtimeTalkStatus,
     voiceDetail: props.realtimeTalkDetail,

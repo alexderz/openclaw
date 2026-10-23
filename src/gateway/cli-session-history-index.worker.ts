@@ -603,9 +603,25 @@ export class CliSessionHistoryIndex {
     // Preserve the existing stable comparator even for mixed/missing timestamps.
     const order = executeSqliteQuerySync(
       this.database,
-      this.db.selectFrom("messages").select(["id", "timestamp"]).orderBy("id"),
+      this.db
+        .selectFrom("messages")
+        .select(["id", "timestamp", "local_seq", "role", "metadata"])
+        .orderBy("id"),
     ).rows;
     if (this.expanded) {
+      // A queued input keeps its acceptance time but is recorded after the
+      // replies it waited behind; order a local user row by when it was recorded.
+      for (const row of order) {
+        if (row.local_seq === null || row.role !== "user" || !row.metadata) {
+          continue;
+        }
+        const recordedAt = asFiniteNumber(
+          asOptionalRecord(JSON.parse(row.metadata))?.recordTimestampMs,
+        );
+        if (recordedAt !== undefined && row.timestamp !== null && recordedAt > row.timestamp) {
+          row.timestamp = recordedAt;
+        }
+      }
       order.sort((a, b) =>
         a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp
           ? a.timestamp - b.timestamp

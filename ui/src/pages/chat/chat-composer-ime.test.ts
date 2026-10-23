@@ -226,6 +226,7 @@ describe("chat composer IME send (DER-607)", () => {
       textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "" }));
     };
     return {
+      container,
       props,
       sent,
       textarea,
@@ -260,7 +261,10 @@ describe("chat composer IME send (DER-607)", () => {
     host.startComposition("But yeah what's going");
 
     host.clickSend();
-    host.clickSend();
+    const send = findPrimaryButton(host.container);
+    expect(send.disabled).toBe(true);
+    expect(send.getAttribute("aria-busy")).toBe("true");
+    send.click();
     host.compose("But yeah what's going on");
     host.endComposition();
     vi.advanceTimersByTime(COMPOSITION_SEND_TIMEOUT_MS * 2);
