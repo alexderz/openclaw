@@ -23,6 +23,10 @@ import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { isImageMediaFact, readPersistedMediaFacts } from "../media/media-facts.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
+import {
+  matchCompositeReplySegments,
+  type CompositeImportRow,
+} from "./cli-session-history-composite.js";
 
 const INDEX_INSERT_BATCH_ROWS = 65;
 const INDEX_ORDINAL_BATCH_ROWS = 256;
@@ -577,6 +581,9 @@ export class CliSessionHistoryIndex {
         }
       });
     }
+    if (this.expanded) {
+      this.retireCompositeReplies();
+    }
     // Preserve the existing stable comparator even for mixed/missing timestamps.
     const order = executeSqliteQuerySync(
       this.database,
@@ -598,6 +605,74 @@ export class CliSessionHistoryIndex {
       });
     }
     this.count = order.length;
+  }
+
+  // A local reply that joins several displayed native segments repeats them all.
+  // Display keeps the native segments in place; the canonical row is unchanged.
+  private retireCompositeReplies(): void {
+    const locals = executeSqliteQuerySync(
+      this.database,
+      this.db
+        .selectFrom("messages")
+        .select(["id", "text", "timestamp"])
+        .where("local_seq", "is not", null)
+        .where("consumed", "=", 0)
+        .where("role", "=", "assistant")
+        .where("text", "is not", null)
+        .orderBy("id"),
+    ).rows;
+    if (!locals.length) {
+      return;
+    }
+    const displayed = new Set(
+      executeSqliteQuerySync(
+        this.database,
+        this.db.selectFrom("messages").select("import_ref").where("import_ref", "is not", null),
+      ).rows.map((row) => row.import_ref),
+    );
+    const internalUsers = new Set(
+      executeSqliteQuerySync(
+        this.database,
+        this.db
+          .selectFrom("imports")
+          .select(["id", "payload"])
+          .where("role", "=", "user")
+          .where("text", "is not", null),
+      ).rows.flatMap((row) => {
+        const record = asOptionalRecord(row.payload ? JSON.parse(row.payload) : undefined);
+        return asOptionalRecord(record?.provenance)?.kind === "internal_system" ? [row.id] : [];
+      }),
+    );
+    const imports: CompositeImportRow[] = executeSqliteQuerySync(
+      this.database,
+      this.db.selectFrom("imports").select(["id", "role", "text", "timestamp"]).orderBy("id"),
+    ).rows.map((row) => ({
+      id: row.id,
+      role: row.role,
+      text: row.text === null ? null : (JSON.parse(row.text) as string),
+      timestamp: row.timestamp,
+      displayed: displayed.has(row.id),
+      internalUser: internalUsers.has(row.id),
+    }));
+    const claimed = new Set<number>();
+    for (const local of locals) {
+      const segments = matchCompositeReplySegments({
+        local: { text: JSON.parse(local.text!) as string, timestamp: local.timestamp },
+        imports,
+        claimed,
+        windowMs: DEDUPE_TIMESTAMP_WINDOW_MS,
+      });
+      if (!segments) {
+        continue;
+      }
+      for (const id of segments) {
+        claimed.add(id);
+      }
+      executeSqliteQuerySync(
+        this.database,
+        this.db.deleteFrom("messages").where("id", "=", local.id),
+      );
+    }
   }
 
   get importedCount(): number {
