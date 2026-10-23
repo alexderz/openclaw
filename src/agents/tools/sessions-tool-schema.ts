@@ -114,7 +114,7 @@ const SessionsToolSchema = Type.Object(
     pinned: Type.Optional(
       Type.Boolean({
         description:
-          "Pin session (root and Home-linked sessions only; spawned, subagent, and nested-child sessions cannot be pinned)",
+          "Pin session (root, Home-linked, or promoted sessions only; other spawned, subagent, and nested-child sessions cannot be pinned)",
       }),
     ),
     archived: Type.Optional(

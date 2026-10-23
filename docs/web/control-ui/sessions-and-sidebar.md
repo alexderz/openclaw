@@ -315,7 +315,7 @@ your custom name.
 
 ### Session menu
 
-Root sessions and ordinary Home-linked dashboard sessions can be pinned. Spawned and nested-child sessions reject pin requests, including when they appear as top-level threads. Subagent runs also reject pin requests and remain outside sidebar navigation.
+Root sessions and ordinary Home-linked dashboard sessions can be pinned. Spawned and nested-child sessions reject pin requests, including when they appear as top-level threads, unless a [promotion](#promote-a-delegated-session) of that session has activated. Subagent runs also reject pin requests and remain outside sidebar navigation.
 
 An ordinary conversation's **Actions** menu also offers **Move to group**, even
 when its header links back to Home. That breadcrumb does not make the
@@ -370,8 +370,16 @@ submitted, 👤 ordinary, 🔴 promotion denied, blocked, or revoked, and ⚪ un
 Select the glyph to open **Session info**, which
 lists the type, permissions, promotion status, and any reason promotion is
 unavailable, then select **Promote**. A delegated row's **⋯** menu (or right-click
-menu) in the sidebar offers the same **Promote to ordinary session…** action.
-Confirm with **Promote session**.
+menu) in the sidebar offers the same **Promote to ordinary session…** action, or
+**Cancel pending promotion…** while a request is pending; the item is disabled,
+with the reason, when you cannot act. Confirm with **Promote session**. The chat
+header's session menu offers the same items plus **Check promotion status**, which
+appears only for a session that was delegated or has a promotion request.
+
+In the sidebar, a thin amber bar before the title marks a row that is limited
+for you (solid) or has a pending promotion (dotted). Its tooltip and screen-reader
+description read **Limited session** or **Promotion pending**. Ordinary rows have
+no bar.
 
 - **Who can promote:** only a person signed in to the Control UI with
   `operator.sessions.write` and write access to the session. Agents, tools,
@@ -398,8 +406,10 @@ Confirm with **Promote session**.
   Claude CLI/MCP tool paths, without the inherited ceiling or the sub-agent
   restriction layer. Completion wakes, automation, inbound `sessions_send`
   messages, other people's turns, plugin harnesses, compaction, and Gateway tool
-  RPCs keep the delegated limits. Spawn depth for further children also stays the
-  same. Promotion does not change pinning.
+  RPCs keep the delegated limits. Spawn depth for further children, spawn
+  lineage, and sidebar nesting also stay the same. Once the promotion has
+  activated, the session can be pinned and snoozed like a root session; a later
+  reset makes it delegated again and drops the pin.
 - **What still applies:** the person's role, global and agent tool policy,
   resource policy, and sandbox. Promotion never grants more than an ordinary session would get.
 
