@@ -477,7 +477,8 @@ export function createSessionWorkspaceProps(
     state.agentsList &&
     !workspace.loading &&
     !workspace.browserSearchTimer &&
-    (!workspace.error || workspace.pendingReload) &&
+    // Preview failures own their error; only a failed listing waits for an explicit retry.
+    (!workspace.error || workspace.errorOwner !== undefined || workspace.pendingReload) &&
     (workspace.pendingReload || workspace.list?.sessionKey !== state.sessionKey)
   ) {
     loadSessionWorkspace(state, workspace);
