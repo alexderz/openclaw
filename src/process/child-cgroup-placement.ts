@@ -174,8 +174,18 @@ export function createChildCgroupPlacement(
   let active = true;
   let reason = "delegated";
   let consecutiveFailures = 0;
+  // One unmovable process (for example a child that changed uid) is retried by every
+  // sweep; skip it after its first failure so it cannot disable placement for all.
+  const unmovable = new Set<number>();
   const place = (pid: number | undefined): boolean => {
-    if (!active || pid === undefined || !Number.isInteger(pid) || pid <= 0 || pid === selfPid) {
+    if (
+      !active ||
+      pid === undefined ||
+      !Number.isInteger(pid) ||
+      pid <= 0 ||
+      pid === selfPid ||
+      unmovable.has(pid)
+    ) {
       return false;
     }
     try {
@@ -188,6 +198,7 @@ export function createChildCgroupPlacement(
       if (code === "ESRCH") {
         return false;
       }
+      unmovable.add(pid);
       consecutiveFailures += 1;
       if (consecutiveFailures === 1) {
         log.warn(`child cgroup placement failed for pid ${pid} (${code})`);
@@ -223,6 +234,13 @@ export function createChildCgroupPlacement(
         .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== selfPid);
     } catch {
       return 0;
+    }
+    // Forget skipped pids that left main/, so a reused pid is tried again.
+    const present = new Set(pids);
+    for (const pid of unmovable) {
+      if (!present.has(pid)) {
+        unmovable.delete(pid);
+      }
     }
     // Only our descendants: an ancestor launcher or foreign process stays put.
     return pids.filter((pid) => isDescendant(pid) && place(pid)).length;
