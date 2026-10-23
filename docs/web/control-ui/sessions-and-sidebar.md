@@ -315,7 +315,7 @@ your custom name.
 
 ### Session menu
 
-Root sessions and ordinary Home-linked dashboard sessions can be pinned. Spawned and nested-child sessions reject pin requests, including when they appear as top-level threads, unless a [promotion](#promote-a-delegated-session) of that session has activated. Subagent runs also reject pin requests and remain outside sidebar navigation.
+Root sessions and ordinary Home-linked dashboard sessions can be pinned. Spawned and nested-child sessions reject pin requests, including when they appear as top-level threads, unless a [promotion](#promote-a-delegated-session) of that session has activated. Subagent runs also reject pin requests unless promoted, and remain outside sidebar navigation.
 
 An ordinary conversation's **Actions** menu also offers **Move to group**, even
 when its header links back to Home. That breadcrumb does not make the
@@ -369,7 +369,7 @@ The chat header shows a capability glyph next to its session menu: 🔒 delegate
 submitted, 👤 ordinary, 🔴 promotion denied, blocked, or revoked, and ⚪ unknown.
 Select the glyph to open **Session info**, which
 lists the type, permissions, promotion status, and any reason promotion is
-unavailable, then select **Promote**. A delegated row's **⋯** menu (or right-click
+unavailable, then select **Promote**. A single delegated row's **⋯** menu (or right-click
 menu) in the sidebar offers the same **Promote to ordinary session…** action, or
 **Cancel pending promotion…** while a request is pending; the item is disabled,
 with the reason, when you cannot act. Confirm with **Promote session**. The chat
@@ -389,8 +389,9 @@ no bar.
   Gateway owner, to an agent's main session). The Gateway owner, or an admin on a
   Gateway with `gateway.roles` configured, can also promote other delegated
   sessions, such as sub-agent runs, from a live Control UI admin connection. Other
-  admins can promote dashboard sessions they can access, but not sub-agent runs
-  or other non-dashboard sessions. Incognito and external (ACP)
+  admins can request promotion of dashboard sessions they can access, but unless
+  they own the session or its parent chain, the request is revoked when it would
+  activate; they cannot promote sub-agent runs or other non-dashboard sessions. Incognito and external (ACP)
   sessions, and sessions that were never delegated, cannot be promoted.
 - **When it takes effect:** the request is recorded as **Promotion pending** and
   activates only after the session's accepted work has settled, including its
@@ -409,7 +410,7 @@ no bar.
   RPCs keep the delegated limits. Spawn depth for further children, spawn
   lineage, and sidebar nesting also stay the same. Once the promotion has
   activated, the session can be pinned and snoozed like a root session; a later
-  reset makes it delegated again and drops the pin.
+  reset makes it delegated again and its pin no longer applies.
 - **What still applies:** the person's role, global and agent tool policy,
   resource policy, and sandbox. Promotion never grants more than an ordinary session would get.
 
