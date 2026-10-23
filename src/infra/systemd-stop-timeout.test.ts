@@ -34,13 +34,15 @@ describe("running systemd unit stop timeout", () => {
     { scope: "system", hierarchy: "0::", timeout: "1min 30s", timeoutMs: 90_000 },
     { scope: "user", hierarchy: "0::", timeout: "5min 30s", timeoutMs: 330_000 },
     { scope: "user", hierarchy: "1:name=systemd:", timeout: "5min 30s", timeoutMs: 330_000 },
+    // DelegateSubgroup=main puts the Gateway below its unit.
+    { scope: "user", hierarchy: "0::", timeout: "5min 30s", timeoutMs: 330_000, leaf: "/main" },
   ])(
     "finds the custom $scope unit from $hierarchy membership, ignoring resource parents",
-    async ({ scope, hierarchy, timeout, timeoutMs }) => {
+    async ({ scope, hierarchy, timeout, timeoutMs, leaf = "" }) => {
       const path =
-        scope === "user"
+        (scope === "user"
           ? "/user.slice/user-1000.slice/user@1000.service/app.slice/custom-gateway.service"
-          : "/system.slice/custom-gateway.service";
+          : "/system.slice/custom-gateway.service") + leaf;
       readFile.mockResolvedValue(
         ["2:cpu,cpuacct:/user.slice/user-1000.slice/user@1000.service", `${hierarchy}${path}`].join(
           "\n",

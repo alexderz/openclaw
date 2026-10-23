@@ -17,6 +17,8 @@ vi.mock("./launchd-runtime.js", () => ({
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 let cgroup = "/system.slice/openclaw-test.service";
+// Delegated subgroup below the unit (DelegateSubgroup=main); empty for a plain service.
+let gatewayLeaf = "";
 const executorPid = 4321;
 const execute = vi.fn<Awaited<ReturnType<typeof prepareHostedStopExecutor>>["execute"]>();
 const dispose = vi.fn<() => Promise<void>>();
@@ -50,6 +52,7 @@ beforeEach(() => {
   dispose.mockResolvedValue(undefined);
   processOwner.supervisor = "systemd";
   cgroup = "/system.slice/openclaw-test.service";
+  gatewayLeaf = "";
   vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", undefined);
   vi.stubEnv("OPENCLAW_LAUNCHD_LABEL", "ai.openclaw.test");
   Object.defineProperty(process, "platform", { ...platform, value: "linux" });
@@ -57,13 +60,13 @@ beforeEach(() => {
   vi.mocked(execSystemctl).mockImplementation(async () =>
     commandResult(renderFields(systemdFields())),
   );
-  vi.mocked(fs.readFile).mockImplementation(async () => `0::${cgroup}\n`);
+  vi.mocked(fs.readFile).mockImplementation(async () => `0::${cgroup}${gatewayLeaf}\n`);
   vi.mocked(prepareHostedStopExecutor).mockImplementation(async (params) => {
     const scope = params.scopeArgs?.find((arg) => arg.startsWith("--unit="))?.slice(7);
     vi.mocked(fs.readFile).mockImplementation(async (file) =>
       file === `/proc/${executorPid}/cgroup`
         ? `0::${cgroup.slice(0, cgroup.lastIndexOf("/"))}/${scope}\n`
-        : `0::${cgroup}\n`,
+        : `0::${cgroup}${gatewayLeaf}\n`,
     );
     await params.verifyPlacement?.(executorPid);
     return { execute, dispose };
@@ -184,6 +187,33 @@ describe("hosted native stop", () => {
     );
     await stop.dispose();
   });
+
+  it("stops a Gateway in its unit's delegated subgroup", async () => {
+    gatewayLeaf = "/main";
+    const stop = await prepareHostedGatewayStop(
+      processOwner,
+      () => {},
+      new AbortController().signal,
+    );
+    expect(prepareHostedStopExecutor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.arrayContaining(["--system", "stop", "openclaw-test.service"]),
+      }),
+    );
+    await expect(stop.execute(() => {})).resolves.toEqual({ outcome: "accepted" });
+    await stop.dispose();
+  });
+
+  it.each(["/system.slice/main", "/system.slice/openclaw-test.scope/main"])(
+    "refuses membership %s without a service unit",
+    async (membership) => {
+      vi.mocked(fs.readFile).mockImplementation(async () => `0::${membership}\n`);
+      await expect(
+        prepareHostedGatewayStop(processOwner, () => {}, new AbortController().signal),
+      ).rejects.toThrow("not the main process of a systemd service");
+      expect(prepareHostedStopExecutor).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["Id", "other.service"],

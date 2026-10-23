@@ -130,9 +130,15 @@ export async function prepareHostedGatewayStop(
     );
   }
 
-  const cgroup = await readProcessCgroup(pid);
+  const membership = await readProcessCgroup(pid);
   assertPreparing();
-  const unit = cgroup.split("/").at(-1);
+  // Under Delegate=yes + DelegateSubgroup=main the Gateway sits below its unit
+  // (`<unit>.service/main`); the unit is the deepest service/scope segment.
+  const segments = membership.split("/");
+  const unitIndex = segments.findLastIndex((part) => /\.(service|scope)$/.test(part));
+  const unit = unitIndex >= 0 ? segments[unitIndex] : undefined;
+  // systemd reports the unit's own cgroup as ControlGroup, not the delegated leaf.
+  const cgroup = segments.slice(0, unitIndex + 1).join("/");
   if (!unit || !/^[A-Za-z0-9_.:@\\-]+\.service$/.test(unit)) {
     throw new Error(
       "This Gateway is not the main process of a systemd service. Stop it through the host that started it.",
