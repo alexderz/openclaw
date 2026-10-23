@@ -24,6 +24,7 @@ function createChatComposerState(): ChatComposerState {
     pendingClearedSubmittedDraft: null,
     compositionText: "",
     compositionEndedAt: Number.NEGATIVE_INFINITY,
+    compositionEndedMultiWord: false,
     compositionSend: null,
     flushCompositionSend: null,
     submissionEcho: null,
@@ -176,12 +177,18 @@ export const COMPOSITION_SEND_TIMEOUT_MS = 3000;
 // An IME that loses its composition to the post-send clear re-commits the
 // utterance shortly after; past this window new text is the user's own.
 export const SUBMISSION_ECHO_WINDOW_MS = 5000;
-// Only a send made while (or just after) the IME composed can be replayed.
+// A dictated phrase that ended this recently may still be re-committed.
 const RECENT_COMPOSITION_MS = 1500;
 
 // Dictation composes whole phrases; a keyboard composes one word at a time.
 export function isMultiWordComposition(text: string): boolean {
   return /\S\s+\S/u.test(text);
+}
+
+// Only touch keyboards dictate into the composer. Desktop IMEs (pinyin shows
+// spaces too) keep sending at once, as they always have.
+export function waitsForDictationCommit(): boolean {
+  return globalThis.matchMedia?.("(pointer: coarse)")?.matches === true;
 }
 
 export function cancelCompositionSend(state: ChatComposerState): void {
@@ -191,18 +198,36 @@ export function cancelCompositionSend(state: ChatComposerState): void {
   }
 }
 
+/**
+ * Whether a send now could leave a dictated phrase for the IME to re-commit:
+ * it cuts a multi-word composition short or follows one that just ended.
+ */
+export function sendMayCutDictation(state: ChatComposerState): boolean {
+  return state.composerComposing
+    ? isMultiWordComposition(state.compositionText)
+    : state.compositionEndedMultiWord &&
+        performance.now() - state.compositionEndedAt < RECENT_COMPOSITION_MS;
+}
+
 export function recordSubmissionEcho(
   state: ChatComposerState,
   key: string,
   value: string,
-  composing: boolean,
+  mayReplay: boolean,
 ): void {
   const trimmed = value.trim();
-  const at = performance.now();
   state.submissionEcho =
-    trimmed && (composing || at - state.compositionEndedAt < RECENT_COMPOSITION_MS)
-      ? { key, value: trimmed, at, replay: null }
-      : null;
+    mayReplay && trimmed ? { key, value: trimmed, at: performance.now(), replay: null } : null;
+}
+
+// The sent text again, whole words only, optionally followed by more words.
+function echoRemainder(value: string, echo: string): string | null {
+  const text = value.trimStart();
+  if (!text.startsWith(echo)) {
+    return null;
+  }
+  const rest = text.slice(echo.length);
+  return rest === "" || /^\s/u.test(rest) ? rest.trimStart() : null;
 }
 
 /**
@@ -222,7 +247,12 @@ export function observeSubmissionEcho(
     return false;
   }
   if (echo.replay === null) {
-    echo.replay = currentDraft.trim() === "" && value.trimStart().startsWith(echo.value);
+    const draft = currentDraft.trim();
+    if (draft === echo.value) {
+      // The host has not cleared the sent draft yet; this edit is not a replay.
+      return false;
+    }
+    echo.replay = draft === "" && echoRemainder(value, echo.value) !== null;
     if (!echo.replay) {
       state.submissionEcho = null;
     }
@@ -231,7 +261,7 @@ export function observeSubmissionEcho(
 }
 
 /**
- * Drops the replayed, already-sent prefix once the IME has committed, keeping
+ * Drops the replayed, already-sent text once the IME has committed, keeping
  * only words the first send missed. Returns true when the textarea changed.
  */
 export function stripSubmissionEcho(
@@ -245,11 +275,11 @@ export function stripSubmissionEcho(
     return false;
   }
   state.submissionEcho = null;
-  const value = target.value.trimStart();
-  if (!value.startsWith(echo.value)) {
+  const remainder = echoRemainder(target.value, echo.value);
+  if (remainder === null) {
     return false;
   }
-  target.value = value.slice(echo.value.length).trimStart();
+  target.value = remainder;
   adjustTextareaHeight(target);
   return true;
 }

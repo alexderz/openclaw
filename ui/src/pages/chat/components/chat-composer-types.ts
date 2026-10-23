@@ -224,6 +224,7 @@ export type ChatComposerState = SkillMenuState &
     pendingClearedSubmittedDraft: ScopedComposerDraft | null;
     compositionText: string;
     compositionEndedAt: number;
+    compositionEndedMultiWord: boolean;
     compositionSend: ComposerCompositionSend | null;
     flushCompositionSend: (() => void) | null;
     submissionEcho: ComposerSubmissionEcho | null;

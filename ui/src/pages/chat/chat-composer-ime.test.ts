@@ -7,7 +7,10 @@ import {
   renderComposerFixture,
   resetComposerFixture,
 } from "./chat-composer.test-support.ts";
-import { COMPOSITION_SEND_TIMEOUT_MS } from "./components/chat-composer-state.ts";
+import {
+  COMPOSITION_SEND_TIMEOUT_MS,
+  SUBMISSION_ECHO_WINDOW_MS,
+} from "./components/chat-composer-state.ts";
 import { renderChatComposer } from "./components/chat-composer.ts";
 
 afterEach(() => resetComposerFixture());
@@ -156,8 +159,14 @@ describe("chat composer IME composition", () => {
 });
 
 describe("chat composer IME send (DER-607)", () => {
-  // A host that clears its draft on send, like the chat page does.
-  function renderSendHost() {
+  // A phone host that clears its draft on send, like the chat page does.
+  function renderSendHost({ coarsePointer = true } = {}) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: coarsePointer && query === "(pointer: coarse)",
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
     let draft = "";
     const sent: string[] = [];
     const container = document.createElement("div");
@@ -201,9 +210,20 @@ describe("chat composer IME send (DER-607)", () => {
     };
     const pressEnter = () => {
       textarea.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
-      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
-      textarea.dispatchEvent(enter);
-      return enter;
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    };
+    // Send cuts the dictation short (the IME never commits in time), clearing
+    // the composer under the open composition, which the clear then ends.
+    const sendCutShort = (text: string) => {
+      vi.useFakeTimers();
+      startComposition(text);
+      clickSend();
+      vi.advanceTimersByTime(COMPOSITION_SEND_TIMEOUT_MS);
+      expect(sent.at(-1)).toBe(text);
+      expect(textarea.value).toBe("");
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "" }));
     };
     return {
       props,
@@ -214,6 +234,7 @@ describe("chat composer IME send (DER-607)", () => {
       endComposition,
       clickSend,
       pressEnter,
+      sendCutShort,
       draft: () => draft,
     };
   }
@@ -234,6 +255,7 @@ describe("chat composer IME send (DER-607)", () => {
   });
 
   it("treats a repeated Send while the IME commits as the same action", () => {
+    vi.useFakeTimers();
     const host = renderSendHost();
     host.startComposition("But yeah what's going");
 
@@ -241,7 +263,18 @@ describe("chat composer IME send (DER-607)", () => {
     host.clickSend();
     host.compose("But yeah what's going on");
     host.endComposition();
-    host.pressEnter();
+    vi.advanceTimersByTime(COMPOSITION_SEND_TIMEOUT_MS * 2);
+
+    expect(host.sent).toEqual(["But yeah what's going on"]);
+  });
+
+  it("sends the committed dictation when blur ends the composition", () => {
+    const host = renderSendHost();
+    host.startComposition("But yeah what's going");
+    host.clickSend();
+
+    host.compose("But yeah what's going on");
+    host.textarea.dispatchEvent(new FocusEvent("blur"));
 
     expect(host.sent).toEqual(["But yeah what's going on"]);
   });
@@ -259,49 +292,77 @@ describe("chat composer IME send (DER-607)", () => {
     expect(host.sent).toEqual(["But yeah what's going"]);
   });
 
+  it("keeps sending a desktop IME composition at once", () => {
+    const host = renderSendHost({ coarsePointer: false });
+    host.startComposition("ni hao");
+
+    host.clickSend();
+
+    expect(host.sent).toEqual(["ni hao"]);
+  });
+
   it.each([
-    { name: "the same draft", replay: "Sure thing", left: "" },
-    { name: "the draft plus the missed word", replay: "Sure thing now", left: "now" },
+    { name: "the same draft", replay: "But yeah what's going", left: "" },
+    { name: "the draft plus the missed word", replay: "But yeah what's going on", left: "on" },
   ])(
     "does not send $name a second time when the IME replays it after the send",
     ({ replay, left }) => {
       const host = renderSendHost();
-      // A one-word composition sends at once (a keyboard word, not dictation).
-      host.textarea.value = "Sure ";
-      host.textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
-      host.textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-      host.textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "thing" }));
-      host.textarea.value = "Sure thing";
-      host.textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
-      host.clickSend();
-      expect(host.sent).toEqual(["Sure thing"]);
-      expect(host.textarea.value).toBe("");
+      host.sendCutShort("But yeah what's going");
 
       // The clear cost the IME its composition; it re-commits the whole phrase.
-      host.textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
       host.startComposition(replay);
       host.endComposition();
       expect(host.textarea.value).toBe(left);
       expect(host.draft()).toBe(left);
 
       host.pressEnter();
-      expect(host.sent).toEqual(left ? ["Sure thing", left] : ["Sure thing"]);
+      expect(host.sent).toEqual(left ? ["But yeah what's going", left] : ["But yeah what's going"]);
     },
   );
 
-  it("keeps a new message typed after the send", () => {
+  it("does not send the missed word alone when Send lands during the replay", () => {
     const host = renderSendHost();
-    host.startComposition("Sure");
-    host.clickSend();
-    expect(host.sent).toEqual(["Sure"]);
+    host.sendCutShort("But yeah what's going");
 
-    host.textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
-    host.startComposition("S");
-    host.compose("Sure");
+    host.startComposition("But yeah what's going on");
+    host.clickSend();
+    host.endComposition();
+    vi.advanceTimersByTime(COMPOSITION_SEND_TIMEOUT_MS);
+
+    expect(host.sent).toEqual(["But yeah what's going"]);
+    expect(host.textarea.value).toBe("on");
+  });
+
+  it.each([
+    { name: "a longer word", next: "But yeah what's goingest" },
+    { name: "the same phrase after the window", next: "But yeah what's going", late: true },
+  ])("keeps a new message that starts like the sent one: $name", ({ next, late }) => {
+    const host = renderSendHost();
+    host.sendCutShort("But yeah what's going");
+    if (late) {
+      vi.advanceTimersByTime(SUBMISSION_ECHO_WINDOW_MS + 1);
+    }
+
+    host.startComposition(next);
     host.endComposition();
 
-    expect(host.textarea.value).toBe("Sure");
+    expect(host.textarea.value).toBe(next);
+  });
+
+  it("keeps the same word typed again after a keyboard send", () => {
+    const host = renderSendHost();
+    host.startComposition("Ok");
+    host.clickSend();
+    expect(host.sent).toEqual(["Ok"]);
+    host.textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+
+    // Glide typing or a suggestion inserts the whole word at once.
+    host.startComposition("Ok");
+    host.endComposition();
+
+    expect(host.textarea.value).toBe("Ok");
     host.pressEnter();
-    expect(host.sent).toEqual(["Sure", "Sure"]);
+    expect(host.sent).toEqual(["Ok", "Ok"]);
   });
 });
