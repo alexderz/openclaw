@@ -90,7 +90,7 @@ describeControlUiE2e("Control UI chat file links", () => {
         sessionKey: "agent:main:main",
         paths: ["MOLTING-FOLLOWUP.json", "notes/today.md", outside],
       });
-      const bare = bubble.locator('a[data-file-ref-path="MOLTING-FOLLOWUP.json"] code');
+      const bare = bubble.locator('span[data-file-ref-path="MOLTING-FOLLOWUP.json"] code');
       expect(await bare.textContent()).toBe("MOLTING-FOLLOWUP.json");
       await bare.tap();
       expect(await page.locator(".chat-file-link-menu").count()).toBe(0);

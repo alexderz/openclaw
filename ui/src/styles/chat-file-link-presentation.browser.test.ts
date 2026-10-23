@@ -58,6 +58,12 @@ function fixtureDocument(themeMode: "dark" | "light"): string {
           data-file-path="ui/app.ts"><code>app.ts</code></a>
         <code id="plain-code">npm run dev</code>
       </p>
+      <p id="ref-paragraph">
+        <span id="ref-from-text" class="markdown-file-ref" data-file-kind="markdown"
+          data-file-ref-path="docs/plan.md">docs/plan.md</span>
+        <span id="ref-from-code" class="markdown-file-ref" data-file-kind="data"
+          data-file-ref-path="MOLTING-FOLLOWUP.json"><code>MOLTING-FOLLOWUP.json</code></span>
+      </p>
     </div>
     <article class="sidebar-markdown">
       <p>
@@ -263,6 +269,11 @@ type PresentationProbe = {
   readonly panelFromText: StyleSnapshot;
   readonly panelGlyph: GlyphSnapshot;
   readonly plainCode: StyleSnapshot;
+  readonly refFromCode: StyleSnapshot;
+  readonly refFromText: StyleSnapshot;
+  readonly refParagraph: StyleSnapshot;
+  readonly refDecoration: string;
+  readonly refGlyph: string;
 };
 
 let browser: Browser;
@@ -328,6 +339,11 @@ async function probe(themeMode: "dark" | "light"): Promise<PresentationProbe> {
         panelFromText: read("#panel-from-text"),
         panelGlyph: glyph("#panel-from-text"),
         plainCode: read("#plain-code"),
+        refFromCode: read("#ref-from-code > code"),
+        refFromText: read("#ref-from-text"),
+        refParagraph: read("#ref-paragraph"),
+        refDecoration: getComputedStyle(resolve("#ref-from-text")).textDecorationLine,
+        refGlyph: getComputedStyle(resolve("#ref-from-text"), "::before").content,
       };
     }, CHIP_PROPERTIES);
     return probed as PresentationProbe;
@@ -356,6 +372,19 @@ describeFileLinkPresentation("chat file link presentation", () => {
       expect(plainCode.borderTopWidth).not.toBe("0px");
       expect(fromText.borderTopWidth).toBe("0px");
       expect(fromText.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    },
+  );
+
+  it.each(["light", "dark"] as const)(
+    "renders a path that does not open as the text or code it was written as in %s",
+    async (themeMode) => {
+      const probed = await probe(themeMode);
+      // An unresolved code span keeps the ordinary chip; unresolved prose keeps message text.
+      expect(probed.refFromCode).toEqual(probed.plainCode);
+      expect(probed.refFromText.color).toBe(probed.refParagraph.color);
+      expect(probed.refFromText.paddingLeft).toBe("0px");
+      expect(probed.refDecoration).toBe("none");
+      expect(probed.refGlyph).toBe("none");
     },
   );
 

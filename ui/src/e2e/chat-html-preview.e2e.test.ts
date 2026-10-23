@@ -419,6 +419,7 @@ suite.define(() => {
               ).toBe(true);
               await panel.getByRole("button", { name: "Preview", exact: true }).click();
               await page.locator("a.markdown-file-link").filter({ hasText: "line two" }).click();
+              await chooseChatFileLinkOpen(page);
               await panel.locator(".cm-editor:visible").waitFor();
               expect(
                 await panel.locator(".file-view__line--target").getAttribute("data-line"),

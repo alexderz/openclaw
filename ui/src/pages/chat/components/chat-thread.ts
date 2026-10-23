@@ -48,8 +48,12 @@ function openFileLinkMenuFromEvent(
 ): void {
   const anchor =
     event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-file-path]") : null;
+  const viaKeyboard = event instanceof KeyboardEvent;
+  if (viaKeyboard && event.repeat) {
+    return;
+  }
   if (anchor) {
-    openChatFileLinkMenu(anchor, target, props);
+    openChatFileLinkMenu(anchor, target, props, { viaKeyboard });
   } else {
     props.onOpenWorkspaceFile?.(target);
   }

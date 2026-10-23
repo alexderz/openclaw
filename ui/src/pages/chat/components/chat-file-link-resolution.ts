@@ -8,47 +8,69 @@ import { directive, type ElementPart, PartType, type PartInfo } from "lit/direct
  * The Markdown parser marks every path-shaped span as a file link. In the transcript, a
  * link stays a link only when the session's file list already names it, or when one
  * batched `sessions.files.stat` request reports that `sessions.files.get` would find it.
- * Everything else renders as the text (or code) it was written as. Results are cached per
- * connection, session and path, so re-renders never ask twice.
+ * Everything else becomes a plain `<span>` holding what was written (text, or its code
+ * chip), so it styles, selects and long-presses like ordinary message text.
+ * Results are cached per connection, session, message and path: a re-render never asks
+ * again, while a later message citing the same path is checked again.
  */
 export type ChatFileLinkResolver = {
   /** Session of links outside any `[data-file-session-key]` owner. */
   sessionKey: string;
+  /** Connection identity; with `epoch`, no result outlives the connection that produced it. */
+  connection: object;
+  epoch: number;
   /** Paths the Files panel already loaded for `sessionKey`, or null before a listing exists. */
   knownPaths: (sessionKey: string) => ReadonlySet<string> | null;
   /**
-   * One batched existence check. Absent when the Gateway predates `sessions.files.stat`;
-   * unknown paths then keep their parser links rather than all turning into text.
+   * One batched existence check. Absent only when the Gateway is known not to offer
+   * `sessions.files.stat`; unknown paths then keep their parser links ("unchecked").
    */
   statPaths?: (
     sessionKey: string,
     paths: readonly string[],
   ) => Promise<ReadonlyMap<string, boolean> | null>;
-  /** Cache lifetime owner, normally the Gateway client: a reconnect starts a fresh cache. */
-  cacheOwner: object;
 };
 
-export type ChatFileLinkState = "open" | "pending" | "plain";
+/** `unchecked` looks like `open` but is re-evaluated once a check becomes possible. */
+export type ChatFileLinkState = "open" | "unchecked" | "pending" | "plain";
 
-const LINK_SELECTOR = "a[data-file-path], a[data-file-ref-path]";
+const LINK_SELECTOR = "a.markdown-file-link[data-file-path]:not([href]), span[data-file-ref-path]";
 const STAT_BATCH_MAX = 64;
 const CACHE_MAX_ENTRIES = 4_096;
 const FLUSH_DELAY_MS = 32;
 
-type CacheValue = boolean | "pending";
-const caches = new WeakMap<object, Map<string, CacheValue>>();
+/** `failed` keeps a message's paths unlinked for this connection without claiming they are missing. */
+type CacheValue = boolean | "pending" | "failed";
+type ConnectionCache = { epoch: number; entries: Map<string, CacheValue> };
+const caches = new WeakMap<object, ConnectionCache>();
+const liveResolutions = new Set<ChatFileLinkResolution>();
 
-function cacheFor(owner: object): Map<string, CacheValue> {
-  let cache = caches.get(owner);
-  if (!cache) {
-    cache = new Map();
-    caches.set(owner, cache);
+function cacheFor(resolver: ChatFileLinkResolver): Map<string, CacheValue> {
+  let cache = caches.get(resolver.connection);
+  if (!cache || cache.epoch !== resolver.epoch) {
+    cache = { epoch: resolver.epoch, entries: new Map() };
+    caches.set(resolver.connection, cache);
   }
-  return cache;
+  return cache.entries;
 }
 
-function cacheKey(sessionKey: string, path: string): string {
-  return `${sessionKey}\0${path}`;
+function trimCache(entries: Map<string, CacheValue>): void {
+  if (entries.size <= CACHE_MAX_ENTRIES) {
+    return;
+  }
+  // Oldest settled results go first; in-flight entries must survive until they settle.
+  for (const [key, value] of entries) {
+    if (entries.size <= CACHE_MAX_ENTRIES / 2) {
+      break;
+    }
+    if (value !== "pending") {
+      entries.delete(key);
+    }
+  }
+}
+
+function cacheKey(sessionKey: string, messageId: string, path: string): string {
+  return `${sessionKey}\0${messageId}\0${path}`;
 }
 
 /** Normalizes a cited path the way the Files panel lists it; absolute paths keep their root. */
@@ -93,88 +115,100 @@ export function chatFileLinkKnownPaths(list: {
   return known;
 }
 
-function linkPath(anchor: HTMLElement): string | undefined {
-  return anchor.dataset.filePath ?? anchor.dataset.fileRefPath;
+function linkPath(element: HTMLElement): string | undefined {
+  return element.dataset.filePath ?? element.dataset.fileRefPath;
 }
 
-function labelNode(anchor: HTMLElement): Text | null {
-  const host = anchor.querySelector("code") ?? anchor;
+function labelNode(element: HTMLElement): Text | null {
+  const host = element.querySelector("code") ?? element;
   const node = host.firstChild;
   return node instanceof Text ? node : null;
 }
 
-/** Restores an open file link: link class, button semantics and the shortened label. */
-function promote(anchor: HTMLAnchorElement): void {
-  const path = anchor.dataset.fileRefPath;
-  if (path !== undefined) {
-    anchor.dataset.filePath = path;
-    delete anchor.dataset.fileRefPath;
+const TO_REF_ATTRIBUTES: Readonly<Record<string, string>> = {
+  "data-file-path": "data-file-ref-path",
+  "data-file-line": "data-file-ref-line",
+};
+const TO_LINK_ATTRIBUTES: Readonly<Record<string, string>> = {
+  "data-file-ref-path": "data-file-path",
+  "data-file-ref-line": "data-file-line",
+};
+const LINK_ONLY_ATTRIBUTES = new Set(["role", "tabindex", "aria-haspopup", "title", "class"]);
+
+/** Swaps the element for a new tag, carrying children and the attributes that survive. */
+function retag(element: HTMLElement, tag: "a" | "span"): HTMLElement {
+  const renames = tag === "a" ? TO_LINK_ATTRIBUTES : TO_REF_ATTRIBUTES;
+  const next = document.createElement(tag);
+  for (const { name, value } of element.attributes) {
+    const renamed = renames[name];
+    if (renamed) {
+      next.setAttribute(renamed, value);
+    } else if (!LINK_ONLY_ATTRIBUTES.has(name)) {
+      next.setAttribute(name, value);
+    }
   }
-  if (anchor.dataset.fileRefLine !== undefined) {
-    anchor.dataset.fileLine = anchor.dataset.fileRefLine;
-    delete anchor.dataset.fileRefLine;
-  }
-  anchor.classList.replace("markdown-file-ref", "markdown-file-link");
-  anchor.setAttribute("role", "button");
-  anchor.setAttribute("tabindex", "0");
-  const label = anchor.dataset.fileLinkLabel;
-  const node = labelNode(anchor);
+  next.append(...element.childNodes);
+  element.replaceWith(next);
+  return next;
+}
+
+/** Restores an openable file link: link class, menu button semantics, shortened label. */
+function promote(element: HTMLElement): HTMLElement {
+  const link = element.tagName === "A" ? element : retag(element, "a");
+  link.className = "markdown-file-link";
+  link.setAttribute("role", "button");
+  link.setAttribute("tabindex", "0");
+  link.setAttribute("aria-haspopup", "menu");
+  const label = link.dataset.fileLinkLabel;
+  const node = labelNode(link);
   if (label !== undefined && node) {
     node.data = label;
   }
-  delete anchor.dataset.fileLinkLabel;
-  if (anchor.dataset.fileLinkTitle !== undefined) {
-    anchor.title = anchor.dataset.fileLinkTitle;
-    delete anchor.dataset.fileLinkTitle;
+  delete link.dataset.fileLinkLabel;
+  if (link.dataset.fileLinkTitle !== undefined) {
+    link.title = link.dataset.fileLinkTitle;
+    delete link.dataset.fileLinkTitle;
   }
+  return link;
 }
 
 /**
- * Renders a file link as what was written: no link class (so code keeps its code chip),
- * no button role, the full reference instead of the shortened label, and no
+ * Renders a file link as what was written: a span (so code keeps its code chip and text
+ * keeps the message color), the full reference instead of the shortened label, and no
  * `data-file-path`, so every file-link click and keyboard path ignores it.
  */
-function demote(anchor: HTMLAnchorElement): void {
-  const path = anchor.dataset.filePath;
-  if (path !== undefined) {
-    anchor.dataset.fileRefPath = path;
-    delete anchor.dataset.filePath;
+function demote(element: HTMLElement): HTMLElement {
+  const reference = element.getAttribute("title");
+  const node = labelNode(element);
+  // Only parser-shortened labels (a trailing part of the reference) are swapped back;
+  // an authored Markdown label stays as written.
+  if (
+    reference !== null &&
+    node &&
+    element.dataset.fileLinkLabel === undefined &&
+    reference.endsWith(node.data)
+  ) {
+    element.dataset.fileLinkLabel = node.data;
+    node.data = reference;
   }
-  if (anchor.dataset.fileLine !== undefined) {
-    anchor.dataset.fileRefLine = anchor.dataset.fileLine;
-    delete anchor.dataset.fileLine;
-  }
-  anchor.classList.replace("markdown-file-link", "markdown-file-ref");
-  anchor.removeAttribute("role");
-  anchor.removeAttribute("tabindex");
-  const reference = anchor.getAttribute("title");
   if (reference !== null) {
-    const node = labelNode(anchor);
-    // Only parser-shortened labels (a trailing part of the reference) are swapped back;
-    // an authored Markdown label stays as written.
-    if (node && anchor.dataset.fileLinkLabel === undefined && reference.endsWith(node.data)) {
-      anchor.dataset.fileLinkLabel = node.data;
-      node.data = reference;
-    }
-    anchor.dataset.fileLinkTitle = reference;
-    anchor.removeAttribute("title");
+    element.dataset.fileLinkTitle = reference;
   }
+  const span = element.tagName === "SPAN" ? element : retag(element, "span");
+  span.className = "markdown-file-ref";
+  return span;
 }
 
-function setState(anchor: HTMLAnchorElement, state: ChatFileLinkState): void {
-  if (anchor.dataset.fileLinkState === state) {
+function setState(element: HTMLElement, state: ChatFileLinkState): void {
+  if (element.dataset.fileLinkState === state) {
     return;
   }
-  if (state === "open") {
-    promote(anchor);
-  } else {
-    demote(anchor);
-  }
-  anchor.dataset.fileLinkState = state;
+  const next = state === "open" || state === "unchecked" ? promote(element) : demote(element);
+  next.dataset.fileLinkState = state;
 }
 
 export class ChatFileLinkResolution {
-  private readonly queued = new Map<string, Set<string>>();
+  private readonly queued = new Map<string, Map<string, Set<string>>>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private observer: MutationObserver | undefined;
   private root: HTMLElement | undefined;
@@ -186,6 +220,7 @@ export class ChatFileLinkResolution {
       this.detach();
       this.root = root;
     }
+    liveResolutions.add(this);
     if (!this.observer && typeof MutationObserver === "function") {
       // Mutation callbacks run before paint, so a new row never flashes an unopenable link.
       this.observer = new MutationObserver(() => this.scan(false));
@@ -196,6 +231,7 @@ export class ChatFileLinkResolution {
   }
 
   detach(): void {
+    liveResolutions.delete(this);
     this.observer?.disconnect();
     this.observer = undefined;
     clearTimeout(this.timer);
@@ -204,34 +240,27 @@ export class ChatFileLinkResolution {
     this.root = undefined;
   }
 
-  /** Classifies links; `all` revisits settled links after the listing or cache changed. */
+  /** Classifies links; `all` revisits unsettled links after the listing or cache changed. */
   scan(all: boolean): void {
     const root = this.root;
-    if (!root?.isConnected) {
-      return;
-    }
     const resolver = this.resolver;
-    // Surfaces without a resolver keep the parser's links unchanged.
-    if (!resolver) {
+    // Without a resolver (no connection yet, or method support still unknown) nothing changes.
+    if (!root?.isConnected || !resolver) {
       return;
     }
-    const cache = cacheFor(resolver.cacheOwner);
+    const cache = cacheFor(resolver);
     const knownBySession = new Map<string, ReadonlySet<string> | null>();
-    for (const anchor of root.querySelectorAll<HTMLAnchorElement>(LINK_SELECTOR)) {
-      const current = anchor.dataset.fileLinkState;
-      if (!all && current !== undefined) {
+    for (const element of root.querySelectorAll<HTMLElement>(LINK_SELECTOR)) {
+      const current = element.dataset.fileLinkState;
+      if (current === "open" || (!all && current !== undefined)) {
         continue;
       }
-      if (current === "open") {
-        continue;
-      }
-      const path = linkPath(anchor);
+      const path = linkPath(element);
       if (!path) {
-        setState(anchor, "plain");
         continue;
       }
       const sessionKey =
-        anchor.closest<HTMLElement>("[data-file-session-key]")?.dataset.fileSessionKey ??
+        element.closest<HTMLElement>("[data-file-session-key]")?.dataset.fileSessionKey ??
         resolver.sessionKey;
       let known = knownBySession.get(sessionKey);
       if (known === undefined) {
@@ -239,31 +268,38 @@ export class ChatFileLinkResolution {
         knownBySession.set(sessionKey, known);
       }
       if (known?.has(normalizeChatFileLinkPath(path))) {
-        setState(anchor, "open");
+        setState(element, "open");
         continue;
       }
-      const cached = cache.get(cacheKey(sessionKey, path));
+      const bubble = element.closest<HTMLElement>(".chat-bubble");
+      const key = cacheKey(sessionKey, bubble?.dataset.messageId ?? "", path);
+      const cached = cache.get(key);
       if (cached === true) {
-        setState(anchor, "open");
+        setState(element, "open");
+        continue;
+      }
+      if (cached === false || cached === "failed") {
+        setState(element, "plain");
         continue;
       }
       if (!resolver.statPaths) {
-        setState(anchor, "open");
+        setState(element, "unchecked");
         continue;
       }
-      if (cached === false) {
-        setState(anchor, "plain");
-        continue;
-      }
-      setState(anchor, "pending");
+      setState(element, "pending");
       // A streaming reply keeps changing; check its paths once it settles.
-      if (cached === undefined && !anchor.closest(".chat-bubble.streaming")) {
+      if (cached === undefined && !bubble?.classList.contains("streaming")) {
         let paths = this.queued.get(sessionKey);
         if (!paths) {
-          paths = new Set();
+          paths = new Map();
           this.queued.set(sessionKey, paths);
         }
-        paths.add(path);
+        let keys = paths.get(path);
+        if (!keys) {
+          keys = new Set();
+          paths.set(path, keys);
+        }
+        keys.add(key);
       }
     }
     if (this.queued.size > 0 && this.timer === undefined) {
@@ -282,29 +318,37 @@ export class ChatFileLinkResolution {
     if (!resolver || !statPaths) {
       return;
     }
-    const cache = cacheFor(resolver.cacheOwner);
-    if (cache.size > CACHE_MAX_ENTRIES) {
-      cache.clear();
-    }
+    const cache = cacheFor(resolver);
+    trimCache(cache);
     for (const [sessionKey, queuedPaths] of batches) {
-      const paths = [...queuedPaths].filter((path) => !cache.has(cacheKey(sessionKey, path)));
+      const pending = [...queuedPaths]
+        .map(([path, keys]) => [path, [...keys].filter((key) => !cache.has(key))] as const)
+        .filter(([, keys]) => keys.length > 0);
       // One request covers every newly rendered message of a session; never one per path.
-      for (let start = 0; start < paths.length; start += STAT_BATCH_MAX) {
-        const batch = paths.slice(start, start + STAT_BATCH_MAX);
-        for (const path of batch) {
-          cache.set(cacheKey(sessionKey, path), "pending");
+      for (let start = 0; start < pending.length; start += STAT_BATCH_MAX) {
+        const batch = pending.slice(start, start + STAT_BATCH_MAX);
+        for (const [, keys] of batch) {
+          for (const key of keys) {
+            cache.set(key, "pending");
+          }
         }
-        void statPaths(sessionKey, batch)
+        void statPaths(
+          sessionKey,
+          batch.map(([path]) => path),
+        )
           .catch(() => null)
           .then((result) => {
-            for (const path of batch) {
-              const key = cacheKey(sessionKey, path);
-              if (cache.get(key) === "pending") {
-                // Failures stay plain until the next connection, not until the next render.
-                cache.set(key, result?.get(path) === true);
+            for (const [path, keys] of batch) {
+              for (const key of keys) {
+                if (cache.get(key) === "pending") {
+                  cache.set(key, result ? result.get(path) === true : "failed");
+                }
               }
             }
-            this.scan(true);
+            // Split panes share the cache; every live transcript picks up the answer.
+            for (const resolution of liveResolutions) {
+              resolution.scan(true);
+            }
           });
       }
     }

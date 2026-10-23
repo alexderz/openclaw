@@ -32,6 +32,12 @@ async function mountThread(props: Parameters<typeof renderChatThread>[0]) {
   return { container, transcript };
 }
 
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
 describe("chat transcript rendering", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
@@ -639,13 +645,47 @@ describe("chat transcript rendering", () => {
     const [open, copy] = menu.querySelectorAll<HTMLButtonElement>("button[role=menuitem]");
     expect(open?.textContent).toBe("Open");
     expect(copy?.textContent).toBe("Copy path");
-    expect(document.activeElement).toBe(open);
+    await nextFrame();
+    if (key === "click") {
+      expect(document.activeElement).toBe(open);
+    } else {
+      // The opening key must not also choose "Open": focus waits for its release.
+      expect(document.activeElement).not.toBe(open);
+      link?.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+      expect(document.activeElement).toBe(open);
+    }
     open?.click();
     expect(onOpenWorkspaceFile).toHaveBeenCalledExactlyOnceWith({ path, line: 17 });
     expect(document.querySelector(".chat-file-link-menu")).toBeNull();
     expect(onOpenSessionLink).not.toHaveBeenCalled();
     expect(onHistoryIntent).not.toHaveBeenCalled();
     transcript.hostDisconnected();
+  });
+
+  it("ignores a held key repeating on a transcript file link", async () => {
+    const onOpenWorkspaceFile = vi.fn();
+    const props = {
+      ...threadProps("pane-file-repeat", "agent:main:main", [
+        { role: "assistant", content: "See `src/app.ts`", timestamp: 1_000 },
+      ]),
+      onOpenWorkspaceFile,
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      const link = requireElement(container, "a.markdown-file-link");
+      link.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          repeat: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+    } finally {
+      transcript.hostDisconnected();
+    }
   });
 
   it("copies the exact file path from the file link menu", async () => {
@@ -669,11 +709,12 @@ describe("chat transcript rendering", () => {
       copy?.click();
       await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(path));
       expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
-      // An outside tap dismisses the menu without opening anything.
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => resolve());
-      });
-      document.body.click();
+      // Transcript scrolling (streaming output) keeps the menu; an outside tap dismisses it.
+      await nextFrame();
+      container.querySelector(".chat-thread")?.dispatchEvent(new Event("scroll"));
+      await nextFrame();
+      expect(document.querySelector(".chat-file-link-menu")).not.toBeNull();
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
       expect(document.querySelector(".chat-file-link-menu")).toBeNull();
       expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
     } finally {
@@ -700,7 +741,8 @@ describe("chat transcript rendering", () => {
       onOpenWorkspaceFile,
       fileLinkResolver: {
         sessionKey: "agent:main:main",
-        cacheOwner: {},
+        connection: {},
+        epoch: 1,
         knownPaths: () => new Set(["notes/today.md"]),
         statPaths,
       },
@@ -719,7 +761,7 @@ describe("chat transcript rendering", () => {
           ),
         ).toEqual(["notes/today.md", "/srv/checkout/dist/build-info.json"]),
       );
-      const bare = requireElement(container, 'a[data-file-ref-path="MOLTING-FOLLOWUP.json"]');
+      const bare = requireElement(container, 'span[data-file-ref-path="MOLTING-FOLLOWUP.json"]');
       expect(bare.classList.contains("markdown-file-link")).toBe(false);
       bare.querySelector("code")?.click();
       expect(document.querySelector(".chat-file-link-menu")).toBeNull();

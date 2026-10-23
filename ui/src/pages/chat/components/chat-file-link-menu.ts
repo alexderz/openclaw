@@ -5,6 +5,7 @@ import { registerFilePreviewEnglish } from "../../../i18n/locales/en-file-previe
 import { claimReplyContextMenu, type ChatThreadProps } from "./chat-thread-interactions.ts";
 
 const GAP_PX = 4;
+const EDGE_PX = 8;
 const COPIED_CLOSE_MS = 700;
 
 function menuItem(label: string): HTMLButtonElement {
@@ -28,6 +29,7 @@ export function openChatFileLinkMenu(
   anchor: HTMLElement,
   target: MarkdownFileLinkTarget,
   props: Pick<ChatThreadProps, "paneId" | "onOpenWorkspaceFile">,
+  opts: { viaKeyboard?: boolean } = {},
 ): void {
   registerFilePreviewEnglish();
   const menu = document.createElement("div");
@@ -40,7 +42,8 @@ export function openChatFileLinkMenu(
   const open = menuItem(t("chat.detailPanel.openFile"));
   const copyLabel = t("chat.detailPanel.copyPath");
   const copy = menuItem(copyLabel);
-  menu.append(path, open, copy);
+  const items = [open, copy];
+  menu.append(path, ...items);
   const owner = claimReplyContextMenu(menu, props.paneId);
   open.addEventListener("click", () => {
     owner.release();
@@ -54,35 +57,81 @@ export function openChatFileLinkMenu(
       }
     });
   });
-  (anchor.closest("openclaw-modal-dialog, dialog") ?? document.body).appendChild(menu);
+  menu.addEventListener("keydown", (event) => {
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const step =
+      event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "Tab" ? 0 : null;
+    if (step === 0) {
+      owner.release();
+    } else if (step !== null) {
+      event.preventDefault();
+      items[(index + step + items.length) % items.length]?.focus();
+    }
+  });
+  // The expanded-table modal closes itself on any link click, so its menu lives on the page.
+  const layer = anchor.closest(".markdown-table-modal")
+    ? null
+    : anchor.closest("openclaw-modal-dialog, dialog");
+  (layer ?? document.body).appendChild(menu);
 
-  const anchorRect = anchor.getBoundingClientRect();
-  const menuRect = menu.getBoundingClientRect();
-  let left = anchorRect.left;
-  let top = anchorRect.bottom + GAP_PX;
-  if (left + menuRect.width > window.innerWidth) {
-    left = window.innerWidth - menuRect.width - 8;
-  }
-  if (top + menuRect.height > window.innerHeight) {
-    top = anchorRect.top - menuRect.height - GAP_PX;
-  }
-  menu.style.left = `${Math.max(0, left)}px`;
-  menu.style.top = `${Math.max(0, top)}px`;
-  open.focus({ preventScroll: true });
+  let lastRect = anchor.getBoundingClientRect();
+  const place = () => {
+    if (anchor.isConnected) {
+      lastRect = anchor.getBoundingClientRect();
+    }
+    const menuRect = menu.getBoundingClientRect();
+    let left = lastRect.left;
+    let top = lastRect.bottom + GAP_PX;
+    if (left + menuRect.width > window.innerWidth) {
+      left = window.innerWidth - menuRect.width - EDGE_PX;
+    }
+    if (top + menuRect.height > window.innerHeight) {
+      top = lastRect.top - menuRect.height - GAP_PX;
+    }
+    menu.style.left = `${Math.max(0, left)}px`;
+    menu.style.top = `${Math.max(0, top)}px`;
+  };
+  place();
+  const focusOpen = () => {
+    if (owner.isCurrent()) {
+      open.focus({ preventScroll: true });
+    }
+  };
   requestAnimationFrame(() => {
     if (!owner.isCurrent()) {
       return;
     }
+    const { signal } = owner;
+    // A keyboard-opened menu takes focus after the key is released, so the same press
+    // (a held Enter, or Space activating on keyup) cannot choose "Open" by itself.
+    if (opts.viaKeyboard) {
+      document.addEventListener("keyup", focusOpen, { once: true, signal });
+    } else {
+      focusOpen();
+    }
+    // pointerdown reaches the document on iOS Safari even where click does not.
     const dismissOutside = (event: Event) => {
       if (!menu.contains(event.target as Node | null)) {
         owner.release();
       }
     };
-    const { signal } = owner;
-    document.addEventListener("click", dismissOutside, { signal });
+    document.addEventListener("pointerdown", dismissOutside, { capture: true, signal });
     document.addEventListener("contextmenu", dismissOutside, { capture: true, signal });
-    // A fixed menu must not float away from its link while the transcript scrolls.
-    document.addEventListener("scroll", dismissOutside, { capture: true, signal });
+    // Streaming output scrolls the transcript; the menu follows its link instead of closing.
+    let placing = false;
+    document.addEventListener(
+      "scroll",
+      () => {
+        if (!placing) {
+          placing = true;
+          requestAnimationFrame(() => {
+            placing = false;
+            place();
+          });
+        }
+      },
+      { capture: true, passive: true, signal },
+    );
     document.addEventListener(
       "keydown",
       (event) => {

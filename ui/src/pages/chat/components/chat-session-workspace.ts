@@ -380,21 +380,24 @@ const knownPathsByList = new WeakMap<object, Set<string>>();
 
 /**
  * Transcript file links: the Files panel listing answers first (no extra I/O), then one
- * batched `sessions.files.stat` request per render covers the remaining paths.
+ * batched `sessions.files.stat` request per render covers the remaining paths. Until the
+ * connection says whether it offers that method, there is no resolver and links stay as
+ * they are, so a reconnect never turns a checked path back into a link.
  */
 export function createChatFileLinkResolver(
   state: SessionWorkspaceHost,
 ): ChatFileLinkResolver | undefined {
   const client = state.client;
-  if (!client) {
+  const advertised = isGatewayMethodAdvertised(state, "sessions.files.stat");
+  if (!client || !state.connected || advertised === null) {
     return undefined;
   }
   const workspace = getSessionWorkspace(state);
   const sessionKey = state.sessionKey;
-  const canStat = isGatewayMethodAdvertised(state, "sessions.files.stat") === true;
   return {
     sessionKey,
-    cacheOwner: client,
+    connection: client,
+    epoch: state.connectionEpoch,
     knownPaths: (key) => {
       const list = workspace.list;
       if (key !== sessionKey || list?.sessionKey !== key) {
@@ -407,7 +410,7 @@ export function createChatFileLinkResolver(
       }
       return known;
     },
-    statPaths: canStat
+    statPaths: advertised
       ? async (key, paths) => {
           const agentId =
             key === sessionKey ? workspace.agentId : parseAgentSessionKey(key)?.agentId;

@@ -1014,7 +1014,8 @@ describe("chat file link resolver", () => {
       ],
     } as never;
     const resolver = createChatFileLinkResolver(state);
-    expect(resolver?.cacheOwner).toBe(state.client);
+    expect(resolver?.connection).toBe(state.client);
+    expect(resolver?.epoch).toBe(1);
     expect([...(resolver?.knownPaths("agent:main:current") ?? [])].toSorted()).toEqual([
       "/workspace/docs/a.md",
       "docs/a.md",
@@ -1035,7 +1036,15 @@ describe("chat file link resolver", () => {
 
   it("does not check paths when the Gateway lacks sessions.files.stat", () => {
     const { state } = host(["sessions.files.get"]);
-    expect(createChatFileLinkResolver(state)?.statPaths).toBeUndefined();
+    const resolver = createChatFileLinkResolver(state);
+    expect(resolver).toBeDefined();
+    expect(resolver?.statPaths).toBeUndefined();
+  });
+
+  it("has no resolver while disconnected or before the Gateway lists its methods", () => {
+    const { state } = host(["sessions.files.stat"]);
     expect(createChatFileLinkResolver({ ...state, client: null })).toBeUndefined();
+    expect(createChatFileLinkResolver({ ...state, connected: false })).toBeUndefined();
+    expect(createChatFileLinkResolver({ ...state, hello: null })).toBeUndefined();
   });
 });
