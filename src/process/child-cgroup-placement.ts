@@ -13,6 +13,12 @@ import { parseBooleanValue } from "../utils/boolean.js";
  *
  * Inert unless the Gateway enables it and delegation is detected. Never throws
  * and never moves the Gateway. Opt out with `OPENCLAW_CHILD_CGROUP=off`.
+ *
+ * Only the Gateway's current descendants are moved. A process that a child
+ * double-forked and that was reparented to a subreaper before the spawn hook or
+ * the sweep reached it is no longer a descendant and stays in `main/`, charged
+ * to the Gateway's protection; it is never moved because `main/` may also hold
+ * an ancestor launcher's processes that must stay put.
  */
 
 const DISABLE_ENV_KEY = "OPENCLAW_CHILD_CGROUP";
@@ -24,6 +30,9 @@ const SWEEP_INTERVAL_MS = 15_000;
 const MAX_ANCESTRY_DEPTH = 64;
 const MEMORY_LOW_VALUE = /^(?:\d+[KMG]?|max)$/i;
 const CGROUP_NAME = /^[A-Za-z0-9_.@:-]+$/;
+const SYSTEMD_UNIT_SEGMENT = /\.(?:service|scope)$/;
+/** Consecutive failed moves before placement deactivates instead of failing silently forever. */
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 type PlacementLog = { info: (message: string) => void; warn: (message: string) => void };
 
@@ -134,6 +143,11 @@ export function createChildCgroupPlacement(
     if (path.posix.basename(current) !== subgroup || path.posix.dirname(current) === "/") {
       return inactive(`cgroup leaf is not delegated subgroup "${subgroup}"`);
     }
+    // root passes W_OK everywhere, so writability alone cannot prove delegation:
+    // DelegateSubgroup= places the subgroup directly below the unit's own cgroup.
+    if (!SYSTEMD_UNIT_SEGMENT.test(path.posix.basename(path.posix.dirname(current)))) {
+      return inactive(`parent of "${subgroup}" is not a systemd service or scope`);
+    }
     mainDir = path.join(cgroupRoot, current);
     parentDir = path.dirname(mainDir);
     childrenDir = path.join(parentDir, CHILDREN_SUBGROUP);
@@ -157,19 +171,31 @@ export function createChildCgroupPlacement(
     return inactive(reason);
   }
   const childrenProcs = path.join(childrenDir, "cgroup.procs");
-  let warned = false;
+  let active = true;
+  let reason = "delegated";
+  let consecutiveFailures = 0;
   const place = (pid: number | undefined): boolean => {
-    if (pid === undefined || !Number.isInteger(pid) || pid <= 0 || pid === selfPid) {
+    if (!active || pid === undefined || !Number.isInteger(pid) || pid <= 0 || pid === selfPid) {
       return false;
     }
     try {
       fs.writeFileSync(childrenProcs, String(pid));
+      consecutiveFailures = 0;
       return true;
     } catch (error) {
+      const code = errorCode(error);
       // A child that already exited is not a placement failure.
-      if (errorCode(error) !== "ESRCH" && !warned) {
-        warned = true;
-        log.warn(`child cgroup placement failed for pid ${pid} (${errorCode(error)})`);
+      if (code === "ESRCH") {
+        return false;
+      }
+      consecutiveFailures += 1;
+      if (consecutiveFailures === 1) {
+        log.warn(`child cgroup placement failed for pid ${pid} (${code})`);
+      } else if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        // Stop instead of failing silently forever; children then stay in main/.
+        active = false;
+        reason = `deactivated after ${consecutiveFailures} consecutive failures (${code})`;
+        log.warn(`child cgroup placement ${reason}; children stay in ${mainDir}`);
       }
       return false;
     }
@@ -185,6 +211,9 @@ export function createChildCgroupPlacement(
     return false;
   };
   const sweep = (): number => {
+    if (!active) {
+      return 0;
+    }
     let pids: number[];
     try {
       pids = fs
@@ -200,7 +229,17 @@ export function createChildCgroupPlacement(
   };
   applyMemoryLow({ value: env[MEMORY_LOW_ENV_KEY], parentDir, mainDir, log });
   log.info(`child cgroup placement active: children=${childrenDir}`);
-  return { active: true, reason: "delegated", childrenDir, place, sweep };
+  return {
+    get active() {
+      return active;
+    },
+    get reason() {
+      return reason;
+    },
+    childrenDir,
+    place,
+    sweep,
+  };
 }
 
 type PlacementState = { placement?: ChildCgroupPlacement; timer?: NodeJS.Timeout };
@@ -234,7 +273,13 @@ export function enableGatewayChildCgroupPlacement(
   const placement = state.placement;
   if (placement.active) {
     placement.sweep();
-    state.timer = setInterval(() => placement.sweep(), SWEEP_INTERVAL_MS);
+    const timer = setInterval(() => {
+      placement.sweep();
+      if (!placement.active) {
+        clearInterval(timer);
+      }
+    }, SWEEP_INTERVAL_MS);
+    state.timer = timer;
     state.timer.unref();
   }
   return placement;

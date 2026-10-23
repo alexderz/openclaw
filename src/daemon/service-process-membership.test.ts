@@ -279,6 +279,7 @@ describe("systemd process membership", () => {
           `${cg}/workers/worker.service`,
           "inside",
         ],
+        ["DelegateSubgroup main with children sibling", `${cg}/children`, `${cg}/main`, "inside"],
         ["unit prefix lookalike", `${cg}-other.service`, cg, "outside"],
         ["legacy hierarchy", `1:name=systemd:${root}/worker`, `1:name=systemd:${root}`, "inside"],
         [

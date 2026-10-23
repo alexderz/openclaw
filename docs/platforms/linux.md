@@ -620,8 +620,8 @@ cat /proc/<child-pid>/oom_score_adj
 
 When the Gateway's systemd unit sets `Delegate=yes` and `DelegateSubgroup=main`,
 systemd starts the Gateway in `<unit>/main/`. The Gateway detects this at
-startup (its `/proc/self/cgroup` leaf is `main` and it can write the unit's
-`cgroup.procs`), creates the sibling `<unit>/children/`, and moves the children
+startup (its `/proc/self/cgroup` leaf is `main`, the parent segment is a
+`.service` or `.scope` unit, and it can write the unit's `cgroup.procs`), creates the sibling `<unit>/children/`, and moves the children
 it starts there right after spawn: spawn brokers (their commands inherit the
 broker's cgroup), native command spawns, SQLite read-only workers, managed
 local model services, memory search workers, and managed Chrome. A sweep every
@@ -634,6 +634,14 @@ another name. Set `OPENCLAW_GATEWAY_MEMORY_LOW` (bytes with optional `K`, `M`,
 or `G`, or `max`) to have the Gateway enable the memory controller below the
 unit and write that value to `main/memory.low`; keep the unit's own `MemoryLow=`
 at least that large, because protection is bounded by every ancestor.
+
+Only processes that are still Gateway descendants are moved. A process that a
+child double-forks and that is reparented to a subreaper before its spawn hook
+or the next sweep reaches it stays in `main/` and shares the Gateway's
+protection; the Gateway does not move processes it cannot identify as its own.
+If moving children fails five times in a row (other than for a child that
+already exited), the Gateway logs a second warning and stops placing children
+until it restarts.
 
 When the write succeeds, the expected value for covered children is `1000`.
 If `/proc` is unavailable or unwritable, the child still runs without the OOM
