@@ -5,6 +5,7 @@ import {
   SQLITE_IDLE_HANDLE_TTL_MS,
 } from "openclaw/plugin-sdk/memory-core-host-engine-knn";
 import {
+  placeChildInChildCgroup,
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
 } from "openclaw/plugin-sdk/process-runtime";
@@ -259,6 +260,7 @@ async function runAdmittedVectorKnn(params: VectorKnnSubprocessParams): Promise<
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
+      placeChildInChildCgroup(child);
     } catch (error) {
       releaseAdmission();
       throw new VectorKnnSubprocessError(

@@ -13,6 +13,7 @@ import { toErrorObject } from "../infra/errors.js";
 import { mergeProcessEnv } from "../infra/process-env.js";
 import type { Model } from "../llm/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { placeChildInChildCgroup } from "../process/child-cgroup-placement.js";
 import { shouldDetachChildForProcessTree } from "../process/child-process-tree.js";
 import { prepareOomScoreAdjustedSpawnPreservingExecEnv as prepareLocalServiceSpawn } from "../process/linux-oom-score.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
@@ -384,6 +385,7 @@ async function startAndWaitForLocalService(params: {
     stdio: ["ignore", "pipe", "pipe"],
     detached: shouldDetachChildForProcessTree(),
   });
+  placeChildInChildCgroup(child);
   const owned = trackLocalServiceProcess(child);
   managed.process = owned;
   diagnostics.pid = child.pid;

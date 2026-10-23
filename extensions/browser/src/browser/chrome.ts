@@ -8,6 +8,7 @@ import { createSubsystemLogger, redactToolPayloadText } from "openclaw/plugin-sd
 import {
   getFileLockProcessStartTime,
   isPidAlive,
+  placeChildInChildCgroup,
   prepareOomScoreAdjustedSpawn,
 } from "openclaw/plugin-sdk/process-runtime";
 import { ensurePortAvailable, type SsrFPolicy } from "openclaw/plugin-sdk/security-runtime";
@@ -1011,6 +1012,7 @@ export async function launchOpenClawChrome(
       stdio: ["ignore", "ignore", "pipe"],
       env: preparedSpawn.env,
     });
+    placeChildInChildCgroup(proc);
     const onAbort = () => {
       try {
         proc.kill("SIGKILL");

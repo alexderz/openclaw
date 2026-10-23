@@ -88,6 +88,12 @@ async function startGatewayServerWithRuntime(
   opts: GatewayServerOptions,
 ): ReturnType<typeof import("./server-start.js").startGatewayServerCore> {
   const startupStartedAt = opts.startupStartedAt ?? Date.now();
+  if (process.platform === "linux") {
+    // Before any child spawns: under systemd cgroup delegation, children leave the Gateway's cgroup.
+    const { enableGatewayChildCgroupPlacement } =
+      await import("../process/child-cgroup-placement.js");
+    enableGatewayChildCgroupPlacement();
+  }
   let stopDatabaseAdmission: (() => Promise<void>) | undefined;
   const start = async () => {
     const { createSqliteReadOnlyWorkerScope } = await import("../infra/sqlite-readonly-worker.js");
