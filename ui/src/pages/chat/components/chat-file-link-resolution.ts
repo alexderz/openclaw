@@ -16,9 +16,11 @@ import { directive, type ElementPart, PartType, type PartInfo } from "lit/direct
 export type ChatFileLinkResolver = {
   /** Session of links outside any `[data-file-session-key]` owner. */
   sessionKey: string;
-  /** Connection identity; with `epoch`, no result outlives the connection that produced it. */
+  /**
+   * Identity of the current Gateway connection, shared by every pane and new on each
+   * connection (the hello), so no result outlives the connection that produced it.
+   */
   connection: object;
-  epoch: number;
   /** Paths the Files panel already loaded for `sessionKey`, or null before a listing exists. */
   knownPaths: (sessionKey: string) => ReadonlySet<string> | null;
   /**
@@ -41,17 +43,20 @@ const FLUSH_DELAY_MS = 32;
 
 /** `failed` keeps a message's paths unlinked for this connection without claiming they are missing. */
 type CacheValue = boolean | "pending" | "failed";
-type ConnectionCache = { epoch: number; entries: Map<string, CacheValue> };
-const caches = new WeakMap<object, ConnectionCache>();
+const caches = new WeakMap<object, Map<string, CacheValue>>();
 const liveResolutions = new Set<ChatFileLinkResolution>();
 
+/**
+ * One cache per connection, never replaced by a scan: split panes read and write the same
+ * entries, so one pane's answer can never wipe the other's and start the checks over.
+ */
 function cacheFor(resolver: ChatFileLinkResolver): Map<string, CacheValue> {
   let cache = caches.get(resolver.connection);
-  if (!cache || cache.epoch !== resolver.epoch) {
-    cache = { epoch: resolver.epoch, entries: new Map() };
+  if (!cache) {
+    cache = new Map();
     caches.set(resolver.connection, cache);
   }
-  return cache.entries;
+  return cache;
 }
 
 function trimCache(entries: Map<string, CacheValue>): void {
@@ -256,7 +261,10 @@ export class ChatFileLinkResolution {
         continue;
       }
       const path = linkPath(element);
-      if (!path) {
+      // A streaming reply's markup still belongs to Lit's incremental renderer, and swapping
+      // its elements would strand later updates. Its links are classified once it settles.
+      const bubble = element.closest<HTMLElement>(".chat-bubble");
+      if (!path || bubble?.classList.contains("streaming")) {
         continue;
       }
       const sessionKey =
@@ -271,7 +279,6 @@ export class ChatFileLinkResolution {
         setState(element, "open");
         continue;
       }
-      const bubble = element.closest<HTMLElement>(".chat-bubble");
       const key = cacheKey(sessionKey, bubble?.dataset.messageId ?? "", path);
       const cached = cache.get(key);
       if (cached === true) {
@@ -287,8 +294,7 @@ export class ChatFileLinkResolution {
         continue;
       }
       setState(element, "pending");
-      // A streaming reply keeps changing; check its paths once it settles.
-      if (cached === undefined && !bubble?.classList.contains("streaming")) {
+      if (cached === undefined) {
         let paths = this.queued.get(sessionKey);
         if (!paths) {
           paths = new Map();

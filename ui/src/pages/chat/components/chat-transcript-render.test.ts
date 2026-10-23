@@ -688,6 +688,41 @@ describe("chat transcript rendering", () => {
     }
   });
 
+  it("keeps file link menu focus with its link and closes once the link is gone", async () => {
+    const props = threadProps("pane-file-focus", "agent:main:main", [
+      { role: "assistant", content: "See `src/app.ts`", timestamp: 1_000 },
+    ]);
+    const { container, transcript } = await mountThread(props);
+    try {
+      const link = requireElement(container, "a.markdown-file-link");
+      link.focus();
+      // A quick press releases the key before the next frame; the menu still takes focus.
+      link.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+      link.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+      const menu = requireElement(document.body, ".chat-file-link-menu");
+      const [open] = menu.querySelectorAll<HTMLButtonElement>("button[role=menuitem]");
+      expect(document.activeElement).toBe(open);
+      // Tab closes the menu and continues from the link.
+      open?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(document.activeElement).toBe(link);
+
+      link.click();
+      requireElement(document.body, ".chat-file-link-menu");
+      await nextFrame();
+      link.remove();
+      container.querySelector(".chat-thread")?.dispatchEvent(new Event("scroll"));
+      await nextFrame();
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+    } finally {
+      transcript.hostDisconnected();
+    }
+  });
+
   it("copies the exact file path from the file link menu", async () => {
     const writeText = vi.fn(async () => {});
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
@@ -742,7 +777,6 @@ describe("chat transcript rendering", () => {
       fileLinkResolver: {
         sessionKey: "agent:main:main",
         connection: {},
-        epoch: 1,
         knownPaths: () => new Set(["notes/today.md"]),
         statPaths,
       },

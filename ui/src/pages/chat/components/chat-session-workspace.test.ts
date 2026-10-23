@@ -1014,8 +1014,7 @@ describe("chat file link resolver", () => {
       ],
     } as never;
     const resolver = createChatFileLinkResolver(state);
-    expect(resolver?.connection).toBe(state.client);
-    expect(resolver?.epoch).toBe(1);
+    expect(resolver?.connection).toBe(state.hello);
     expect([...(resolver?.knownPaths("agent:main:current") ?? [])].toSorted()).toEqual([
       "/workspace/docs/a.md",
       "docs/a.md",

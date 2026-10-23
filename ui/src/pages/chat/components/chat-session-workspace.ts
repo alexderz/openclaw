@@ -388,16 +388,17 @@ export function createChatFileLinkResolver(
   state: SessionWorkspaceHost,
 ): ChatFileLinkResolver | undefined {
   const client = state.client;
+  const hello = state.hello;
   const advertised = isGatewayMethodAdvertised(state, "sessions.files.stat");
-  if (!client || !state.connected || advertised === null) {
+  if (!client || !hello || !state.connected || advertised === null) {
     return undefined;
   }
   const workspace = getSessionWorkspace(state);
   const sessionKey = state.sessionKey;
   return {
     sessionKey,
-    connection: client,
-    epoch: state.connectionEpoch,
+    // Every pane on this connection holds the same hello; a reconnect brings a new one.
+    connection: hello,
     knownPaths: (key) => {
       const list = workspace.list;
       if (key !== sessionKey || list?.sessionKey !== key) {

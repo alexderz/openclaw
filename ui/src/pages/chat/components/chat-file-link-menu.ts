@@ -62,7 +62,9 @@ export function openChatFileLinkMenu(
     const step =
       event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "Tab" ? 0 : null;
     if (step === 0) {
+      // Focus returns to the link, so Tab continues from there instead of leaving the page.
       owner.release();
+      anchor.focus({ preventScroll: true });
     } else if (step !== null) {
       event.preventDefault();
       items[(index + step + items.length) % items.length]?.focus();
@@ -74,19 +76,28 @@ export function openChatFileLinkMenu(
     : anchor.closest("openclaw-modal-dialog, dialog");
   (layer ?? document.body).appendChild(menu);
 
-  let lastRect = anchor.getBoundingClientRect();
+  const scroller = anchor.closest<HTMLElement>(".chat-thread");
+  /** The menu belongs to a visible link; once it scrolls away or is unmounted, it closes. */
+  const linkVisible = (rect: DOMRect) => {
+    const bounds = scroller?.getBoundingClientRect();
+    const top = Math.max(0, bounds?.top ?? 0);
+    const bottom = Math.min(window.innerHeight, bounds?.bottom ?? window.innerHeight);
+    return anchor.isConnected && rect.bottom >= top && rect.top <= bottom;
+  };
   const place = () => {
-    if (anchor.isConnected) {
-      lastRect = anchor.getBoundingClientRect();
+    const rect = anchor.getBoundingClientRect();
+    if (!linkVisible(rect)) {
+      owner.release();
+      return;
     }
     const menuRect = menu.getBoundingClientRect();
-    let left = lastRect.left;
-    let top = lastRect.bottom + GAP_PX;
+    let left = rect.left;
+    let top = rect.bottom + GAP_PX;
     if (left + menuRect.width > window.innerWidth) {
       left = window.innerWidth - menuRect.width - EDGE_PX;
     }
     if (top + menuRect.height > window.innerHeight) {
-      top = lastRect.top - menuRect.height - GAP_PX;
+      top = rect.top - menuRect.height - GAP_PX;
     }
     menu.style.left = `${Math.max(0, left)}px`;
     menu.style.top = `${Math.max(0, top)}px`;
@@ -97,16 +108,18 @@ export function openChatFileLinkMenu(
       open.focus({ preventScroll: true });
     }
   };
+  // A keyboard-opened menu takes focus after the key is released, so the same press
+  // (a held Enter, or Space activating on keyup) cannot choose "Open" by itself. The
+  // listener is added now: a quick tap can release the key before the next frame.
+  if (opts.viaKeyboard) {
+    document.addEventListener("keyup", focusOpen, { once: true, signal: owner.signal });
+  }
   requestAnimationFrame(() => {
     if (!owner.isCurrent()) {
       return;
     }
     const { signal } = owner;
-    // A keyboard-opened menu takes focus after the key is released, so the same press
-    // (a held Enter, or Space activating on keyup) cannot choose "Open" by itself.
-    if (opts.viaKeyboard) {
-      document.addEventListener("keyup", focusOpen, { once: true, signal });
-    } else {
+    if (!opts.viaKeyboard) {
       focusOpen();
     }
     // pointerdown reaches the document on iOS Safari even where click does not.

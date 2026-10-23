@@ -59,7 +59,6 @@ function resolver(
   return {
     sessionKey: SESSION,
     connection: {},
-    epoch: 1,
     knownPaths: () => null,
     statPaths,
     ...rest,
@@ -182,11 +181,13 @@ describe("chat file link resolution", () => {
     const files = resolver();
     const resolution = new ChatFileLinkResolution();
     const root = mountMessages({ markdown: "Read [the plan](docs/plan.md)", streaming: true });
+    const parserLink = root.querySelector("a[data-file-path]");
     resolution.attach(root, files);
     await settle();
+    // Lit still renders the streaming tail, so its elements stay exactly as parsed.
     expect(files.statPaths).not.toHaveBeenCalled();
-    expect(stateOf(root, "docs/plan.md")).toBe("pending");
-    expect(root.querySelector("[data-file-ref-path]")?.textContent).toBe("the plan");
+    expect(root.querySelector("a[data-file-path]")).toBe(parserLink);
+    expect(parserLink?.hasAttribute("data-file-link-state")).toBe(false);
 
     root.querySelector(".chat-bubble")?.classList.remove("streaming");
     resolution.attach(root, files);
@@ -234,12 +235,8 @@ describe("chat file link resolution", () => {
     await settle();
     expect(failing.statPaths).toHaveBeenCalledOnce();
 
-    // Same client, next connection epoch: the path is checked again.
-    const reconnected = resolver({
-      exists: ["src/app.ts"],
-      connection: failing.connection,
-      epoch: 2,
-    });
+    // Next connection (a new hello): the path is checked again.
+    const reconnected = resolver({ exists: ["src/app.ts"], connection: {} });
     resolution.attach(root, reconnected);
     await settle();
     expect(reconnected.statPaths).toHaveBeenCalledOnce();
@@ -292,6 +289,29 @@ describe("chat file link resolution", () => {
     expect(files.statPaths).toHaveBeenCalledOnce();
     expect(stateOf(leftRoot, "src/app.ts")).toBe("open");
     expect(stateOf(rightRoot, "src/app.ts")).toBe("open");
+    left.detach();
+    right.detach();
+  });
+
+  it("never restarts checks when split panes count connection epochs differently", async () => {
+    vi.useFakeTimers();
+    const connection = {};
+    const left = new ChatFileLinkResolution();
+    const right = new ChatFileLinkResolution();
+    // Each pane counts its own connectionEpoch; only the shared connection identity counts.
+    const leftFiles = Object.assign(resolver({ connection }), { epoch: 1 });
+    const rightFiles = Object.assign(resolver({ connection }), { epoch: 3 });
+    const leftRoot = mountMessages({ markdown: "`missing-left.json`", id: "m1" });
+    const rightRoot = mountMessages({ markdown: "`missing-right.json`", id: "m2" });
+    left.attach(leftRoot, leftFiles);
+    right.attach(rightRoot, rightFiles);
+    await settle();
+    await settle();
+    await settle();
+    expect(leftFiles.statPaths).toHaveBeenCalledOnce();
+    expect(rightFiles.statPaths).toHaveBeenCalledOnce();
+    expect(stateOf(leftRoot, "missing-left.json")).toBe("plain");
+    expect(stateOf(rightRoot, "missing-right.json")).toBe("plain");
     left.detach();
     right.detach();
   });
