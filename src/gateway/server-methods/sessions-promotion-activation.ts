@@ -1,4 +1,5 @@
 import { resolveSessionEntryAccessTarget } from "../../config/sessions/session-accessor.js";
+import type { QualifiedSessionEntryAccessTarget } from "../../config/sessions/session-accessor.types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   canDetachPromotedSessionKey,
@@ -167,7 +168,7 @@ async function releaseSpawnerCustody(sessionKey: string, sessionId: string): Pro
 
 function createPromotionOwnerProbe(params: {
   context: GatewayRequestContext;
-  target: ReturnType<typeof resolveSessionEntryAccessTarget>;
+  target: QualifiedSessionEntryAccessTarget;
   sessionKey: string;
   sessionId: string;
   agentId: string;
@@ -203,8 +204,8 @@ async function completeActivatedPromotionDetach(params: {
     agentId: string;
     sessionKey: string;
   };
-  target: ReturnType<typeof resolveSessionEntryAccessTarget>;
-  entry: NonNullable<ReturnType<typeof resolveSessionEntryAccessTarget>["entry"]>;
+  target: QualifiedSessionEntryAccessTarget;
+  entry: NonNullable<QualifiedSessionEntryAccessTarget["entry"]>;
   agentId: string;
   sessionKey: string;
   profileId: string;

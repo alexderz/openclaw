@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ activate: vi.fn(), entries: vi.fn() }));
+const mocks = vi.hoisted(() => ({ activate: vi.fn(), entries: vi.fn(), release: vi.fn() }));
+vi.mock("./session-promotion-registry-handoff.js", () => ({
+  releasePromotedSessionFromSpawner: mocks.release,
+}));
 vi.mock("./server-methods/sessions-promotion-activation.js", () => ({
   activateSessionPromotionAfterSettlement: mocks.activate,
 }));
@@ -30,6 +33,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.activate.mockResolvedValue("unchanged");
   mocks.entries.mockResolvedValue([]);
+  mocks.release.mockResolvedValue({ marked: 0, unsettled: 0 });
 });
 afterEach(() => {
   stop?.();
@@ -164,5 +168,27 @@ describe("owner-scheduled promotion settlement", () => {
     notifySessionWorkSettled([key]);
     await flush();
     expect(mocks.activate).toHaveBeenCalledTimes(1);
+  });
+  it("repairs the spawner release of every detached promoted root at startup, and only those", async () => {
+    const promotedFrom = { version: 1, requestId: "r", profileId: "human", at: 1 };
+    mocks.entries.mockResolvedValue([
+      // Detached: the row is a root with history; its spawner rows may still be unmarked.
+      { sessionKey: key, entry: { sessionId: "detached", spawnDepth: 0, promotedFrom } },
+      // Still carries lineage (an earlier build's activation): not released until it detaches.
+      {
+        sessionKey: idleKey,
+        entry: { sessionId: "legacy", spawnDepth: 1, spawnedBy: mainKey, promotedFrom },
+      },
+      { sessionKey: "agent:main:dashboard:plain", entry: { sessionId: "plain", spawnDepth: 0 } },
+      { sessionKey: "agent:main:dashboard:incognito-x", entry: { sessionId: "i", promotedFrom } },
+    ]);
+    const warn = vi.fn();
+    mocks.release.mockRejectedValueOnce(new Error("busy"));
+    ({ stop } = startSessionPromotionSettlement(context, { warn }));
+    await flush();
+    expect(mocks.release.mock.calls).toEqual([
+      [{ childSessionKey: key, childSessionId: "detached" }],
+    ]);
+    expect(warn).toHaveBeenCalledWith("promoted session spawner release deferred: Error");
   });
 });
