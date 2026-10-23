@@ -135,6 +135,13 @@ export const SessionPromotionProjectionSchema = closedObject({
       Type.Literal("unknown"),
     ]),
   }),
+  /** History of a promotion that detached this session from its spawner; display only. */
+  promotedFrom: Type.Optional(
+    closedObject({
+      parentSessionKey: Type.Optional(NonEmptyString),
+      at: Type.Number({ minimum: 0 }),
+    }),
+  ),
 });
 
 export const SessionRowSchema = Type.Object(

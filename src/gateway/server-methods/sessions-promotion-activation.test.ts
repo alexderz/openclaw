@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   restore: vi.fn(),
   access: vi.fn(),
   activate: vi.fn(),
+  detach: vi.fn(),
+  release: vi.fn(),
   revoke: vi.fn(),
   probe: vi.fn(),
   target: vi.fn(),
@@ -45,7 +47,11 @@ vi.mock("../session-access-authority.js", () => ({
 }));
 vi.mock("../../sessions/session-promotion.js", () => ({
   activatePendingSessionPromotion: mocks.activate,
+  detachActivatedSessionPromotion: mocks.detach,
   revokePendingSessionPromotion: mocks.revoke,
+}));
+vi.mock("../session-promotion-registry-handoff.js", () => ({
+  releasePromotedSessionFromSpawner: mocks.release,
 }));
 vi.mock("../../config/sessions/session-accessor.js", () => ({
   resolveSessionEntryAccessTarget: mocks.target,
@@ -554,5 +560,127 @@ describe("owner settlement entrypoint (no live human)", () => {
     mocks.activate.mockResolvedValue({ activated: false, blockers: ["run"], promotion: pending });
     expect(await settle()).toBe("unchanged");
     expect(mocks.revoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("detach into a dashboard root", () => {
+  const activatedReceipt = {
+    version: 1,
+    state: "activated",
+    requestId: "request",
+    acceptedAt: 1,
+    boundary: "settlement-or-fresh-human-input",
+    target: pending.target,
+    profileId: "alice",
+    toLifecycleRevision: "after",
+    activatedAt: 2,
+  };
+  const legacyEntry = {
+    sessionId: "session",
+    lifecycleRevision: "after",
+    sessionPromotion: activatedReceipt,
+    spawnedBy: "agent:main:dashboard:parent",
+    spawnDepth: 1,
+  };
+  const target = (entry: object) =>
+    mocks.target.mockReturnValue({
+      entry,
+      storePath: "/store",
+      canonicalKey: key,
+      storeKey: key,
+      storeKeys: [],
+    });
+
+  it("releases the spawner's run rows after an activation that detached the row", async () => {
+    mocks.activate.mockResolvedValue({
+      activated: true,
+      detached: true,
+      blockers: [],
+      promotion: { state: "activated" },
+    });
+    mocks.release.mockResolvedValue({ marked: 1, unsettled: 0 });
+    expect(await run(fixture().options)).toBe("activated");
+    expect(mocks.release).toHaveBeenCalledWith({ childSessionKey: key, childSessionId: "session" });
+  });
+
+  it("keeps the activation when the registry release fails; startup repairs it", async () => {
+    mocks.activate.mockResolvedValue({
+      activated: true,
+      detached: true,
+      blockers: [],
+      promotion: { state: "activated" },
+    });
+    mocks.release.mockRejectedValue(new Error("registry busy"));
+    expect(await run(fixture().options)).toBe("activated");
+  });
+
+  it("does not release anything when the activation did not detach", async () => {
+    mocks.activate.mockResolvedValue({
+      activated: true,
+      detached: false,
+      blockers: [],
+      promotion: { state: "activated" },
+    });
+    expect(await run(fixture().options)).toBe("activated");
+    expect(mocks.release).not.toHaveBeenCalled();
+  });
+
+  it("completes an earlier build's activation on the recorded human's next direct turn", async () => {
+    target(legacyEntry);
+    mocks.detach.mockImplementation(async (params) => {
+      params.assertCurrent();
+      await params.probeBlockers({ add: vi.fn() });
+      params.recheckBlockers?.(legacyEntry);
+      return { detached: true, blockers: [] };
+    });
+    expect(await run(fixture().options)).toBe("detached");
+    expect(mocks.detach).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedSessionId: "session", expectedLifecycleRevision: "after" }),
+    );
+    // Fresh authority of the human typing now; the original requester basis is not restored.
+    expect(mocks.access).toHaveBeenCalled();
+    expect(mocks.capture).toHaveBeenCalled();
+    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(mocks.humanCurrent).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalledWith({ childSessionKey: key, childSessionId: "session" });
+    expect(mocks.releases).toEqual(["fresh", "access"]);
+  });
+
+  it("leaves an earlier activation alone for another person, settlement, or while busy", async () => {
+    target(legacyEntry);
+    expect(await run(fixture("bob").options)).toBe("unchanged");
+    expect(
+      await activateSessionPromotionAfterSettlement({
+        context: fixture().options.context,
+        sessionKey: key,
+      }),
+    ).toBe("unchanged");
+    expect(mocks.detach).not.toHaveBeenCalled();
+    mocks.probe.mockResolvedValue({
+      blockers: [{ code: "run", owner: "agent-runs" }],
+      recheck: () => [],
+    });
+    expect(await run(fixture().options)).toBe("unchanged");
+    expect(mocks.detach).not.toHaveBeenCalled();
+    expect(mocks.release).not.toHaveBeenCalled();
+  });
+
+  it("does nothing for a row that is already a root or a sub-agent key", async () => {
+    target({ ...legacyEntry, spawnedBy: undefined, spawnDepth: 0 });
+    expect(await run(fixture().options)).toBe("unchanged");
+    mocks.target.mockReturnValue({
+      entry: legacyEntry,
+      storePath: "/store",
+      canonicalKey: "agent:main:subagent:task",
+      storeKey: "agent:main:subagent:task",
+      storeKeys: [],
+    });
+    expect(
+      await activateSessionPromotionBeforeAdmission({
+        options: fixture().options,
+        sessionKey: "agent:main:subagent:task",
+      }),
+    ).toBe("unchanged");
+    expect(mocks.detach).not.toHaveBeenCalled();
   });
 });

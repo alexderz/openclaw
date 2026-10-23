@@ -1,4 +1,5 @@
 import type { SessionEntry } from "../config/sessions/types.js";
+import { decodeSessionPromotedFrom } from "../sessions/session-promotion-detach.js";
 import {
   decodeSessionPromotion,
   resolveSessionPromotionTargetSupport,
@@ -9,13 +10,15 @@ export type SessionPromotionProjection = {
   /** Class of a direct chat turn typed by THIS viewer; other turns follow `classScope`. */
   effectiveClass: "delegated" | "ordinary" | "unknown";
   /**
-   * Which turns the ordinary class covers: every turn of a natively ordinary session, but only
-   * the requesting human's direct Control UI turns after a promotion, on the embedded and
-   * claude-cli/MCP tool paths. Completion wakes, automation, inbound `sessions_send`, other
-   * people's turns, plugin harnesses, compaction, Gateway tool RPCs and spawn depth keep their
-   * historical delegated result.
+   * Which turns the ordinary class covers. "all-turns": a never-delegated session, and a promoted
+   * session, which activation detaches into a root exactly like a dashboard session a human
+   * created (every turn kind, depth 0, no parent authority or routing). Only a `:subagent:` key,
+   * delegated by its key shape, keeps "requesting-human-direct-turns" after activation: the
+   * requesting human's direct Control UI turns are ordinary, every other turn stays delegated.
    */
   classScope: "all-turns" | "requesting-human-direct-turns" | "none";
+  /** History of a detached promotion, for display only. */
+  promotedFrom?: { parentSessionKey?: string; at: number };
   lifecycleRevision?: string;
   canPromote: boolean;
   /** True only for a viewer who is currently authorized to cancel the pending intent. */
@@ -34,7 +37,10 @@ export type SessionPromotionProjection = {
 /** Viewer capability is computed for this read, never persisted in shared rows. */
 export function projectSessionPromotion(params: {
   key: string;
-  entry: Omit<SessionEntry, "sessionPromotion"> & { sessionPromotion?: unknown };
+  entry: Omit<SessionEntry, "sessionPromotion" | "promotedFrom"> & {
+    sessionPromotion?: unknown;
+    promotedFrom?: unknown;
+  };
   /** The shared promotion authority predicate for THIS viewer (see session-row-presentation). */
   authorize: () => boolean;
   /** Viewer is a live, host-attested Control UI admin: widens the supported key families. */
@@ -45,6 +51,7 @@ export function projectSessionPromotion(params: {
 }): SessionPromotionProjection {
   const { entry, key } = params;
   const historicalDelegated = Boolean(entry.spawnedBy || (entry.spawnDepth ?? 0) > 0);
+  const promotedFrom = decodeSessionPromotedFrom(entry.promotedFrom);
   const receipt = decodeSessionPromotion(entry.sessionPromotion);
   const targetMatches = Boolean(
     receipt &&
@@ -89,7 +96,7 @@ export function projectSessionPromotion(params: {
   const canCancel =
     eligible && authorized && !malformed && receipt?.state === "pending" && targetMatches;
   return {
-    historicalOrigin: historicalDelegated ? "delegated" : "ordinary",
+    historicalOrigin: historicalDelegated || promotedFrom ? "delegated" : "ordinary",
     effectiveClass: malformed
       ? "unknown"
       : historicalDelegated
@@ -121,5 +128,15 @@ export function projectSessionPromotion(params: {
     effectiveRestrictions: ["current-role-grants-resource-policy-and-sandbox-still-apply"],
     // A receipt and tool visibility are not effect-time resource authorization.
     capabilities: { sessionsSend: "unknown" },
+    ...(promotedFrom && !historicalDelegated
+      ? {
+          promotedFrom: {
+            ...(promotedFrom.parentSessionKey
+              ? { parentSessionKey: promotedFrom.parentSessionKey }
+              : {}),
+            at: promotedFrom.at,
+          },
+        }
+      : {}),
   };
 }

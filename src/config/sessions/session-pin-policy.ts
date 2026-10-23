@@ -7,10 +7,11 @@ import type { SessionEntry } from "./types.js";
 // Pins are root-session facts; children live in their parent's tree.
 // Durable dashboard sessions auto-parent to the agent main root for flow-up
 // notices and sidebar threads; that lineage does not make them nested children.
-// An activated promotion makes a delegated session pinnable while its spawn
-// lineage (spawnedBy, parent link and sidebar nesting) stays as it is. The pin
-// lasts as long as that activation matches the row: a new lifecycle revision
-// (reset) makes the child delegated again, and its next patch drops the pin.
+// A promoted dashboard-shaped session is detached into a root by its activation
+// and follows the normal root rule. A `:subagent:` key keeps its delegated key
+// shape after activation; its activated promotion still makes it pinnable while
+// that activation matches the row (a reset drops the receipt, and its next patch
+// drops the pin).
 export function isPinnableSessionEntry(
   storeKey: string,
   entry:

@@ -257,7 +257,11 @@ describe("an administrator promotes any durable delegated session", () => {
           profileId: GATEWAY_OWNER_PROFILE_ID,
         });
         expect(after.sessionId).toBe(TARGET.replaceAll(":", "-"));
-        expect(after.parentSessionKey).toBe(MOLTING);
+        // Detached from Molting into a top-level dashboard session under the agent root.
+        expect(after.parentSessionKey).toBe("agent:main:main");
+        expect(after.spawnedBy).toBeUndefined();
+        expect(after.spawnDepth).toBe(0);
+        expect(after.promotedFrom).toMatchObject({ parentSessionKey: MOLTING });
         expect(after.createdActor).toEqual(agentActor);
         expect(after.lifecycleRevision).not.toBe("before");
       } finally {

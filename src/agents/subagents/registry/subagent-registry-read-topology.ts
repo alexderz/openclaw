@@ -211,6 +211,10 @@ export function buildSubagentRunReadTopology<T extends SubagentRunReadRecord>(pa
         if (latestRunsByChildSessionKey.get(childSessionKey) !== entry) {
           continue;
         }
+        // A promoted child is a root now: its own work is no longer this requester's subtree.
+        if (entry.childHandoff) {
+          continue;
+        }
         descendants.push(entry);
         if (!visited.has(childSessionKey)) {
           visited.add(childSessionKey);

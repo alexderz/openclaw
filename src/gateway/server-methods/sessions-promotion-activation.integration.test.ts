@@ -127,7 +127,10 @@ describe("fresh-human promotion boundary against the real store and real owner i
     const entry = loadSessionEntry(scope)!;
     expect(entry.sessionId).toBe("session");
     expect(entry.label).toBe("Keep me");
-    expect(entry.spawnedBy).toBe("agent:main:dashboard:parent");
+    // Detached into a dashboard root; the former parent is kept only as history.
+    expect(entry.spawnedBy).toBeUndefined();
+    expect(entry.spawnDepth).toBe(0);
+    expect(entry.promotedFrom).toMatchObject({ parentSessionKey: "agent:main:dashboard:parent" });
     expect(entry.lifecycleRevision).not.toBe("before");
     expect(entry.sessionPromotion).toMatchObject({
       state: "activated",

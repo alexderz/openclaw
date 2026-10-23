@@ -515,6 +515,12 @@ suite.define(() => {
     },
     { name: "delegated", kind: "authorized-none", glyph: "Delegated · limited" },
     { name: "pending", kind: "authorized-pending", glyph: "Promotion pending" },
+    {
+      name: "promoted",
+      kind: "promoted-detached",
+      promotion: promotionProjection("promoted-detached"),
+      glyph: "Ordinary · policy-limited",
+    },
   ] as const;
 
   it.each(
@@ -554,7 +560,7 @@ suite.define(() => {
             buttons.map((button) => (button as HTMLElement).dataset.promotionAction),
           ),
         ).toEqual(
-          state.name === "standard"
+          state.name === "standard" || state.name === "promoted"
             ? []
             : state.name === "pending"
               ? ["cancel-promotion"]
@@ -564,6 +570,13 @@ suite.define(() => {
           buttons.map((button) => (button as HTMLElement).offsetHeight),
         )) {
           expect(box).toBeGreaterThanOrEqual(44);
+        }
+        if (state.name === "promoted") {
+          // A standard session with its history: no promotion controls, no limited wording.
+          const text = (await panel.textContent()) ?? "";
+          // The parent row is not listed here, so it is named by its key.
+          expect(text).toContain("Promoted from agent:main:dashboard:parent on");
+          expect(text).not.toContain("Started as delegated");
         }
         await captureUiProof(suite, page, name + ".png");
         if (state.name === "delegated") {
@@ -604,6 +617,13 @@ suite.define(() => {
       key: "agent:main:dashboard:tick-ordinary",
       label: "Ordinary chat",
       promotion: standardRow,
+      mark: undefined,
+      description: undefined,
+    },
+    {
+      key: "agent:main:dashboard:tick-promoted",
+      label: "Promoted chat",
+      promotion: promotionProjection("promoted-detached"),
       mark: undefined,
       description: undefined,
     },

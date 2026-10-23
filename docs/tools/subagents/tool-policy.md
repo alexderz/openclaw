@@ -45,11 +45,12 @@ their communication stays on the announce chain.
 is neither a raw transcript dump nor a prose-only rendering.
 
 A person can [promote](/web/control-ui/sessions-and-sidebar#promote-a-delegated-session) a
-delegated session in the Control UI. After activation, that person's directly
-typed Control UI turns skip the inherited requester policy and this restriction
-layer; completion wakes, automation, inbound `sessions_send`, and other people's
-turns keep them. Global and agent tool policy, sandbox, and the person's role
-still apply. Agents cannot promote sessions.
+delegated session in the Control UI. Activation detaches it into a standard
+dashboard session: the inherited requester policy and this restriction layer no
+longer apply to any of its turns, its own children count from depth 0, and it no
+longer reports to its parent. Global and agent tool policy, sandbox, and the
+person's role still apply. A sub-agent-shaped key keeps this layer for every turn
+except its requester's directly typed turns. Agents cannot promote sessions.
 
 By default, sub-agents below depth `5` receive `sessions_spawn`, `subagents`,
 `sessions_list`, and `sessions_history` so they can manage their children.

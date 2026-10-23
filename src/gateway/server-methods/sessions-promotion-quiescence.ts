@@ -48,17 +48,23 @@ export type SessionPromotionBlocker = {
   runId?: string;
 };
 
-/** Follow requester edges, never siblings of the target's parent. */
-function relevantRuns<R extends { childSessionKey: string; requesterSessionKey: string }>(
-  roots: ReadonlySet<string>,
-  rows: ReadonlyMap<string, R>,
-): Array<[string, R]> {
+/**
+ * Follow requester edges, never siblings of the target's parent. An edge into a child that was
+ * promoted to a root (a handed-off row) is history: that child's own work is not this subtree.
+ */
+function relevantRuns<
+  R extends { childSessionKey: string; requesterSessionKey: string; childHandoff?: unknown },
+>(roots: ReadonlySet<string>, rows: ReadonlyMap<string, R>): Array<[string, R]> {
   const keys = new Set(roots);
   let changed = true;
   while (changed) {
     changed = false;
     for (const row of rows.values()) {
-      if (keys.has(row.requesterSessionKey) && !keys.has(row.childSessionKey)) {
+      if (
+        !row.childHandoff &&
+        keys.has(row.requesterSessionKey) &&
+        !keys.has(row.childSessionKey)
+      ) {
         keys.add(row.childSessionKey);
         changed = true;
       }

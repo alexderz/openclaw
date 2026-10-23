@@ -23,7 +23,10 @@ import {
   MODEL_SELECTION_LOCKED_PARENT_FORK_MESSAGE,
 } from "../auto-reply/reply/session-fork.js";
 import type { InternalSessionEntry, SessionEntry } from "../config/sessions.js";
-import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
+import {
+  resolveAgentMainSessionKey,
+  resolveDashboardRootParentSessionKey,
+} from "../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
   createSessionEntryWithTranscript,
@@ -322,18 +325,16 @@ export async function createGatewaySession(
       return initializingSessionFailure();
     }
   }
-  const agentMainSessionKey = resolveAgentMainSessionKey({ cfg: params.cfg, agentId });
   // Durable dashboard sessions parent to main for flow-up notices and sidebar threads.
   // Incognito roots omit durable lineage so notices cannot cross the storage boundary.
+  // A promoted session is re-parented by the same rule (session-promotion.ts).
   const dashboardParentSessionKey =
-    !parentSessionKey &&
-    !params.authorizedPluginId &&
-    !incognito &&
-    params.fork !== true &&
-    (params.cfg.session?.dmScope ?? "main") === "main" &&
-    params.cfg.session?.scope !== "global" &&
-    targetSessionKey !== agentMainSessionKey
-      ? agentMainSessionKey
+    !parentSessionKey && !params.authorizedPluginId && !incognito && params.fork !== true
+      ? resolveDashboardRootParentSessionKey({
+          cfg: params.cfg,
+          agentId,
+          sessionKey: targetSessionKey,
+        })
       : undefined;
 
   const authorityTargets = params.operatorAuthority

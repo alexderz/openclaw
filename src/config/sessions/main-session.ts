@@ -83,6 +83,26 @@ export function resolveAgentMainSessionKey(params: {
   });
 }
 
+/**
+ * The main root a durable dashboard session is parented to for flow-up notices and sidebar
+ * threads, when the session scope keeps one main conversation per agent. Session creation adds
+ * its own exclusions (explicit parent, plugin, incognito, fork) before using it.
+ */
+export function resolveDashboardRootParentSessionKey(params: {
+  cfg?: { session?: { mainKey?: string; dmScope?: string; scope?: SessionScope } };
+  agentId: string;
+  sessionKey: string;
+}): string | undefined {
+  if (
+    (params.cfg?.session?.dmScope ?? "main") !== "main" ||
+    params.cfg?.session?.scope === "global"
+  ) {
+    return undefined;
+  }
+  const main = resolveAgentMainSessionKey(params);
+  return params.sessionKey !== main ? main : undefined;
+}
+
 /** Resolves an explicit agent id to its canonical main session key. */
 export function resolveExplicitAgentSessionKey(params: {
   cfg?: { session?: { scope?: SessionScope; mainKey?: string } };

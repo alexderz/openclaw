@@ -86,24 +86,40 @@ describe("pending promotion activation transaction", () => {
     });
     expect(blocked).toMatchObject({
       activated: false,
+      detached: false,
       blockers: ["admitted-input"],
       promotion: { state: "pending" },
     });
-    expect(loadSessionEntry(p.scope)?.lifecycleRevision).toBe("before");
+    expect(loadSessionEntry(p.scope)).toMatchObject({
+      lifecycleRevision: "before",
+      spawnDepth: 1,
+      spawnedBy: "agent:main:dashboard:parent",
+    });
     const result = await activatePendingSessionPromotion({ ...p, probeBlockers: () => [] });
     expect(result).toMatchObject({
       activated: true,
+      detached: true,
       blockers: [],
       promotion: { state: "activated" },
     });
     const entry = loadSessionEntry(p.scope)!;
     expect(entry.lifecycleRevision).not.toBe("before");
+    // The same commit turns the row into a dashboard root, keeping provenance as history.
     expect(entry).toMatchObject({
       sessionId: "session",
       label: "Keep me",
-      spawnDepth: 1,
-      spawnedBy: "agent:main:dashboard:parent",
+      spawnDepth: 0,
+      parentSessionKey: "agent:main:main",
+      promotedFrom: {
+        version: 1,
+        requestId: "request",
+        profileId: "human",
+        at: 3,
+        parentSessionKey: "agent:main:dashboard:parent",
+        spawnDepth: 1,
+      },
     });
+    expect(entry.spawnedBy).toBeUndefined();
     expect(entry.sessionPromotion).not.toHaveProperty("requester");
     await expect(
       activatePendingSessionPromotion({

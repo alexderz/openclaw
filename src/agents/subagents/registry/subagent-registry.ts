@@ -16,6 +16,7 @@ import { reconcileRetiredSubagentCancellation } from "../completion/subagent-com
 import { terminateAcceptedCollectorRun } from "../spawn/subagent-spawn-cleanup.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
+import { markSubagentChildHandedOff } from "./subagent-registry-child-handoff.js";
 import {
   createSubagentRegistryCompletionRuntime,
   createSubagentResumeReader,
@@ -650,6 +651,15 @@ async function addSubagentRunForTests(entry: SubagentRunRecord) {
     value: undefined,
     postimages: new Map([[entry.runId, entry]]),
   }));
+}
+
+/** A promoted session became a root: its spawner's settled runs stop making it a child. */
+export async function releaseSubagentChildToRoot(params: {
+  childSessionKey: string;
+  childSessionId?: string;
+}): Promise<{ marked: number; unsettled: number }> {
+  await subagentRestorer.restoreOnce(undefined, true);
+  return await markSubagentChildHandedOff({ runs: subagentRuns, ...params });
 }
 
 export const finalizeInterruptedSubagentRun = completionRuntime.finalizeInterruptedSubagentRun;

@@ -134,6 +134,18 @@ export type SubagentRunReadRecord = {
   collectorCompletion?: {
     status: SwarmCollectorStatus;
   };
+  /**
+   * The child session was promoted to a root after this settled run: the row is history and no
+   * longer an edge from its requester (no descendants, controller, approval or nesting link).
+   */
+  childHandoff?: SubagentChildHandoff;
+};
+
+export type SubagentChildHandoff = {
+  kind: "session-promoted";
+  at: number;
+  /** The child incarnation that was promoted, when known. */
+  childSessionId?: string;
 };
 
 /** Cloneable comparison input; source custody and the deletion verdict remain with the caller. */

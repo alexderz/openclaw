@@ -2,6 +2,7 @@ import { listAgentIds } from "../agents/agent-roster.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { readSessionEntrySummariesInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
+import { isDetachedPromotedSession } from "../sessions/session-promotion-detach.js";
 import { decodeSessionPromotion } from "../sessions/session-promotion-state.js";
 import { onSessionWorkSettled } from "../sessions/session-work-settlement.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
@@ -11,6 +12,7 @@ import {
   isSessionPromotionPending,
   markSessionPromotionPending,
 } from "./session-promotion-pending-keys.js";
+import { releasePromotedSessionFromSpawner } from "./session-promotion-registry-handoff.js";
 
 const SETTLE_DELAY_MS = 250;
 
@@ -76,6 +78,26 @@ export function startSessionPromotionSettlement(
   // A restart leaves no owner release to wake an intent that was already quiet. Read each agent
   // store once, off the main thread, and schedule one ordinary attempt per pending intent: the
   // attempt consumes only the restored original basis and stays pending when it cannot prove it.
+  // A detached session row is the authority; its spawner's run rows follow it. Repairs a release
+  // that a crash or failed registry write left behind after the session row committed.
+  const detached: Array<{ sessionKey: string; sessionId: string }> = [];
+  const releaseDetached = async () => {
+    for (const { sessionKey, sessionId } of detached) {
+      if (stopped) {
+        return;
+      }
+      try {
+        await releasePromotedSessionFromSpawner({
+          childSessionKey: sessionKey,
+          childSessionId: sessionId,
+        });
+      } catch (error) {
+        params.log.warn(
+          `promoted session spawner release deferred: ${error instanceof Error ? error.name : "error"}`,
+        );
+      }
+    }
+  };
   const reconcileAtStartup = async () => {
     const cfg = params.context.getRuntimeConfig();
     for (const agentId of listAgentIds(cfg)) {
@@ -94,6 +116,8 @@ export function startSessionPromotionSettlement(
           ) {
             markSessionPromotionPending(sessionKey);
             schedule(sessionKey);
+          } else if (isPromotionKey(sessionKey) && isDetachedPromotedSession(entry)) {
+            detached.push({ sessionKey, sessionId: entry.sessionId });
           }
         }
       } catch (error) {
@@ -103,11 +127,13 @@ export function startSessionPromotionSettlement(
       }
     }
   };
-  void reconcileAtStartup().catch((error: unknown) => {
-    params.log.warn(
-      `session promotion startup settlement skipped: ${error instanceof Error ? error.name : "error"}`,
-    );
-  });
+  void reconcileAtStartup()
+    .then(releaseDetached)
+    .catch((error: unknown) => {
+      params.log.warn(
+        `session promotion startup settlement skipped: ${error instanceof Error ? error.name : "error"}`,
+      );
+    });
   return {
     stop: () => {
       stopped = true;

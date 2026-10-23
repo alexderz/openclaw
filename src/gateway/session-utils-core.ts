@@ -4,6 +4,7 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { SessionsListParams } from "../../packages/gateway-protocol/src/index.js";
+import { subagentRunOwnsChildSession } from "../agents/subagents/registry/subagent-registry-child-handoff.js";
 import {
   RECENT_ENDED_SUBAGENT_CHILD_SESSION_MS,
   shouldKeepSubagentRunChildLink,
@@ -188,11 +189,14 @@ export function resolveSessionChildOwners(params: {
           now,
         })
       : shouldKeepStoreOnlyChildLink(entry, now));
-  // Runtime control replaces spawnedBy, but only retained runs own controller links.
+  // Runtime control replaces spawnedBy, but only retained runs own controller links. A settled
+  // run never makes an operator-created or promoted root its requester's child.
   const controller = keep
     ? latest
-      ? normalizeOptionalString(latest.controllerSessionKey) ||
-        normalizeOptionalString(latest.requesterSessionKey)
+      ? subagentRunOwnsChildSession(latest, entry)
+        ? normalizeOptionalString(latest.controllerSessionKey) ||
+          normalizeOptionalString(latest.requesterSessionKey)
+        : normalizeOptionalString(entry.spawnedBy)
       : normalizeOptionalString(entry.spawnedBy)
     : undefined;
   // Persistent dashboard navigation outlives the individual run, including forks.
@@ -237,10 +241,11 @@ export function readStoreChildSessionLinks(params: {
     }
     const runs = params.subagentRunsByChildSessionKey.get(key.trim()) ?? [];
     const owners = [
-      ...runs.map(
-        (run) =>
-          normalizeOptionalString(run.controllerSessionKey) ||
-          normalizeOptionalString(run.requesterSessionKey),
+      ...runs.map((run) =>
+        subagentRunOwnsChildSession(run, entry)
+          ? normalizeOptionalString(run.controllerSessionKey) ||
+            normalizeOptionalString(run.requesterSessionKey)
+          : undefined,
       ),
       normalizeOptionalString(entry.spawnedBy),
       normalizeOptionalString(entry.parentSessionKey),

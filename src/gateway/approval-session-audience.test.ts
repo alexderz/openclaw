@@ -8,16 +8,25 @@ type GraphNode = {
   registry?: {
     controllerSessionKey?: string | null;
     requesterSessionKey?: string | null;
+    execution?: { status: string; endedAt?: number };
+    childHandoff?: { kind: "session-promoted"; at: number };
   };
   stored?: {
     parentSessionKey?: string;
     spawnedBy?: string;
+    spawnDepth?: number;
+    createdVia?: string;
+    promotedFrom?: object;
   };
 };
 
 let graph: Record<string, GraphNode> = {};
 const getRuntimeConfigMock = vi.fn(() => ({}) as object);
-const getLatestSubagentRunMock = vi.fn((sessionKey: string) => graph[sessionKey]?.registry);
+const registryRun = (sessionKey: string) => {
+  const registry = graph[sessionKey]?.registry;
+  return registry ? { execution: { status: "running" }, ...registry } : undefined;
+};
+const getLatestSubagentRunMock = vi.fn(registryRun);
 const loadSessionEntryMock = vi.fn(
   (scope: { sessionKey: string }) => graph[scope.sessionKey]?.stored,
 );
@@ -47,9 +56,7 @@ vi.mock("../config/sessions/session-accessor.js", () => ({
 beforeEach(() => {
   graph = {};
   getRuntimeConfigMock.mockReset().mockReturnValue({});
-  getLatestSubagentRunMock
-    .mockReset()
-    .mockImplementation((sessionKey: string) => graph[sessionKey]?.registry);
+  getLatestSubagentRunMock.mockReset().mockImplementation(registryRun);
   loadSessionEntryMock
     .mockReset()
     .mockImplementation((scope: { sessionKey: string }) => graph[scope.sessionKey]?.stored);
@@ -128,6 +135,50 @@ describe("resolveApprovalSessionAudienceWithFallback", () => {
       expect(await resolveApprovalSessionAudienceWithFallback(source, "work"), source).toEqual(
         expected,
       );
+    }
+  });
+
+  it("does not let a settled or handed-off run make its requester a root's approval audience", async () => {
+    const settled = { status: "terminal", endedAt: 2 };
+    const cases: { nodes: Record<string, GraphNode>; expected: string[] }[] = [
+      // Molting shape: an operator-created root whose settled initial-task run names Home.
+      {
+        nodes: {
+          "agent:work:child": {
+            registry: { requesterSessionKey: "main", execution: settled },
+            stored: { createdVia: "operator", spawnDepth: 0 },
+          },
+        },
+        expected: ["agent:work:child"],
+      },
+      // A promoted root: its spawner run is handed off; the stored root link decides.
+      {
+        nodes: {
+          "agent:work:child": {
+            registry: {
+              requesterSessionKey: "parent",
+              execution: settled,
+              childHandoff: { kind: "session-promoted", at: 3 },
+            },
+            stored: { parentSessionKey: "main", spawnDepth: 0, promotedFrom: { version: 1 } },
+          },
+        },
+        expected: ["agent:work:child", "agent:work:main"],
+      },
+      // A delegated child keeps its settled spawner as audience.
+      {
+        nodes: {
+          "agent:work:child": {
+            registry: { requesterSessionKey: "parent", execution: settled },
+            stored: { spawnedBy: "parent", spawnDepth: 1 },
+          },
+        },
+        expected: ["agent:work:child", "agent:work:parent"],
+      },
+    ];
+    for (const { nodes, expected } of cases) {
+      graph = nodes;
+      expect(await resolveApprovalSessionAudienceWithFallback("child", "work")).toEqual(expected);
     }
   });
 

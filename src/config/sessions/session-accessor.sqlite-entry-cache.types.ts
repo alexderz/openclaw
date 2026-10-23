@@ -74,6 +74,9 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
     parentSessionKey: entry.parentSessionKey,
     // The promotion lineage rule proves each hop by its exact parent incarnation.
     parentSessionId: entry.parentSessionId,
+    // Roots that a settled registry run must not re-attach to its requester (session-utils-core).
+    createdVia: entry.createdVia,
+    promotedFrom: entry.promotedFrom ? { ...entry.promotedFrom } : undefined,
     sessionStartedAt: entry.sessionStartedAt,
     permissionMode: entry.permissionMode,
     toolOverrides: entry.toolOverrides ? structuredClone(entry.toolOverrides) : undefined,
