@@ -1095,6 +1095,24 @@
   font-size: inherit;
 }
 
+/* A streaming reply's paths are checked once it settles (until then Lit still renders
+   its markup, so the elements stay as parsed). Meanwhile they read as message text,
+   without the glyph or a tap target, so no path looks openable before it is known to be. */
+.chat-bubble.streaming .chat-text a.markdown-file-link {
+  color: inherit;
+  cursor: inherit;
+  padding-inline-start: 0;
+  pointer-events: none;
+}
+
+.chat-bubble.streaming .chat-text a.markdown-file-link::before {
+  content: none;
+}
+
+.chat-bubble.streaming .chat-text a.markdown-file-link > code {
+  color: inherit;
+}
+
 .chat-text :where(pre) {
   background: var(--bg-muted);
   border: 1px solid var(--border-strong);

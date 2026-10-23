@@ -688,6 +688,24 @@ describe("chat transcript rendering", () => {
     }
   });
 
+  it("offers no file link menu while the reply is still streaming", async () => {
+    const props = threadProps("pane-file-streaming", "agent:main:main", [
+      { role: "assistant", content: "See `src/app.ts`", timestamp: 1_000 },
+    ]);
+    const { container, transcript } = await mountThread(props);
+    try {
+      const link = requireElement(container, "a.markdown-file-link");
+      link.closest(".chat-bubble")?.classList.add("streaming");
+      link.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+      link.click();
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+    } finally {
+      transcript.hostDisconnected();
+    }
+  });
+
   it("keeps file link menu focus with its link and closes once the link is gone", async () => {
     const props = threadProps("pane-file-focus", "agent:main:main", [
       { role: "assistant", content: "See `src/app.ts`", timestamp: 1_000 },

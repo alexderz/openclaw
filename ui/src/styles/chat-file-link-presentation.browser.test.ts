@@ -65,6 +65,16 @@ function fixtureDocument(themeMode: "dark" | "light"): string {
           data-file-ref-path="MOLTING-FOLLOWUP.json"><code>MOLTING-FOLLOWUP.json</code></span>
       </p>
     </div>
+    <div class="chat-bubble streaming">
+      <div class="chat-text">
+        <p id="stream-paragraph">
+          <a id="stream-from-text" class="markdown-file-link" data-file-kind="markdown"
+            data-file-path="docs/plan.md">plan.md</a>
+          <a id="stream-from-code" class="markdown-file-link" data-file-kind="data"
+            data-file-path="MOLTING-FOLLOWUP.json"><code>MOLTING-FOLLOWUP.json</code></a>
+        </p>
+      </div>
+    </div>
     <article class="sidebar-markdown">
       <p>
         <a id="panel-from-text" class="markdown-file-link" data-file-kind="code"
@@ -274,6 +284,11 @@ type PresentationProbe = {
   readonly refParagraph: StyleSnapshot;
   readonly refDecoration: string;
   readonly refGlyph: string;
+  readonly streamFromCodeColor: string;
+  readonly streamFromText: StyleSnapshot;
+  readonly streamGlyph: string;
+  readonly streamParagraph: StyleSnapshot;
+  readonly streamPointerEvents: string;
 };
 
 let browser: Browser;
@@ -344,6 +359,11 @@ async function probe(themeMode: "dark" | "light"): Promise<PresentationProbe> {
         refParagraph: read("#ref-paragraph"),
         refDecoration: getComputedStyle(resolve("#ref-from-text")).textDecorationLine,
         refGlyph: getComputedStyle(resolve("#ref-from-text"), "::before").content,
+        streamFromCodeColor: getComputedStyle(resolve("#stream-from-code > code")).color,
+        streamFromText: read("#stream-from-text"),
+        streamGlyph: getComputedStyle(resolve("#stream-from-text"), "::before").content,
+        streamParagraph: read("#stream-paragraph"),
+        streamPointerEvents: getComputedStyle(resolve("#stream-from-text")).pointerEvents,
       };
     }, CHIP_PROPERTIES);
     return probed as PresentationProbe;
@@ -385,6 +405,18 @@ describeFileLinkPresentation("chat file link presentation", () => {
       expect(probed.refFromText.paddingLeft).toBe("0px");
       expect(probed.refDecoration).toBe("none");
       expect(probed.refGlyph).toBe("none");
+    },
+  );
+
+  it.each(["light", "dark"] as const)(
+    "shows a streaming reply's unchecked paths as message text that cannot be tapped in %s",
+    async (themeMode) => {
+      const probed = await probe(themeMode);
+      expect(probed.streamFromText.color).toBe(probed.streamParagraph.color);
+      expect(probed.streamFromCodeColor).toBe(probed.streamParagraph.color);
+      expect(probed.streamFromText.paddingLeft).toBe("0px");
+      expect(probed.streamGlyph).toBe("none");
+      expect(probed.streamPointerEvents).toBe("none");
     },
   );
 

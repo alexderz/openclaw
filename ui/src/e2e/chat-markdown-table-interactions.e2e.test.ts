@@ -855,6 +855,15 @@ ${overflowTable}`,
           await anchor.press(activation);
         }
         if (link === "file") {
+          // The modal closed with the link inside it; a transcript scroll keeps the menu.
+          await page.locator(".chat-file-link-menu").waitFor();
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) => {
+                document.dispatchEvent(new Event("scroll"));
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              }),
+          );
           await chooseChatFileLinkOpen(page);
         }
       };

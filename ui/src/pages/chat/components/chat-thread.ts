@@ -49,7 +49,8 @@ function openFileLinkMenuFromEvent(
   const anchor =
     event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-file-path]") : null;
   const viaKeyboard = event instanceof KeyboardEvent;
-  if (viaKeyboard && event.repeat) {
+  // A streaming reply's links are not checked yet (see chat-file-link-resolution.ts).
+  if ((viaKeyboard && event.repeat) || anchor?.closest(".chat-bubble.streaming")) {
     return;
   }
   if (anchor) {

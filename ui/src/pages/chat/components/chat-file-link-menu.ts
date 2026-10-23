@@ -70,25 +70,29 @@ export function openChatFileLinkMenu(
       items[(index + step + items.length) % items.length]?.focus();
     }
   });
-  // The expanded-table modal closes itself on any link click, so its menu lives on the page.
-  const layer = anchor.closest(".markdown-table-modal")
-    ? null
-    : anchor.closest("openclaw-modal-dialog, dialog");
+  // The expanded-table modal closes itself on any link click, so its menu lives on the page
+  // and stays where the link was.
+  const fromTableModal = anchor.closest(".markdown-table-modal") !== null;
+  const layer = fromTableModal ? null : anchor.closest("openclaw-modal-dialog, dialog");
   (layer ?? document.body).appendChild(menu);
 
   const scroller = anchor.closest<HTMLElement>(".chat-thread");
   /** The menu belongs to a visible link; once it scrolls away or is unmounted, it closes. */
-  const linkVisible = (rect: DOMRect) => {
+  const linkVisible = (box: DOMRect) => {
     const bounds = scroller?.getBoundingClientRect();
     const top = Math.max(0, bounds?.top ?? 0);
     const bottom = Math.min(window.innerHeight, bounds?.bottom ?? window.innerHeight);
-    return anchor.isConnected && rect.bottom >= top && rect.top <= bottom;
+    return anchor.isConnected && box.bottom >= top && box.top <= bottom;
   };
+  let rect = anchor.getBoundingClientRect();
   const place = () => {
-    const rect = anchor.getBoundingClientRect();
-    if (!linkVisible(rect)) {
-      owner.release();
-      return;
+    // A link the table modal took with it keeps its last position.
+    if (!fromTableModal || anchor.isConnected) {
+      rect = anchor.getBoundingClientRect();
+      if (!linkVisible(rect)) {
+        owner.release();
+        return;
+      }
     }
     const menuRect = menu.getBoundingClientRect();
     let left = rect.left;
