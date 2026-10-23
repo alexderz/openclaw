@@ -35,7 +35,19 @@ const MEDIA_DIRECTIVE_LINE_RE = /^\s*MEDIA:/im;
 
 /** Internal user rows (task notifications, harness context) do not start a turn. */
 export function isInternalUserMessage(record: Record<string, unknown> | undefined): boolean {
-  return record?.role === "user" && asOptionalRecord(record.provenance)?.kind === "internal_system";
+  if (record?.role !== "user") {
+    return false;
+  }
+  if (asOptionalRecord(record.provenance)?.kind === "internal_system") {
+    return true;
+  }
+  // An uncoalesced tool-result carrier is part of the assistant turn, not an operator prompt.
+  const content = record.content;
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every((block) => asOptionalRecord(block)?.type === "tool_result")
+  );
 }
 
 /**

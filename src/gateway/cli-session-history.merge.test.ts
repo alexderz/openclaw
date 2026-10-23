@@ -179,6 +179,21 @@ describe("imported Claude history merge", () => {
       expect(merged).toContainEqual(local);
     });
 
+    it("walks past an uncoalesced tool-result carrier between segments", () => {
+      const toolResult = {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_other", content: "ok" }],
+        timestamp: notificationAt + 20_000,
+        __openclaw: meta("u-tool-result"),
+      };
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, composite(`${first}\n${second}`)],
+        importedMessages: [importedPrompt, segmentA, notification, toolResult, segmentB],
+      });
+
+      expect(merged).not.toContainEqual(composite(`${first}\n${second}`));
+    });
+
     it("does not claim a segment across an image-only operator prompt", () => {
       const imagePrompt = {
         role: "user",
