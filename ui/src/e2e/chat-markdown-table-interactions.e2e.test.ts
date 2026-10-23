@@ -769,7 +769,7 @@ ${overflowTable}`,
       const targetKey = "agent:main:dashboard:table-target";
       const table = `| File | Task |
 | --- | --- |
-| \`src/ready.ts:2\` | ${targetKey} |`;
+| src/ready.ts:2 | ${targetKey} |`;
       const context = await browser.newContext({
         colorScheme: "dark",
         locale: "en-US",

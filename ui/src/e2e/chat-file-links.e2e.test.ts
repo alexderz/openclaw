@@ -41,7 +41,7 @@ describeControlUiE2e("Control UI chat file links", () => {
     await server?.close();
   });
 
-  it("links only paths that open and copies the exact path from the tap menu on a phone", async () => {
+  it("links only prose paths that open and copies paths and inline code on a phone", async () => {
     const context = await browser.newContext({
       viewport: { height: 844, width: 390 },
       hasTouch: true,
@@ -59,7 +59,7 @@ describeControlUiE2e("Control UI chat file links", () => {
         });
       });
       const outside = "/srv/checkout/dist/build-info.json";
-      const text = `Wrote \`MOLTING-FOLLOWUP.json\`, \`notes/today.md\` and \`${outside}\`.`;
+      const text = `Wrote scratch/MOLTING-FOLLOWUP.json, notes/today.md and ${outside}. Check \`MOLTING-FOLLOWUP.json\` next.`;
       const gateway = await installMockGateway(page, {
         featureMethods: [...defaultControlUiFeatureMethods, "sessions.files.stat"],
         historyMessages: [{ role: "assistant", content: [{ type: "text", text }], timestamp: 1 }],
@@ -67,7 +67,7 @@ describeControlUiE2e("Control UI chat file links", () => {
           "sessions.files.stat": {
             sessionKey: "agent:main:main",
             files: [
-              { path: "MOLTING-FOLLOWUP.json", exists: false },
+              { path: "scratch/MOLTING-FOLLOWUP.json", exists: false },
               { path: "notes/today.md", exists: true },
               { path: outside, exists: true },
             ],
@@ -88,12 +88,27 @@ describeControlUiE2e("Control UI chat file links", () => {
       expect(stats).toHaveLength(1);
       expect(stats[0]?.params).toMatchObject({
         sessionKey: "agent:main:main",
-        paths: ["MOLTING-FOLLOWUP.json", "notes/today.md", outside],
+        paths: ["scratch/MOLTING-FOLLOWUP.json", "notes/today.md", outside],
       });
-      const bare = bubble.locator('span[data-file-ref-path="MOLTING-FOLLOWUP.json"] code');
-      expect(await bare.textContent()).toBe("MOLTING-FOLLOWUP.json");
-      await bare.tap();
+      const missing = bubble.locator('span[data-file-ref-path="scratch/MOLTING-FOLLOWUP.json"]');
+      expect(await missing.textContent()).toBe("scratch/MOLTING-FOLLOWUP.json");
+      await missing.tap();
       expect(await page.locator(".chat-file-link-menu").count()).toBe(0);
+
+      // Inline code is never a file link; a tap copies its exact text.
+      const code = bubble.locator("p > code");
+      expect(await code.textContent()).toBe("MOLTING-FOLLOWUP.json");
+      await code.tap();
+      const note = page.locator(".chat-inline-code-copied");
+      await note.waitFor({ state: "visible" });
+      expect(await note.textContent()).toBe("Copied!");
+      await page.screenshot({ path: path.join(artifactDir, "phone-inline-code-copied.png") });
+      expect(await page.locator(".chat-file-link-menu").count()).toBe(0);
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as unknown as { clipboardWrites: string[] }).clipboardWrites),
+        )
+        .toEqual(["MOLTING-FOLLOWUP.json"]);
 
       await bubble.locator(`a[data-file-path="${outside}"]`).tap();
       const menu = page.getByRole("menu", { name: "File actions" });
@@ -105,7 +120,7 @@ describeControlUiE2e("Control UI chat file links", () => {
         .poll(() =>
           page.evaluate(() => (window as unknown as { clipboardWrites: string[] }).clipboardWrites),
         )
-        .toEqual([outside]);
+        .toEqual(["MOLTING-FOLLOWUP.json", outside]);
       expect(await gateway.getRequests("sessions.files.get")).toHaveLength(0);
       expect(await gateway.getRequests("sessions.files.stat")).toHaveLength(1);
     } finally {
@@ -169,7 +184,7 @@ describeControlUiE2e("Control UI chat file links", () => {
           historyMessages: [
             {
               role: "assistant",
-              content: [{ type: "text", text: "Review `src/slow.ts`." }],
+              content: [{ type: "text", text: "Review src/slow.ts." }],
               timestamp: 1,
             },
           ],
@@ -295,7 +310,7 @@ describeControlUiE2e("Control UI chat file links", () => {
               {
                 type: "text",
                 text: [
-                  "Compare /workspace/src/file.ts:7 and `workspace/src/file.ts:7`.",
+                  "Compare /workspace/src/file.ts:7 and workspace/src/file.ts:7.",
                   ...files
                     .slice(2)
                     .map((file) => `[${file.name}](${encodeURI(file.requestPath)}:7)`),
@@ -463,7 +478,7 @@ describeControlUiE2e("Control UI chat file links", () => {
         historyMessages: [
           {
             role: "assistant",
-            content: [{ type: "text", text: "Review `README.md:2`." }],
+            content: [{ type: "text", text: "Review [README.md:2](README.md:2)." }],
             timestamp: 1,
           },
         ],

@@ -116,7 +116,7 @@ suite.define(() => {
       };
       const gateway = await installMockGateway(page, {
         historyMessages: [
-          { role: "assistant", content: [{ type: "text", text: "Open `reports/inventory.csv`." }] },
+          { role: "assistant", content: [{ type: "text", text: "Open reports/inventory.csv." }] },
         ],
         methodResponses: {
           "artifacts.list": { artifacts: [] },

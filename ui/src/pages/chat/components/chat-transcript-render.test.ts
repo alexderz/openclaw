@@ -666,7 +666,7 @@ describe("chat transcript rendering", () => {
     const onOpenWorkspaceFile = vi.fn();
     const props = {
       ...threadProps("pane-file-repeat", "agent:main:main", [
-        { role: "assistant", content: "See `src/app.ts`", timestamp: 1_000 },
+        { role: "assistant", content: "See src/app.ts", timestamp: 1_000 },
       ]),
       onOpenWorkspaceFile,
     };
@@ -690,7 +690,7 @@ describe("chat transcript rendering", () => {
 
   it("offers no file link menu while the reply is still streaming", async () => {
     const props = threadProps("pane-file-streaming", "agent:main:main", [
-      { role: "assistant", content: "See `src/app.ts`", timestamp: 1_000 },
+      { role: "assistant", content: "See src/app.ts", timestamp: 1_000 },
     ]);
     const { container, transcript } = await mountThread(props);
     try {
@@ -708,7 +708,7 @@ describe("chat transcript rendering", () => {
 
   it("keeps file link menu focus with its link and closes once the link is gone", async () => {
     const props = threadProps("pane-file-focus", "agent:main:main", [
-      { role: "assistant", content: "See `src/app.ts`", timestamp: 1_000 },
+      { role: "assistant", content: "See src/app.ts", timestamp: 1_000 },
     ]);
     const { container, transcript } = await mountThread(props);
     try {
@@ -748,7 +748,7 @@ describe("chat transcript rendering", () => {
     const path = "/var/lib/openclaw/.openclaw/workspace/scratch/run/MOLTING-FOLLOWUP.json";
     const props = {
       ...threadProps("pane-file-copy", "agent:main:main", [
-        { role: "assistant", content: `Wrote \`${path}\``, timestamp: 1_000 },
+        { role: "assistant", content: `Wrote ${path}`, timestamp: 1_000 },
       ]),
       onOpenWorkspaceFile,
     };
@@ -776,6 +776,67 @@ describe("chat transcript rendering", () => {
     }
   });
 
+  it("copies tapped inline code exactly and never links it, even when it names a file", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const onOpenWorkspaceFile = vi.fn();
+    const statPaths = vi.fn(async () => new Map<string, boolean>());
+    const props = {
+      ...threadProps("pane-inline-code", "agent:main:main", [
+        {
+          role: "assistant",
+          content: "Run `pnpm test -- --run` and read `src/app.ts` or `MOLTING-FOLLOWUP.json`.",
+          timestamp: 1_000,
+        },
+      ]),
+      onOpenWorkspaceFile,
+      fileLinkResolver: {
+        sessionKey: "agent:main:main",
+        connection: {},
+        knownPaths: () => new Set(["src/app.ts"]),
+        statPaths,
+      },
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      expect(container.querySelector("[data-file-path], [data-file-ref-path]")).toBeNull();
+      const codes = [...container.querySelectorAll<HTMLElement>(".chat-text code")];
+      expect(codes.map((code) => code.textContent)).toEqual([
+        "pnpm test -- --run",
+        "src/app.ts",
+        "MOLTING-FOLLOWUP.json",
+      ]);
+      codes[1]?.click();
+      await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("src/app.ts"));
+      const note = await vi.waitFor(() =>
+        requireElement(document.body, ".chat-inline-code-copied"),
+      );
+      expect(note.getAttribute("role")).toBe("status");
+      expect(note.textContent).toBe("Copied!");
+      codes[0]?.click();
+      await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith("pnpm test -- --run"));
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll(".chat-inline-code-copied")).toHaveLength(1),
+      );
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+      expect(statPaths).not.toHaveBeenCalled();
+
+      // Selecting text inside the code is not a tap: nothing is copied.
+      const range = document.createRange();
+      range.selectNodeContents(codes[2]!);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      codes[2]?.click();
+      expect(writeText).toHaveBeenCalledTimes(2);
+      window.getSelection()?.removeAllRanges();
+    } finally {
+      document.querySelector(".chat-inline-code-copied")?.remove();
+      vi.unstubAllGlobals();
+      transcript.hostDisconnected();
+    }
+  });
+
   it("links only transcript paths that open, with one batched check", async () => {
     const onOpenWorkspaceFile = vi.fn();
     const statPaths = vi.fn(
@@ -787,7 +848,7 @@ describe("chat transcript rendering", () => {
         {
           role: "assistant",
           content:
-            "Wrote `MOLTING-FOLLOWUP.json`, `notes/today.md` and /srv/checkout/dist/build-info.json.",
+            "Wrote scratch/MOLTING-FOLLOWUP.json, notes/today.md and /srv/checkout/dist/build-info.json.",
           timestamp: 1_000,
         },
       ]),
@@ -803,7 +864,7 @@ describe("chat transcript rendering", () => {
     try {
       await vi.waitFor(() => expect(statPaths).toHaveBeenCalledOnce());
       expect(statPaths).toHaveBeenCalledWith("agent:main:main", [
-        "MOLTING-FOLLOWUP.json",
+        "scratch/MOLTING-FOLLOWUP.json",
         "/srv/checkout/dist/build-info.json",
       ]);
       await vi.waitFor(() =>
@@ -813,9 +874,12 @@ describe("chat transcript rendering", () => {
           ),
         ).toEqual(["notes/today.md", "/srv/checkout/dist/build-info.json"]),
       );
-      const bare = requireElement(container, 'span[data-file-ref-path="MOLTING-FOLLOWUP.json"]');
-      expect(bare.classList.contains("markdown-file-link")).toBe(false);
-      bare.querySelector("code")?.click();
+      const missing = requireElement(
+        container,
+        'span[data-file-ref-path="scratch/MOLTING-FOLLOWUP.json"]',
+      );
+      expect(missing.classList.contains("markdown-file-link")).toBe(false);
+      missing.click();
       expect(document.querySelector(".chat-file-link-menu")).toBeNull();
       expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
 

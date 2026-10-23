@@ -176,7 +176,7 @@ describe("markdown sidebar", () => {
       const onOpenWorkspaceFile = vi.fn();
       panel.content = {
         kind: "markdown",
-        content: "See `ui/src/pages/chat/chat-view.ts:362`",
+        content: "See ui/src/pages/chat/chat-view.ts:362",
         fileLinkSessionKey: sessionKey,
       };
       panel.onOpenWorkspaceFile = onOpenWorkspaceFile;
@@ -210,7 +210,7 @@ describe("markdown sidebar", () => {
     const key = "Enter";
     const panel = document.createElement("openclaw-chat-detail-panel") as DetailPanel;
     const onOpenWorkspaceFile = vi.fn();
-    panel.content = { kind: "markdown", content: "See `ui/src/pages/chat/chat-view.ts:362`" };
+    panel.content = { kind: "markdown", content: "See ui/src/pages/chat/chat-view.ts:362" };
     panel.onOpenWorkspaceFile = onOpenWorkspaceFile;
     document.body.append(panel);
     await panel.updateComplete;

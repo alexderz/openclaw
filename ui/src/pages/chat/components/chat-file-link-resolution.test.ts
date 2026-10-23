@@ -77,9 +77,11 @@ describe("chat file link resolution", () => {
     document.body.replaceChildren();
   });
 
-  it("links listed paths at once and renders an unresolved bare filename as code", async () => {
+  it("links listed paths at once and renders an unresolved path as written", async () => {
     vi.useFakeTimers();
-    const root = mountMessages({ markdown: "Wrote `MOLTING-FOLLOWUP.json` and `src/app.ts`." });
+    const root = mountMessages({
+      markdown: "Wrote scratch/MOLTING-FOLLOWUP.json and src/app.ts; see `MOLTING-FOLLOWUP.json`.",
+    });
     const files = resolver({
       knownPaths: () =>
         chatFileLinkKnownPaths({
@@ -97,17 +99,23 @@ describe("chat file link resolution", () => {
     expect(known?.getAttribute("aria-haspopup")).toBe("menu");
     expect(known?.dataset.fileLinkState).toBe("open");
     // Unknown paths render unlinked while the single check is in flight.
-    expect(stateOf(root, "MOLTING-FOLLOWUP.json")).toBe("pending");
+    expect(stateOf(root, "scratch/MOLTING-FOLLOWUP.json")).toBe("pending");
 
     await settle();
-    expect(files.statPaths).toHaveBeenCalledExactlyOnceWith(SESSION, ["MOLTING-FOLLOWUP.json"]);
-    const bare = root.querySelector<HTMLElement>('[data-file-ref-path="MOLTING-FOLLOWUP.json"]');
-    expect(bare?.tagName).toBe("SPAN");
-    expect(bare?.dataset.fileLinkState).toBe("plain");
-    expect(bare?.className).toBe("markdown-file-ref");
-    expect(bare?.hasAttribute("role")).toBe(false);
-    expect(bare?.hasAttribute("tabindex")).toBe(false);
-    expect(bare?.querySelector("code")?.textContent).toBe("MOLTING-FOLLOWUP.json");
+    // Inline code is never a file link, so only the prose path is checked.
+    expect(files.statPaths).toHaveBeenCalledExactlyOnceWith(SESSION, [
+      "scratch/MOLTING-FOLLOWUP.json",
+    ]);
+    const missing = root.querySelector<HTMLElement>(
+      '[data-file-ref-path="scratch/MOLTING-FOLLOWUP.json"]',
+    );
+    expect(missing?.tagName).toBe("SPAN");
+    expect(missing?.dataset.fileLinkState).toBe("plain");
+    expect(missing?.className).toBe("markdown-file-ref");
+    expect(missing?.hasAttribute("role")).toBe(false);
+    expect(missing?.hasAttribute("tabindex")).toBe(false);
+    expect(missing?.textContent).toBe("scratch/MOLTING-FOLLOWUP.json");
+    expect(root.querySelector("p > code")?.textContent).toBe("MOLTING-FOLLOWUP.json");
     expect(root.querySelectorAll("a[data-file-path]")).toHaveLength(1);
     resolution.detach();
   });
@@ -116,7 +124,7 @@ describe("chat file link resolution", () => {
     vi.useFakeTimers();
     const html = [
       "See docs/model-research/conclusions.md and /srv/elsewhere/build-info.json",
-      "Also `notes/todo.md`",
+      "Also notes/todo.md",
     ];
     const files = resolver({ exists: ["/srv/elsewhere/build-info.json"] });
     const resolution = new ChatFileLinkResolution();
@@ -159,13 +167,13 @@ describe("chat file link resolution", () => {
       ),
     });
     const resolution = new ChatFileLinkResolution();
-    const root = mountMessages({ markdown: "I'll create `notes/plan.md`.", id: "m1" });
+    const root = mountMessages({ markdown: "I'll create notes/plan.md.", id: "m1" });
     resolution.attach(root, files);
     await settle();
     expect(stateOf(root, "notes/plan.md")).toBe("plain");
 
     exists.push("notes/plan.md");
-    appendMessages(root, [{ markdown: "Created `notes/plan.md`.", id: "m2" }]);
+    appendMessages(root, [{ markdown: "Created notes/plan.md.", id: "m2" }]);
     resolution.attach(root, files);
     await settle();
     expect(files.statPaths).toHaveBeenCalledTimes(2);
@@ -200,12 +208,12 @@ describe("chat file link resolution", () => {
 
   it("checks other sessions' messages against their own session and caps each request", async () => {
     vi.useFakeTimers();
-    const many = Array.from({ length: 70 }, (_, index) => `\`src/file-${index}.ts\``).join(" ");
+    const many = Array.from({ length: 70 }, (_, index) => `src/file-${index}.ts`).join(" ");
     const files = resolver();
     const resolution = new ChatFileLinkResolution();
     const root = mountMessages(
       { markdown: many },
-      { markdown: "`reports/index.html`", session: "agent:research:report" },
+      { markdown: "reports/index.html", session: "agent:research:report" },
     );
     resolution.attach(root, files);
     await settle();
@@ -227,7 +235,7 @@ describe("chat file link resolution", () => {
       }),
     });
     const resolution = new ChatFileLinkResolution();
-    const root = mountMessages({ markdown: "`src/app.ts`", id: "m1" });
+    const root = mountMessages({ markdown: "src/app.ts", id: "m1" });
     resolution.attach(root, failing);
     await settle();
     expect(stateOf(root, "src/app.ts")).toBe("plain");
@@ -247,14 +255,14 @@ describe("chat file link resolution", () => {
   it("changes nothing while method support is unknown, as during a reconnect", async () => {
     vi.useFakeTimers();
     const resolution = new ChatFileLinkResolution();
-    const root = mountMessages({ markdown: "`MOLTING-FOLLOWUP.json`", id: "m1" });
+    const root = mountMessages({ markdown: "scratch/MOLTING-FOLLOWUP.json", id: "m1" });
     resolution.attach(root, resolver());
     await settle();
-    expect(stateOf(root, "MOLTING-FOLLOWUP.json")).toBe("plain");
+    expect(stateOf(root, "scratch/MOLTING-FOLLOWUP.json")).toBe("plain");
 
     resolution.attach(root, undefined);
     await settle();
-    expect(stateOf(root, "MOLTING-FOLLOWUP.json")).toBe("plain");
+    expect(stateOf(root, "scratch/MOLTING-FOLLOWUP.json")).toBe("plain");
     expect(root.querySelector("a[data-file-path]")).toBeNull();
     resolution.detach();
   });
@@ -262,17 +270,17 @@ describe("chat file link resolution", () => {
   it("keeps parser links for a Gateway without the check and re-evaluates them later", async () => {
     vi.useFakeTimers();
     const resolution = new ChatFileLinkResolution();
-    const root = mountMessages({ markdown: "`MOLTING-FOLLOWUP.json`", id: "m1" });
+    const root = mountMessages({ markdown: "scratch/MOLTING-FOLLOWUP.json", id: "m1" });
     resolution.attach(root, { ...resolver(), statPaths: undefined });
     await settle();
-    expect(stateOf(root, "MOLTING-FOLLOWUP.json")).toBe("unchecked");
+    expect(stateOf(root, "scratch/MOLTING-FOLLOWUP.json")).toBe("unchecked");
     expect(root.querySelector("a[data-file-path]")?.getAttribute("role")).toBe("button");
 
     const files = resolver();
     resolution.attach(root, files);
     await settle();
     expect(files.statPaths).toHaveBeenCalledOnce();
-    expect(stateOf(root, "MOLTING-FOLLOWUP.json")).toBe("plain");
+    expect(stateOf(root, "scratch/MOLTING-FOLLOWUP.json")).toBe("plain");
     resolution.detach();
   });
 
@@ -281,8 +289,8 @@ describe("chat file link resolution", () => {
     const files = resolver({ exists: ["src/app.ts"] });
     const left = new ChatFileLinkResolution();
     const right = new ChatFileLinkResolution();
-    const leftRoot = mountMessages({ markdown: "`src/app.ts`", id: "m1" });
-    const rightRoot = mountMessages({ markdown: "`src/app.ts`", id: "m1" });
+    const leftRoot = mountMessages({ markdown: "src/app.ts", id: "m1" });
+    const rightRoot = mountMessages({ markdown: "src/app.ts", id: "m1" });
     left.attach(leftRoot, files);
     right.attach(rightRoot, files);
     await settle();
@@ -301,8 +309,8 @@ describe("chat file link resolution", () => {
     // Each pane counts its own connectionEpoch; only the shared connection identity counts.
     const leftFiles = Object.assign(resolver({ connection }), { epoch: 1 });
     const rightFiles = Object.assign(resolver({ connection }), { epoch: 3 });
-    const leftRoot = mountMessages({ markdown: "`missing-left.json`", id: "m1" });
-    const rightRoot = mountMessages({ markdown: "`missing-right.json`", id: "m2" });
+    const leftRoot = mountMessages({ markdown: "scratch/missing-left.json", id: "m1" });
+    const rightRoot = mountMessages({ markdown: "scratch/missing-right.json", id: "m2" });
     left.attach(leftRoot, leftFiles);
     right.attach(rightRoot, rightFiles);
     await settle();
@@ -310,8 +318,8 @@ describe("chat file link resolution", () => {
     await settle();
     expect(leftFiles.statPaths).toHaveBeenCalledOnce();
     expect(rightFiles.statPaths).toHaveBeenCalledOnce();
-    expect(stateOf(leftRoot, "missing-left.json")).toBe("plain");
-    expect(stateOf(rightRoot, "missing-right.json")).toBe("plain");
+    expect(stateOf(leftRoot, "scratch/missing-left.json")).toBe("plain");
+    expect(stateOf(rightRoot, "scratch/missing-right.json")).toBe("plain");
     left.detach();
     right.detach();
   });
@@ -334,7 +342,7 @@ describe("chat file link resolution", () => {
   it("leaves links unchanged without a resolver", async () => {
     vi.useFakeTimers();
     const resolution = new ChatFileLinkResolution();
-    const root = mountMessages({ markdown: "`MOLTING-FOLLOWUP.json`" });
+    const root = mountMessages({ markdown: "scratch/MOLTING-FOLLOWUP.json" });
     resolution.attach(root, undefined);
     await settle();
     expect(root.querySelector("a[data-file-path]")?.classList.contains("markdown-file-link")).toBe(

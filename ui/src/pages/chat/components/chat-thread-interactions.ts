@@ -46,6 +46,7 @@ import type { AsyncQuestionDraft, AsyncQuestionPresentation } from "./chat-async
 import { resolveChatContextCopy, usesNativeContextMenu } from "./chat-context-copy.ts";
 import type { ChatFileLinkResolver } from "./chat-file-link-resolution.ts";
 import type { ChatHistoryBoundaryProps } from "./chat-history-boundary.ts";
+import { inlineCodeFromTarget } from "./chat-inline-code-copy.ts";
 import {
   dismissConfirmedActionPopovers,
   isConfirmedActionPopoverFocused,
@@ -465,7 +466,9 @@ function toggleTouchMessageMeta(event: PointerEvent): void {
   if (
     !(group instanceof HTMLElement) ||
     !transcript.contains(group) ||
-    target.closest("a, button, details, input, label, select, textarea, [contenteditable]")
+    target.closest("a, button, details, input, label, select, textarea, [contenteditable]") ||
+    // A tap on inline code copies it (chat-inline-code-copy.ts) instead.
+    inlineCodeFromTarget(target)
   ) {
     return;
   }

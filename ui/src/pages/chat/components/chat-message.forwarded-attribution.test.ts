@@ -64,7 +64,7 @@ describe("forwarded message attribution", () => {
       const group = createGroup(
         { senderSession: { sessionKey } },
         {
-          content: "See `reports/index.html:7`",
+          content: "See reports/index.html:7",
           ...(collapsed
             ? { provenance: { kind: "inter_session", sourceTool: "sessions_send" } }
             : {}),
@@ -170,7 +170,7 @@ describe("forwarded message attribution", () => {
           timestamp: 1_000,
           senderSession: { sessionKey },
           content: [
-            { type: "text", text: "See `reports/index.html:7`" },
+            { type: "text", text: "See reports/index.html:7" },
             {
               type: "toolCall",
               id: "read-report",

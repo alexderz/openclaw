@@ -23,11 +23,12 @@ import {
 import { hydrateLinkFavicons } from "../link-favicon-loader.ts";
 import { openChatFileLinkMenu } from "./chat-file-link-menu.ts";
 import { chatFileLinkResolution } from "./chat-file-link-resolution.ts";
-import "./chat-comment-pins.ts";
 import {
   CHAT_HISTORY_BOUNDARY_HEIGHT_PX,
   renderChatHistoryBoundary,
 } from "./chat-history-boundary.ts";
+import "./chat-comment-pins.ts";
+import { copyInlineCodeFromClick } from "./chat-inline-code-copy.ts";
 import { renderChatPositionRail } from "./chat-position-rail.ts";
 import {
   handleTranscriptContextMenu,
@@ -195,6 +196,9 @@ function renderTranscriptShell(
           handleMarkdownCodeBlockClick(event);
           handleMarkdownTableInteraction(event);
           if (shouldHandleNavigationClick(event) && navigateCronRunLink(event, props)) {
+            return;
+          }
+          if (copyInlineCodeFromClick(event)) {
             return;
           }
           const target = markdownFileLinkFromEvent(event);

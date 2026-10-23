@@ -363,14 +363,8 @@ export function createMarkdownParser(): MarkdownItParser {
         if (linkDepth > 0) {
           continue;
         }
-        if (token.type === "code_inline") {
-          const target = parseMarkdownFileLinkTarget(token.content);
-          if (target) {
-            children.splice(index, 1, ...fileLinkTokens(token, target, token.content.trim()));
-            index += 2;
-          }
-          continue;
-        }
+        // Inline code stays code: a tap copies its exact text (chat-inline-code-copy.ts),
+        // so only paths written as prose become file links.
         if (token.type !== "text") {
           continue;
         }

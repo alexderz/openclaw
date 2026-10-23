@@ -58,7 +58,7 @@ suite.define(() => {
           historyMessages: [
             {
               role: "assistant",
-              content: [{ type: "text", text: "Review `notes.txt`." }],
+              content: [{ type: "text", text: "Review [notes.txt](notes.txt)." }],
               timestamp: 1,
             },
           ],

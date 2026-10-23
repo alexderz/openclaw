@@ -10,7 +10,7 @@ const filePath = "/Users/example/My Project/src/application.ts";
 
 beforeEach(async () => {
   document.body.innerHTML = `<openclaw-tooltip-provider><main class="chat-text" style="padding:80px 24px">${toSanitizedMarkdownHtml(
-    `[application.ts](<${filePath}:42>) and \`src/next.ts\`.`,
+    `[application.ts](<${filePath}:42>) and src/next.ts.`,
     { fileLinks: true },
   )}</main><button id="outside">Outside</button></openclaw-tooltip-provider><openclaw-toast-host></openclaw-toast-host>`;
   dispose = installTitleTooltips(document);

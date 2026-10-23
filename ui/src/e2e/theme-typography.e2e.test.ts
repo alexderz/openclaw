@@ -311,7 +311,9 @@ suite.define(() => {
       featureMethods: [...defaultControlUiFeatureMethods, "sessions.files.set"],
       historyMessages: [
         {
-          content: [{ text: `Review \`notes.txt\`: ${COMPOSER_LIGATURE_SEQUENCE}`, type: "text" }],
+          content: [
+            { text: `Review [notes.txt](notes.txt): ${COMPOSER_LIGATURE_SEQUENCE}`, type: "text" },
+          ],
           role: "assistant",
           timestamp: 1,
         },

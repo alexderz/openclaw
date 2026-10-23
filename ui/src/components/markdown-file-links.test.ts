@@ -26,7 +26,6 @@ describe("file links", () => {
 
   it.each([
     ["plain text", "see src/lib/foo.ts:42"],
-    ["inline code", "`src/lib/foo.ts:42`"],
     ["explicit Markdown", "[source](src/lib/foo.ts:42)"],
   ])("makes %s workspace file links keyboard-focusable without adding an href", (_kind, input) => {
     const fragment = render(input);
@@ -39,6 +38,21 @@ describe("file links", () => {
     link?.focus();
     expect(document.activeElement).toBe(link);
     fragment.remove();
+  });
+
+  it.each([
+    "`src/lib/foo.ts:42`",
+    "`README.md`",
+    "`/srv/checkout/dist/build-info.json`",
+    "`D:\\work\\bar.ts`",
+    "`MOLTING-FOLLOWUP.json`",
+  ])("keeps inline code %s as code, never a file link", (input) => {
+    // A tap on inline code copies its text; only paths written as prose become links.
+    const fragment = render(input);
+    expect(fragment.querySelector("a")).toBeNull();
+    const code = fragment.querySelector("code");
+    expect(code?.parentElement?.tagName).toBe("P");
+    expect(code?.textContent).toBe(input.slice(1, -1));
   });
 
   it.each<[string, string[], string[]]>([
@@ -55,12 +69,12 @@ describe("file links", () => {
     ],
     [
       "`src/lib/foo.ts` `navigation.ts` `inventory.csv` `foo.bar()` `notes.xyz123`",
-      ["src/lib/foo.ts", "navigation.ts", "inventory.csv"],
-      ["foo.bar()", "notes.xyz123"],
+      [],
+      ["src/lib/foo.ts", "navigation.ts", "inventory.csv", "foo.bar()", "notes.xyz123"],
     ],
     [
-      "`re\u0301sume\u0301.md` and `C:\\文档\\café.md:9`",
-      ["re\u0301sume\u0301.md", "C:\\文档\\café.md"],
+      "notes/re\u0301sume\u0301.md and C:/文档/café.md:9",
+      ["notes/re\u0301sume\u0301.md", "C:/文档/café.md"],
       [],
     ],
     [
@@ -89,7 +103,7 @@ describe("file links", () => {
       ],
     ],
     [
-      "`src/commands/auth-choice-options.static.ts:26-35`",
+      "src/commands/auth-choice-options.static.ts:26-35",
       [{ path: "src/commands/auth-choice-options.static.ts", line: "26" }],
     ],
   ])("preserves line suffixes and targets their first line in %s", (input, expected) => {
@@ -103,11 +117,11 @@ describe("file links", () => {
   });
 
   it("links Windows absolute paths", () => {
-    const fragment = render("C:/repo/src/foo.ts:42 and `D:\\work\\bar.ts`");
+    const fragment = render("C:/repo/src/foo.ts:42 and D:/work/bar.ts");
     const links = fileLinks(fragment);
     expect(links.map((link) => link.dataset.filePath)).toEqual([
       "C:/repo/src/foo.ts",
-      "D:\\work\\bar.ts",
+      "D:/work/bar.ts",
     ]);
     expect(links[0]?.dataset.fileLine).toBe("42");
   });
@@ -152,7 +166,6 @@ describe("file links", () => {
       for (const markdown of [
         `[Read file](${path}:17)`,
         `[Read file](${encodeURI(path)}:17)`,
-        `\`${path}:17\``,
         `Inspect ${path}:17 now.`,
       ]) {
         const fragment = render(markdown);
@@ -236,32 +249,29 @@ describe("file links", () => {
         },
       ],
     ],
-    ["`README.md`", [{ label: "README.md", title: null }]],
+    ["[README.md](README.md)", [{ label: "README.md", title: null }]],
     [
       "[src/lib/foo.ts](src/lib/foo.ts) and [go](src/lib/bar.ts)",
       [{ title: null }, { title: "src/lib/bar.ts" }],
     ],
     [
-      "`src/lib/foo.ts` and [the button](src/ui/Button.tsx:12)",
+      "src/lib/foo.ts and [the button](src/ui/Button.tsx:12)",
       [
         { label: "foo.ts", title: "src/lib/foo.ts" },
         { label: "the button", title: "src/ui/Button.tsx:12" },
       ],
     ],
     [
-      "ui/src/app.ts and api/src/app.ts and `D:\\work\\app.ts`",
-      [{ label: "ui/src/app.ts" }, { label: "api/src/app.ts" }, { label: "work\\app.ts" }],
+      "ui/src/app.ts and api/src/app.ts and D:/work/app.ts",
+      [{ label: "ui/src/app.ts" }, { label: "api/src/app.ts" }, { label: "work/app.ts" }],
     ],
-    ...[
+    [
       "/tmp/qa/src/file.ts:7 and tmp/qa/src/file.ts:7",
-      "`/tmp/qa/src/file.ts:7` and `tmp/qa/src/file.ts:7`",
-    ].map((input): [string, { path: string; line: string; label: string }[]] => [
-      input,
       [
         { path: "/tmp/qa/src/file.ts", line: "7", label: "/tmp/qa/src/file.ts:7" },
         { path: "tmp/qa/src/file.ts", line: "7", label: "tmp/qa/src/file.ts:7" },
       ],
-    ]),
+    ],
   ])("keeps file labels unambiguous and tooltips nonredundant in %s", (input, expected) => {
     expect(
       fileLinks(render(input)).map((link) => ({
@@ -298,12 +308,12 @@ describe("file links", () => {
   });
 
   it.each<[string, string, string, string?]>([
-    ["`C:\\skills\\review\\skill.MD`", "C:\\skills\\review\\skill.MD", "skill"],
-    ["`skills/review/SKILL.markdown`", "skills/review/SKILL.markdown", "markdown"],
-    ["`skills/review/other-skill.md`", "skills/review/other-skill.md", "markdown"],
-    ["`package.json`", "package.json", "package"],
-    ["`src/components/Button.tsx`", "src/components/Button.tsx", "component"],
-    ["`notes/todo.txt`", "notes/todo.txt", "file"],
+    ["see C:/skills/review/skill.MD", "C:/skills/review/skill.MD", "skill"],
+    ["see skills/review/SKILL.markdown", "skills/review/SKILL.markdown", "markdown"],
+    ["see skills/review/other-skill.md", "skills/review/other-skill.md", "markdown"],
+    ["[Read file](package.json)", "package.json", "package"],
+    ["see src/components/Button.tsx", "src/components/Button.tsx", "component"],
+    ["see notes/todo.txt", "notes/todo.txt", "file"],
     ["[Read file](/tmp/constructor)", "/tmp/constructor", "file"],
     ["[Read file](/tmp/notes.__proto__)", "/tmp/notes.__proto__", "file"],
     ["skills/review/SKILL.md:12", "skills/review/SKILL.md", "skill", "12"],

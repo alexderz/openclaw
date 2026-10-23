@@ -21,7 +21,9 @@ async function openFilePreview(page: Page) {
     historyMessages: [
       {
         role: "assistant",
-        content: [{ type: "text", text: "Review `notes.txt` and `other.txt`." }],
+        content: [
+          { type: "text", text: "Review [notes.txt](notes.txt) and [other.txt](other.txt)." },
+        ],
         timestamp: 1,
       },
     ],

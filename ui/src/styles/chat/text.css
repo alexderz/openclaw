@@ -1082,13 +1082,16 @@
   word-break: break-word;
 }
 
-/* Classification wins over authoring syntax: once a span is recognized as a
-   workspace path it is a file link, so `README.md` and a bare src/app.ts beside
-   it read as one affordance instead of two. The chip would otherwise double the
-   signal the glyph already carries, and only on the links that happened to be
-   written in backticks. Both chip rules exclude these spans at the selector
-   rather than resetting them here, so no theme override has to be out-specified;
-   this rule only has to undo the separate mono-font declarations. */
+/* A tap copies inline code outside links (chat-inline-code-copy.ts); the pointer says so. */
+.chat-text :where(:not(pre, a) > code) {
+  cursor: copy;
+}
+
+/* An authored link with a code label ([`app.ts`](src/app.ts)) is a file link, and
+   reads like one beside a bare src/app.ts instead of as a second affordance. Bare
+   inline code is never a file link: a tap copies it. Both chip rules exclude these
+   spans at the selector rather than resetting them here, so no theme override has to
+   be out-specified; this rule only has to undo the separate mono-font declarations. */
 :is(.chat-text, .sidebar-markdown) a.markdown-file-link > code {
   color: var(--link);
   font-family: inherit;
