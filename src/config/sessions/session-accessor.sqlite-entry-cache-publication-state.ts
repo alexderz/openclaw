@@ -410,6 +410,7 @@ export function retainPreparedSessionSharingFacts(params: SessionSharingRetentio
       read.facts = reconcileSessionSharingAcquisition(acquisition, snapshot);
       read.acquisition = undefined;
     },
+    hasPendingGeneration: () => generationPending(),
     readGeneration: () => (active && !generationPending() ? read.generation?.current : undefined),
     readGenerationSettings: () => (active && !pending(true) ? read.generation?.current : undefined),
     readCurrent: () => (pending(true) ? undefined : read.facts),
@@ -489,6 +490,33 @@ export function retainPreparedSessionGenerationFacts(params: {
     generation,
   });
   return {
+    /**
+     * An unknown settlement (incomplete worker receipt) leaves `current` undefined:
+     * neither a proven retirement (null) nor a postimage. Re-seed it only from a committed
+     * row read that `check` accepts; `check` revokes its owner for any other generation.
+     * `read` runs only for an unknown generation and returns undefined when it cannot certify.
+     */
+    recoverUnknown: (
+      read: () => SessionEntry | null | undefined,
+      check: (entry: SessionSharingEntry | null) => unknown,
+    ) => {
+      if (
+        generation.initiallyAbsent ||
+        generation.current !== undefined ||
+        retained.hasPendingGeneration()
+      ) {
+        return;
+      }
+      const committed = read();
+      if (committed === undefined) {
+        return;
+      }
+      const entry = committed ? projectSessionSharingEntry(committed) : null;
+      check(entry);
+      if (entry) {
+        generation.current = entry;
+      }
+    },
     adoptCreatedEntry: (entry: SessionSharingEntry) => {
       if (!generation.initiallyAbsent || retained.readGeneration() !== entry) {
         return false;

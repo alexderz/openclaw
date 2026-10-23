@@ -10,6 +10,7 @@ import {
   prepareSqliteQueryTakeFirstSync,
   sqliteStringSet,
 } from "../../infra/kysely-sync.js";
+import { hasPendingSqliteNativeExecution } from "../../infra/sqlite-native-observer.js";
 import {
   getSqliteReadScopeRevision,
   runSqliteReadOperationSync,
@@ -426,6 +427,17 @@ export function readSessionEntryGenerationInDatabase(
   }
   const { sessionId, lifecycleRevision, permissionMode, toolOverrides } = entry;
   return { sessionId, lifecycleRevision, permissionMode, toolOverrides };
+}
+
+/** Committed row only; undefined while this handle holds a transaction or unfinished native execution. */
+export function readCommittedSessionEntryInDatabase(
+  database: OpenClawAgentDatabaseReader,
+  sessionKey: string,
+): SessionEntry | null | undefined {
+  if (database.db.isTransaction || hasPendingSqliteNativeExecution(database.db)) {
+    return undefined;
+  }
+  return readExactSessionEntryRow(database, sessionKey, "full", "canonical")?.entry ?? null;
 }
 
 export function readExactSessionEntryRow(
