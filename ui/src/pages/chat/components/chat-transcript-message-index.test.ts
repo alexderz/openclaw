@@ -938,10 +938,12 @@ describe("reply targets", () => {
     const index = projectTranscriptIndex(chain, new Map(), labels);
     const holds = (id: string) =>
       index.rows
-        .filter((row) =>
-          chatItemGroups(row.item).some((group) =>
-            group.messages.some((source) => persistedMessageEntryId(source.message) === id),
-          ),
+        .filter(
+          (row) =>
+            row.kind === "item" &&
+            chatItemGroups(row.item).some((group) =>
+              group.messages.some((source) => persistedMessageEntryId(source.message) === id),
+            ),
         )
         .map((row) => row.key);
     expect(holds("follow-up")).toHaveLength(2);

@@ -533,20 +533,78 @@ describe("full tail refresh after the leaf advances", () => {
 
   it("collapses copies an earlier merge already retained", async () => {
     const { state, tail } = readerWithOlderPages();
+    // Each earlier refresh re-appended the window's old edge after newer rows;
+    // seq 2 holds two identical display siblings.
+    const repeats = [row(2), row(2), row(3)];
     state.chatMessages = [
       row(1),
-      row(2),
-      row(2),
-      row(3),
-      row(3),
-      row(3),
+      ...repeats,
+      ...repeats,
+      ...repeats,
       ...state.chatMessages.slice(3),
     ];
     await loadChatHistory(state);
     expect(state.chatMessages).toEqual([
-      ...Array.from({ length: 8 }, (_, index) => row(index + 1)),
+      row(1),
+      row(2),
+      ...Array.from({ length: 7 }, (_, index) => row(index + 2)),
       ...tail,
     ]);
+  });
+
+  it("keeps identical siblings of one transcript row", async () => {
+    const { state, tail } = readerWithOlderPages();
+    state.chatMessages = [row(1), row(2), row(2), ...state.chatMessages.slice(2)];
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([
+      row(1),
+      row(2),
+      ...Array.from({ length: 7 }, (_, index) => row(index + 2)),
+      ...tail,
+    ]);
+  });
+
+  it("keeps imported rows that sit between retained rows", async () => {
+    const { state, tail } = readerWithOlderPages();
+    const imported = message("assistant", "imported reply", {
+      id: "i1",
+      importedFrom: "claude-cli",
+      cliSessionId: "cli",
+      externalId: "e1",
+    });
+    state.chatMessages = [row(1), imported, ...state.chatMessages.slice(1)];
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([
+      row(1),
+      imported,
+      ...Array.from({ length: 7 }, (_, index) => row(index + 2)),
+      ...tail,
+    ]);
+  });
+
+  it("keeps older rows when pagination ordinals trail row sequences", async () => {
+    // Two local rows the CLI index omits put every later row two ordinals
+    // behind its own seq; the raw start alone would cut seq 5 and 6.
+    const state = createState({ messages: [] });
+    state.currentSessionId = "session";
+    state.chatDisplayedLeafEntryId = "m10";
+    state.chatHistoryPagination = { hasMore: false, totalMessages: 8 };
+    state.chatMessages = Array.from({ length: 10 }, (_, index) => row(index + 1));
+    vi.spyOn(state.client!, "request").mockResolvedValue({
+      messages: Array.from({ length: 6 }, (_, index) => row(index + 7)),
+      hasMore: true,
+      nextOffset: 6,
+      totalMessages: 10,
+      sessionInfo: {
+        key: "main",
+        kind: "direct",
+        updatedAt: 2,
+        sessionId: "session",
+        activeLeafEntryId: "m12",
+      },
+    });
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual(Array.from({ length: 12 }, (_, index) => row(index + 1)));
   });
 });
 
