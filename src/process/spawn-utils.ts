@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { expectDefined } from "@openclaw/normalization-core";
 import { toErrorObject } from "../infra/errors.js";
+import { placeChildInChildCgroup } from "./child-cgroup-placement.js";
 import { getSpawnBroker } from "./spawn-broker/context.js";
 import { brokerSpawnOptions } from "./spawn-broker/host.js";
 import { recordChildProcessSpawn } from "./spawn-diagnostics.js";
@@ -17,12 +18,15 @@ export function spawnProcess(
 ): ChildProcess {
   const broker = getSpawnBroker();
   // Anonymous secret pipes and inherited numeric descriptors belong to this process.
-  const child =
-    broker && brokerSpawnOptions(options)
-      ? broker.spawn(command, args, options, initiateSpawn)
-      : initiateSpawn
-        ? initiateSpawn(() => spawn(command, args, options))
-        : spawn(command, args, options);
+  const brokerHost = broker && brokerSpawnOptions(options) ? broker : undefined;
+  const child = brokerHost
+    ? brokerHost.spawn(command, args, options, initiateSpawn)
+    : initiateSpawn
+      ? initiateSpawn(() => spawn(command, args, options))
+      : spawn(command, args, options);
+  if (!brokerHost) {
+    placeChildInChildCgroup(child);
+  }
   recordChildProcessSpawn(command, child);
   return child;
 }

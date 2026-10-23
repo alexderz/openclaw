@@ -15,6 +15,7 @@ import {
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { placeChildInChildCgroup } from "../child-cgroup-placement.js";
 import type { SpawnInitiation } from "../spawn-initiation.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "../supervisor/cancellation-policy.js";
 import { BrokerChild } from "./child.js";
@@ -390,6 +391,8 @@ export class SpawnBrokerHost {
       detached: true,
       serialization: "advanced",
     });
+    // Broker-launched commands inherit this cgroup, so one move covers them all.
+    placeChildInChildCgroup(child);
     this.process = child;
     this.brokerClosed = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
