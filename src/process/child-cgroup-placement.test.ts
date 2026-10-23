@@ -132,15 +132,78 @@ describe("createChildCgroupPlacement", () => {
     expect(log.warn).toHaveBeenCalledTimes(1);
   });
 
-  it("does not throw when the pid write fails and warns only once", () => {
+  it("is a no-op when the subgroup's parent is not a systemd unit", () => {
+    // root passes W_OK everywhere; a writable non-unit parent must not activate.
+    const plain = path.join(cgroupRoot, "x");
+    fs.mkdirSync(path.join(plain, "main"), { recursive: true });
+    fs.writeFileSync(path.join(plain, "cgroup.procs"), "");
+    writeSelfCgroup("/x/main");
+    const placement = createChildCgroupPlacement(options());
+    expect(placement.active).toBe(false);
+    expect(placement.reason).toContain("not a systemd service or scope");
+    expect(fs.existsSync(path.join(plain, "children"))).toBe(false);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when the pid write fails and warns once before deactivating", () => {
     makeDelegatedUnit();
     const placement = createChildCgroupPlacement(options());
     // A directory in place of cgroup.procs makes every write fail with EISDIR.
     fs.mkdirSync(path.join(unitDir, "children", "cgroup.procs"));
     expect(() => placement.place(4242)).not.toThrow();
-    expect(placement.place(4242)).toBe(false);
-    expect(placement.place(4343)).toBe(false);
+    for (let pid = 4243; pid < 4246; pid += 1) {
+      expect(placement.place(pid)).toBe(false);
+    }
+    expect(placement.active).toBe(true);
     expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("deactivates after five consecutive move failures with one more warning", () => {
+    makeDelegatedUnit();
+    writeProcStat(10, GATEWAY_PID);
+    fs.writeFileSync(path.join(unitDir, "main", "cgroup.procs"), `${GATEWAY_PID}\n10\n`);
+    const placement = createChildCgroupPlacement(options());
+    const target = path.join(unitDir, "children", "cgroup.procs");
+    fs.mkdirSync(target);
+    for (let pid = 4242; pid < 4247; pid += 1) {
+      placement.place(pid);
+    }
+    expect(placement.active).toBe(false);
+    expect(placement.reason).toContain("5 consecutive failures");
+    expect(log.warn).toHaveBeenCalledTimes(2);
+    expect(log.warn).toHaveBeenLastCalledWith(expect.stringContaining("deactivated"));
+    // Once inactive it stops writing, sweeping and warning, even if the target heals.
+    fs.rmdirSync(target);
+    fs.writeFileSync(target, "");
+    expect(placement.place(5000)).toBe(false);
+    expect(placement.sweep()).toBe(0);
+    expect(childrenProcs()).toBe("");
+    expect(log.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("resets the failure count after a successful move and ignores exited children", () => {
+    makeDelegatedUnit();
+    const placement = createChildCgroupPlacement(options());
+    const target = path.join(unitDir, "children", "cgroup.procs");
+    const write = vi.spyOn(fs, "writeFileSync");
+    const fail = (code: string) =>
+      write.mockImplementationOnce(() => {
+        throw Object.assign(new Error(code), { code });
+      });
+    for (let round = 0; round < 3; round += 1) {
+      for (let i = 0; i < 4; i += 1) {
+        fail("EBUSY");
+        placement.place(4242);
+      }
+      placement.place(4343);
+    }
+    for (let i = 0; i < 10; i += 1) {
+      fail("ESRCH");
+      placement.place(4242);
+    }
+    write.mockRestore();
+    expect(placement.active).toBe(true);
+    expect(fs.readFileSync(target, "utf8")).toBe("4343");
   });
 
   it("sweeps only the Gateway's descendants out of main/", () => {
@@ -167,6 +230,29 @@ describe("createChildCgroupPlacement", () => {
     expect(fs.readFileSync(path.join(unitDir, "main", "memory.low"), "utf8")).toBe("4G");
     createChildCgroupPlacement(options({ env: { OPENCLAW_GATEWAY_MEMORY_LOW: "lots" } }));
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("not applied"));
+  });
+
+  it("stays active when enabling the memory controller fails", () => {
+    makeDelegatedUnit();
+    const subtreeControl = path.join(unitDir, "cgroup.subtree_control");
+    const realWrite = fs.writeFileSync;
+    const write = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, opts) => {
+      if (file === subtreeControl) {
+        throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+      }
+      realWrite(file, data, opts);
+    });
+    const placement = createChildCgroupPlacement(
+      options({ env: { OPENCLAW_GATEWAY_MEMORY_LOW: "4G" } }),
+    );
+    write.mockRestore();
+    expect(placement.active).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("memory.low not applied (EBUSY)"),
+    );
+    expect(fs.existsSync(path.join(unitDir, "main", "memory.low"))).toBe(false);
+    expect(placement.place(4242)).toBe(true);
+    expect(childrenProcs()).toBe("4242");
   });
 });
 
