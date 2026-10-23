@@ -378,3 +378,118 @@ it("observes newly available reset archives and refuses changed archive bodies u
     });
   });
 });
+
+it("anchors a retired joined reply id at its last native segment", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    await withClaudeProjectsDir(async ({ homeDir, sessionId: nativeId, filePath }) => {
+      const scope = {
+        agentId: "main",
+        sessionId: "cli-composite",
+        sessionKey: "agent:main:cli-composite",
+        storePath: path.join(state.sessionsDir(), "sessions.json"),
+      };
+      const entry = {
+        sessionId: scope.sessionId,
+        updatedAt: 1,
+        cliSessionBindings: { "claude-cli": { sessionId: nativeId } },
+      };
+      const start = Date.parse("2026-10-22T10:00:00.000Z");
+      const first = "I've started setting up the backups.";
+      const second = "Backups are running, and the first run finished.";
+      await replaceSessionEntry(scope, entry);
+      await replaceTranscriptEvents(scope, [
+        { type: "session", version: 3, id: scope.sessionId },
+        {
+          type: "message",
+          id: "local-prompt",
+          parentId: null,
+          message: { role: "user", content: "Set up the backups", timestamp: start },
+        },
+        {
+          type: "message",
+          id: "local-final",
+          parentId: "local-prompt",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: `${first}\n${second}` }],
+            timestamp: start + 120_300,
+          },
+        },
+      ]);
+      await waitForSessionTranscriptProjection(scope);
+      const native = (type: string, uuid: string, content: string, at: number) =>
+        JSON.stringify({
+          type,
+          uuid,
+          timestamp: new Date(at).toISOString(),
+          message: { role: type, content: [{ type: "text", text: content }] },
+        });
+      await fs.writeFile(
+        filePath,
+        [
+          native("user", "native-prompt", "Set up the backups", start + 400),
+          native("assistant", "segment-a", first, start + 60_000),
+          native("assistant", "segment-b", second, start + 120_000),
+        ].join("\n"),
+      );
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const target = {
+        transcript: { ...scope, sessionFile: scope.sessionKey },
+        database: { agentId: database.agentId, path: database.path },
+        entryValidationKey: scope.sessionKey,
+      };
+      const owner = new OpenClawAgentDatabaseReadOnlyScope();
+      const readers = createReadonlySessionHistoryReader(target);
+      try {
+        await owner.run(target.database, async () => {
+          const cli = await prepareCliSessionHistoryReader(
+            {
+              entry,
+              provider: "claude-cli",
+              sessionId: scope.sessionId,
+              storePath: scope.storePath,
+              sessionAgentId: scope.agentId,
+              canonicalKey: scope.sessionKey,
+              cliHistoryHomeDir: homeDir,
+              cliHistoryRedaction: captureTranscriptRedactionSnapshot(),
+              max: 10,
+              maxHistoryBytes: 64 * 1024,
+              effectiveMaxChars: 4096,
+              offset: undefined,
+              messageId: undefined,
+            },
+            readers,
+          );
+          if (!cli) {
+            throw new Error("Expected native history reader");
+          }
+          try {
+            const recent = await cli.readers.readRecentSessionMessagesWithStatsAsync(scope, {
+              maxMessages: 10,
+            });
+            expect(recent.messages.map(readChatHistoryMessageId)).toEqual([
+              "local-prompt",
+              "segment-a",
+              "segment-b",
+            ]);
+            const anchored = await cli.readers.readSessionMessagesAroundIdWithStatsAsync(scope, {
+              messageId: "local-final",
+              maxMessages: 3,
+            });
+            expect(anchored).toMatchObject({ found: true, displaySource: recent.displaySource });
+            expect(anchored.messages.map(readChatHistoryMessageId)).toEqual([
+              "local-prompt",
+              "segment-a",
+              "segment-b",
+            ]);
+            expect(cli.sequence({ __openclaw: { id: "local-final" } })).toBe(3);
+          } finally {
+            cli.dispose();
+          }
+        });
+      } finally {
+        owner.close();
+      }
+    });
+  });
+});

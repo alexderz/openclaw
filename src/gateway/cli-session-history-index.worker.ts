@@ -24,8 +24,9 @@ import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.j
 import { isImageMediaFact, readPersistedMediaFacts } from "../media/media-facts.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
 import {
-  matchCompositeReplySegments,
-  type CompositeImportRow,
+  findCompositeReplies,
+  isInternalUserMessage,
+  isTextOnlyMessage,
 } from "./cli-session-history-composite.js";
 
 const INDEX_INSERT_BATCH_ROWS = 65;
@@ -152,11 +153,16 @@ type HistoryRow = {
   metadata: string | null;
   consumed: number;
   ordinal: number | null;
+  text_only: number;
+  internal_user: number;
 };
 type HistoryDatabase = {
   messages: HistoryRow;
   imports: HistoryRow;
   floors: { role: string; text: string; minimum_order: number };
+  // Display ids of retired composite rows resolve to their last native segment.
+  aliases: { message_id: string | null; local_seq: number | null; target: number };
+  lookup: Pick<HistoryRow, "message_id" | "local_seq" | "ordinal">;
 };
 
 /** Reconstructible display index; canonical transcript bytes are never changed. */
@@ -182,12 +188,15 @@ export class CliSessionHistoryIndex {
     const columns = `id INTEGER PRIMARY KEY, local_seq INTEGER, import_ref INTEGER, message_id TEXT, payload TEXT, bytes INTEGER NOT NULL, role TEXT,
       text TEXT, drift_text TEXT, timestamp REAL, external_key TEXT, image_key TEXT,
       image_mentions INTEGER NOT NULL, metadata TEXT, consumed INTEGER NOT NULL,
-      ordinal INTEGER`;
+      ordinal INTEGER, text_only INTEGER NOT NULL, internal_user INTEGER NOT NULL`;
     // sqlite-allow-raw -- Reconstructible temporary schema; no canonical writes or durability.
     this.database
       .exec(`PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA cache_size = -2048;
       CREATE TABLE messages (${columns}); CREATE TABLE imports (${columns});
       CREATE TABLE floors (role TEXT NOT NULL, text TEXT NOT NULL, minimum_order INTEGER NOT NULL, PRIMARY KEY(role,text));
+      CREATE TABLE aliases (message_id TEXT, local_seq INTEGER, target INTEGER NOT NULL);
+      CREATE VIEW lookup AS SELECT message_id, local_seq, ordinal FROM messages UNION ALL
+        SELECT a.message_id, a.local_seq, m.ordinal FROM aliases a JOIN messages m ON m.id = a.target;
       CREATE INDEX match_external ON messages(external_key, id);
       CREATE INDEX match_text ON messages(role, text, consumed, id);
       CREATE INDEX match_timed_text ON messages(role, text, consumed, id) WHERE timestamp IS NOT NULL;
@@ -271,6 +280,8 @@ export class CliSessionHistoryIndex {
         metadata: parameter((row) => row.metadata),
         consumed: parameter((row) => row.consumed),
         ordinal: parameter((row) => row.ordinal),
+        text_only: parameter((row) => row.text_only),
+        internal_user: parameter((row) => row.internal_user),
       });
       return table === "messages"
         ? query.onConflict((conflict) => conflict.column("id").doNothing())
@@ -316,6 +327,9 @@ export class CliSessionHistoryIndex {
       metadata: meta ? JSON.stringify(meta) : null,
       consumed: 0,
       ordinal: null,
+      text_only:
+        localSeq !== undefined && role === "assistant" && isTextOnlyMessage(record) ? 1 : 0,
+      internal_user: isInternalUserMessage(record) ? 1 : 0,
     };
   }
 
@@ -511,6 +525,8 @@ export class CliSessionHistoryIndex {
             "metadata",
             "consumed",
             "ordinal",
+            "text_only",
+            "internal_user",
           ])
           .where("id", ">=", offset)
           .orderBy("id")
@@ -619,58 +635,47 @@ export class CliSessionHistoryIndex {
         .where("consumed", "=", 0)
         .where("role", "=", "assistant")
         .where("text", "is not", null)
+        .where("text_only", "=", 1)
         .orderBy("id"),
     ).rows;
     if (!locals.length) {
       return;
     }
-    const displayed = new Set(
-      executeSqliteQuerySync(
-        this.database,
-        this.db.selectFrom("messages").select("import_ref").where("import_ref", "is not", null),
-      ).rows.map((row) => row.import_ref),
-    );
-    const internalUsers = new Set(
+    const displayed = new Map(
       executeSqliteQuerySync(
         this.database,
         this.db
-          .selectFrom("imports")
-          .select(["id", "payload"])
-          .where("role", "=", "user")
-          .where("text", "is not", null),
-      ).rows.flatMap((row) => {
-        const record = asOptionalRecord(row.payload ? JSON.parse(row.payload) : undefined);
-        return asOptionalRecord(record?.provenance)?.kind === "internal_system" ? [row.id] : [];
-      }),
+          .selectFrom("messages")
+          .select(["id", "import_ref"])
+          .where("import_ref", "is not", null),
+      ).rows.map((row) => [row.import_ref!, row.id]),
     );
-    const imports: CompositeImportRow[] = executeSqliteQuerySync(
+    const imports = executeSqliteQuerySync(
       this.database,
-      this.db.selectFrom("imports").select(["id", "role", "text", "timestamp"]).orderBy("id"),
-    ).rows.map((row) => ({
-      id: row.id,
-      role: row.role,
-      text: row.text === null ? null : (JSON.parse(row.text) as string),
-      timestamp: row.timestamp,
-      displayed: displayed.has(row.id),
-      internalUser: internalUsers.has(row.id),
-    }));
-    const claimed = new Set<number>();
-    for (const local of locals) {
-      const segments = matchCompositeReplySegments({
-        local: { text: JSON.parse(local.text!) as string, timestamp: local.timestamp },
-        imports,
-        claimed,
-        windowMs: DEDUPE_TIMESTAMP_WINDOW_MS,
-      });
-      if (!segments) {
-        continue;
-      }
-      for (const id of segments) {
-        claimed.add(id);
-      }
+      this.db
+        .selectFrom("imports")
+        .select(["id", "role", "text", "timestamp", "internal_user"])
+        .orderBy("id"),
+    ).rows;
+    for (const { localId, target } of findCompositeReplies({
+      locals,
+      imports,
+      displayed,
+      windowMs: DEDUPE_TIMESTAMP_WINDOW_MS,
+    })) {
+      const retired = this.db.selectFrom("messages").where("id", "=", localId);
       executeSqliteQuerySync(
         this.database,
-        this.db.deleteFrom("messages").where("id", "=", local.id),
+        this.db
+          .insertInto("aliases")
+          .columns(["message_id", "local_seq", "target"])
+          .expression(
+            retired.select((eb) => ["message_id", "local_seq", eb.val(target).as("target")]),
+          ),
+      );
+      executeSqliteQuerySync(
+        this.database,
+        this.db.deleteFrom("messages").where("id", "=", localId),
       );
     }
   }
@@ -707,7 +712,7 @@ export class CliSessionHistoryIndex {
     return (
       executeSqliteQueryTakeFirstSync(
         this.database,
-        this.db.selectFrom("messages").select("ordinal").where("local_seq", "=", seq),
+        this.db.selectFrom("lookup").select("ordinal").where("local_seq", "=", seq),
       )?.ordinal ?? undefined
     );
   }
@@ -717,7 +722,7 @@ export class CliSessionHistoryIndex {
       executeSqliteQueryTakeFirstSync(
         this.database,
         this.db
-          .selectFrom("messages")
+          .selectFrom("lookup")
           .select("ordinal")
           .where("message_id", "=", JSON.stringify(messageId))
           .orderBy("ordinal")

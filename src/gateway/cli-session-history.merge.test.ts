@@ -135,5 +135,96 @@ describe("imported Claude history merge", () => {
 
       expect(merged).toContainEqual(composite(`${first}\n${second}`));
     });
+
+    it.each([
+      [
+        "a persisted media fact",
+        {
+          ...composite(`${first}\n${second}`),
+          __openclaw: { id: "local-final", media: [{ kind: "image", path: "/tmp/chart.png" }] },
+        },
+      ],
+      [
+        "a non-text block",
+        {
+          ...composite(""),
+          content: [
+            { type: "text", text: `${first}\n${second}` },
+            { type: "image", data: "aGk=", mimeType: "image/png" },
+          ],
+        },
+      ],
+    ])("keeps a joined local reply carrying %s", (_label, local) => {
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, local],
+        importedMessages: [importedPrompt, segmentA, notification, segmentB],
+      });
+
+      expect(merged).toContainEqual(local);
+    });
+
+    it("keeps a joined local reply carrying a MEDIA: directive", () => {
+      const withMedia = `${second}\nMEDIA:./chart.png`;
+      const local = composite(`${first}\n${withMedia}`);
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, local],
+        importedMessages: [
+          importedPrompt,
+          segmentA,
+          notification,
+          nativeText("a-media", withMedia, notificationAt + 30_000),
+        ],
+      });
+
+      expect(merged).toContainEqual(local);
+    });
+
+    it("does not claim a segment across an image-only operator prompt", () => {
+      const imagePrompt = {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aGk=" } },
+        ],
+        timestamp: notificationAt,
+        __openclaw: meta("u-image"),
+      };
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, composite(`${first}\n${second}`)],
+        importedMessages: [importedPrompt, segmentA, imagePrompt, segmentB],
+      });
+
+      expect(merged).toContainEqual(composite(`${first}\n${second}`));
+    });
+
+    it.each([
+      ["line breaks and directive tags", `[[reply_to_current]] ${first}\n\n  ${second}\n`, false],
+      ["a missing separator", `${first}${second}`, true],
+    ])("treats a join differing by %s as documented", (_label, text, kept) => {
+      const local = composite(text);
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, local],
+        importedMessages: [importedPrompt, segmentA, notification, segmentB],
+      });
+
+      expect(merged.slice(1, 4)).toEqual([segmentA, notification, segmentB]);
+      expect(merged.slice(4)).toEqual(kept ? [local] : []);
+    });
+
+    it("does not reuse segments already claimed by an earlier joined row", () => {
+      const firstJoin = composite(`${first}\n${second}`);
+      const secondJoin = {
+        ...firstJoin,
+        idempotencyKey: "cli-assistant:run-2",
+        timestamp: firstJoin.timestamp + 1_000,
+        __openclaw: { id: "local-final-2" },
+      };
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, firstJoin, secondJoin],
+        importedMessages: [importedPrompt, segmentA, notification, segmentB],
+      });
+
+      expect(merged).not.toContainEqual(firstJoin);
+      expect(merged).toContainEqual(secondJoin);
+    });
   });
 });
