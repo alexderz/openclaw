@@ -19,6 +19,12 @@ import {
   sqliteExtendedResultCode,
   sqlitePrimaryResultCode,
 } from "./sqlite-error-diagnostics.js";
+import {
+  markSqliteHoldResources,
+  measureSqliteHoldResources,
+  readSqliteHoldGcUsage,
+  type SqliteHoldResourceMark,
+} from "./sqlite-hold-resources.js";
 import { discardSqliteTransactionState } from "./sqlite-post-commit.js";
 import {
   captureSqliteReaderOwner,
@@ -229,15 +235,19 @@ function logSlowTransactionHold(params: {
   beginMs: number;
   hostAdmissionWaitMs: number;
   commitMs: number;
+  resources?: SqliteHoldResourceMark;
 }): void {
   if (
     params.elapsedMs < (params.options?.slowTransactionHoldMs ?? DEFAULT_SLOW_TRANSACTION_HOLD_MS)
   ) {
     return;
   }
-  (params.options?.logger ?? transactionLog).warn("slow SQLite transaction hold", {
+  const logger = params.options?.logger ?? transactionLog;
+  const labels = transactionDiagnosticLabels(params.db, params.options);
+  const resources = params.resources ? measureSqliteHoldResources(params.resources) : undefined;
+  logger.warn("slow SQLite transaction hold", {
     async: false,
-    ...transactionDiagnosticLabels(params.db, params.options),
+    ...labels,
     elapsedMs: params.elapsedMs,
     phases: {
       prepareMs: params.prepareMs,
@@ -249,9 +259,48 @@ function logSlowTransactionHold(params: {
     isMainThread,
     mode: params.mode,
     pid: process.pid,
+    ...(resources ? { resources } : {}),
     threadId,
     thresholdMs: params.options?.slowTransactionHoldMs ?? DEFAULT_SLOW_TRANSACTION_HOLD_MS,
   });
+  if (params.resources) {
+    scheduleSlowTransactionGcReport(logger, labels, params.resources, params.elapsedMs);
+  }
+}
+
+// GC performance entries are delivered after the synchronous hold returns.
+const SLOW_HOLD_GC_REPORT_DELAY_MS = 50;
+// A burst of slow holds reports GC for the first few; the hold lines still log.
+const MAX_PENDING_SLOW_HOLD_GC_REPORTS = 8;
+let pendingSlowHoldGcReports = 0;
+
+function scheduleSlowTransactionGcReport(
+  logger: Pick<SubsystemLogger, "warn">,
+  labels: ReturnType<typeof transactionDiagnosticLabels>,
+  mark: SqliteHoldResourceMark,
+  elapsedMs: number,
+): void {
+  if (pendingSlowHoldGcReports >= MAX_PENDING_SLOW_HOLD_GC_REPORTS) {
+    return;
+  }
+  pendingSlowHoldGcReports += 1;
+  const endedAt = performance.now();
+  const timer = setTimeout(() => {
+    pendingSlowHoldGcReports -= 1;
+    try {
+      logger.warn("slow SQLite transaction hold gc", {
+        ...labels,
+        elapsedMs,
+        ...readSqliteHoldGcUsage(mark, endedAt),
+        isMainThread,
+        pid: process.pid,
+        threadId,
+      });
+    } catch {
+      // Diagnostics never affect the settled transaction.
+    }
+  }, SLOW_HOLD_GC_REPORT_DELAY_MS);
+  timer.unref?.();
 }
 
 function logTransactionStep(
@@ -447,6 +496,7 @@ function settleSqliteTransactionSync<T>(
 ): T {
   const timing = currentSqliteOperationTiming();
   const transactionStartedAt = Date.now();
+  const resources = markSqliteHoldResources();
   const admissionWaitBefore = timing?.hostAdmissionWaitMs ?? 0;
   let commitMs = 0;
   const commit = () => {
@@ -491,6 +541,7 @@ function settleSqliteTransactionSync<T>(
         beginMs,
         hostAdmissionWaitMs,
         commitMs,
+        resources,
       });
     } catch {
       // Diagnostics cannot change an already-settled transaction's outcome.

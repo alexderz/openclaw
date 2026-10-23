@@ -10,6 +10,7 @@ import {
   type OpenClawStateWorkerErrorPayload,
 } from "../state/openclaw-state-worker-error.js";
 import { captureSqliteNativeRuntimeAdmission } from "./node-sqlite.js";
+import { describeSqliteWorkerOperation } from "./sqlite-operation-label.js";
 import { withSqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
 import { SQLITE_WORKER_SOURCE_FENCE } from "./sqlite-source-fence-contract.js";
 import { runSqliteSourceFence } from "./sqlite-source-fence.js";
@@ -137,7 +138,11 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
       // SAFETY: The broker serialized a command from this actor's typed store contract.
       const typedCommand = command as SqliteWorkerCommand<SqliteWorkerOperations>;
       return withSqliteReaderOwner(
-        { operation: typedCommand.type, ownerKind: "worker", actorId: request.actor },
+        {
+          operation: describeSqliteWorkerOperation(typedCommand),
+          ownerKind: "worker",
+          actorId: request.actor,
+        },
         async () => {
           const assertSettled = () => {
             const settlement: unknown = runInActorContext(request.actor, () => ({

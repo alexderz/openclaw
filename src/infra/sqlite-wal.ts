@@ -11,6 +11,7 @@ import {
   runWithSqliteBusyTimeout,
   setSqliteBusyTimeout,
 } from "./sqlite-busy-timeout.js";
+import { configureSqliteLocalCachePragmas } from "./sqlite-cache-pragmas.js";
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
 import { createSqliteLifecycleAggregateError } from "./sqlite-lifecycle-errors.js";
 import {
@@ -277,6 +278,7 @@ export function configureSqliteWalMaintenance(
   enableMacosCheckpointFullfsync(db);
   db.exec(`PRAGMA wal_autocheckpoint = ${autoCheckpointPages};`);
   db.exec(`PRAGMA journal_size_limit = ${DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES};`);
+  configureSqliteLocalCachePragmas(db);
   const tripwireDatabasePath =
     process.platform === "linux" && options.databasePath && fs.existsSync(options.databasePath)
       ? fs.realpathSync.native(options.databasePath)

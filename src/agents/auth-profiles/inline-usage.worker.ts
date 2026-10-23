@@ -67,6 +67,7 @@ export function bindSqliteWorkerBackend(
             }
           },
           {
+            operationLabel: command.type,
             withCommit(commit) {
               commit();
               committed = true;
