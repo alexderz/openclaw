@@ -347,13 +347,24 @@ export function renderSessionWorkspaceRail(
         }
       </div>
       ${
-        sessionWorkspace.error
+        // A failed file preview reports here too; it must not hide a listing that still loads.
+        sessionWorkspace.error && !hasItems
           ? html`<div class="chat-workspace-rail__state chat-workspace-rail__state--error">
               ${sessionWorkspace.error}
             </div>`
           : sessionWorkspace.loading && !hasItems
             ? renderPanelLoadingSkeleton("files", t("chat.workspaceFiles.loading"))
             : html`
+                ${
+                  sessionWorkspace.error
+                    ? html`<div
+                        class="chat-workspace-rail__state chat-workspace-rail__state--error"
+                        role="status"
+                      >
+                        ${sessionWorkspace.error}
+                      </div>`
+                    : nothing
+                }
                 <div class="chat-workspace-rail__scroll">
                   ${renderGroup("changed", t("chat.workspaceFiles.changed"), changed.length, true, renderFileRows(changed))}
                   ${renderGroup("read", t("chat.workspaceFiles.read"), read.length, false, renderFileRows(read))}

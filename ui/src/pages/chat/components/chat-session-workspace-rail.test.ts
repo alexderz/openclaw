@@ -327,3 +327,28 @@ describe("session workspace path actions", () => {
     },
   );
 });
+
+describe("session workspace errors", () => {
+  const file = { kind: "modified", path: "README.md", name: "README.md", missing: false } as const;
+
+  it("keeps a loaded listing visible beside a failed file preview", () => {
+    const workspace = createWorkspace({
+      error: "session file not found",
+      list: { sessionKey: "agent:main:workspace", root: "/workspace", files: [file] },
+    });
+    const mount = document.body.appendChild(document.createElement("div"));
+    render(renderSessionWorkspaceRail(workspace), mount);
+    expect(mount.textContent).toContain("session file not found");
+    expect(mount.textContent).toContain("README.md");
+  });
+
+  it("shows a failed listing without rows", () => {
+    const workspace = createWorkspace({ error: "listing failed" });
+    const mount = document.body.appendChild(document.createElement("div"));
+    render(renderSessionWorkspaceRail(workspace), mount);
+    expect(mount.querySelector(".chat-workspace-rail__state--error")?.textContent).toContain(
+      "listing failed",
+    );
+    expect(mount.querySelector(".chat-workspace-rail__scroll")).toBeNull();
+  });
+});
