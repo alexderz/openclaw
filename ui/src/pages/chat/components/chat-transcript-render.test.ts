@@ -830,6 +830,12 @@ describe("chat transcript rendering", () => {
       codes[2]?.click();
       expect(writeText).toHaveBeenCalledTimes(2);
       window.getSelection()?.removeAllRanges();
+      // The second click of a double-click selects a word instead of copying.
+      codes[2]?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      // A cross-origin session URL in backticks stays a session link.
+      codes[2]?.setAttribute("data-session-href", "https://gateway.example/chat/main");
+      codes[2]?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      expect(writeText).toHaveBeenCalledTimes(2);
     } finally {
       document.querySelector(".chat-inline-code-copied")?.remove();
       vi.unstubAllGlobals();

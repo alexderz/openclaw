@@ -1083,7 +1083,7 @@
 }
 
 /* A tap copies inline code outside links (chat-inline-code-copy.ts); the pointer says so. */
-.chat-text :where(:not(pre, a) > code) {
+.chat-text :where(:not(pre, a) > code:not([data-session-href])) {
   cursor: copy;
 }
 

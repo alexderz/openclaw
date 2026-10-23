@@ -101,7 +101,8 @@ describeControlUiE2e("Control UI chat file links", () => {
       await code.tap();
       const note = page.locator(".chat-inline-code-copied");
       await note.waitFor({ state: "visible" });
-      expect(await note.textContent()).toBe("Copied!");
+      // The live region receives its text after insertion, so screen readers announce it.
+      await expect.poll(() => note.textContent()).toBe("Copied!");
       await page.screenshot({ path: path.join(artifactDir, "phone-inline-code-copied.png") });
       expect(await page.locator(".chat-file-link-menu").count()).toBe(0);
       await expect

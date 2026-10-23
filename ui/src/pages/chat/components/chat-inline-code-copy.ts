@@ -15,7 +15,9 @@ export function inlineCodeFromTarget(target: EventTarget | null): HTMLElement | 
     return null;
   }
   const code = target.closest<HTMLElement>(".chat-text code");
-  if (!code || code.closest("pre, a, button, [contenteditable]")) {
+  // Code that is (or sits inside) a link, button or editor keeps that behavior; a
+  // cross-origin session URL in backticks is a bare `code[data-session-href]` link.
+  if (!code || code.closest("pre, a, button, [contenteditable], [data-session-href]")) {
     return null;
   }
   return code;
@@ -45,10 +47,15 @@ function showCopyNote(code: HTMLElement, label: string, failed: boolean): void {
   note.className = "chat-inline-code-copied";
   note.dataset.copyState = failed ? "error" : "copied";
   note.setAttribute("role", "status");
-  note.textContent = label;
+  // Text set after insertion is announced by the live region; text it is born with may not be.
+  requestAnimationFrame(() => {
+    note.textContent = label;
+  });
   // The note sits in the same layer as the code, so a modal's inert backdrop never hides it.
   (code.closest("openclaw-modal-dialog, dialog") ?? document.body).appendChild(note);
   const rect = code.getBoundingClientRect();
+  // Measured with its label so the pill is centred before the text lands.
+  note.textContent = "\u00a0".repeat(label.length);
   const noteRect = note.getBoundingClientRect();
   const left = Math.min(
     Math.max(EDGE_PX, rect.left + rect.width / 2 - noteRect.width / 2),
@@ -72,7 +79,14 @@ function showCopyNote(code: HTMLElement, label: string, failed: boolean): void {
  * the reader is selecting text in it.
  */
 export function copyInlineCodeFromClick(event: MouseEvent): boolean {
-  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) {
+  // detail > 1: the second click of a double-click selects a word; it must not copy.
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.detail > 1
+  ) {
     return false;
   }
   const code = inlineCodeFromTarget(event.target);
