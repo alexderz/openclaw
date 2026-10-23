@@ -19,6 +19,8 @@ import {
 } from "./bash-tools.exec-output.js";
 
 const DEFAULT_NOTIFY_TAIL_CHARS = 400;
+// A wake refused by a transient session-storage window is retried; it is the only completion signal.
+const EXEC_COMPLETION_RETRY_DELAYS_MS = [2_000, 10_000, 30_000] as const;
 
 /** Capture the original session before spawning work that may outlive its turn. */
 export function prepareExecExitNotification(
@@ -109,20 +111,66 @@ export function maybeNotifyOnExit(
       );
       return;
     }
-    try {
-      const receipt = enqueueSessionEvent(eventText, {
+    const expectedTarget = session.notifySessionTarget;
+    let receipt: ReturnType<typeof enqueueSessionEvent> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    let attempt = 0;
+    const isStopped = () =>
+      stopped ||
+      session.terminalPollObserved === true ||
+      session.requestCancelled === true ||
+      readExecRequestOwners(session)?.some((owner) => owner.signal.aborted) === true;
+    const deliver = () => {
+      retry = undefined;
+      if (isStopped()) {
+        return;
+      }
+      // Each attempt keeps the original captured target, so a reset or replaced session still refuses it.
+      receipt = enqueueSessionEvent(eventText, {
         ...eventOptions,
         agentId,
         source: "exec",
-        expectedTarget: session.notifySessionTarget,
+        expectedTarget,
       });
-      recordNotifyOnExitRemoval(session, receipt.cancel);
       void receipt.settled.then((outcome) => {
-        if (outcome.status === "failed") {
-          logWarn(
-            `exec: completion delivery failed (${outcome.error}); inspect the process result.`,
-          );
+        if (outcome.status !== "failed") {
+          return;
         }
+        const delay = EXEC_COMPLETION_RETRY_DELAYS_MS[attempt];
+        if (outcome.retryable && delay !== undefined && !isStopped()) {
+          attempt += 1;
+          logWarn(
+            `exec: completion ${session.id} delivery failed (${outcome.error}); retry ${attempt}/${EXEC_COMPLETION_RETRY_DELAYS_MS.length} in ${delay}ms.`,
+          );
+          retry = setTimeout(() => {
+            try {
+              deliver();
+            } catch (error) {
+              logWarn(
+                `exec: completion ${session.id} retry was not admitted (${formatErrorMessage(error)}); inspect the process result.`,
+              );
+            }
+          }, delay);
+          retry.unref?.();
+          return;
+        }
+        logWarn(
+          `exec: completion ${session.id} delivery failed (${outcome.error}); inspect the process result.`,
+        );
+      });
+    };
+    try {
+      deliver();
+      // True when this removal withdrew a queued occurrence or a scheduled retry of it.
+      recordNotifyOnExitRemoval(session, () => {
+        stopped = true;
+        if (retry) {
+          clearTimeout(retry);
+          retry = undefined;
+          return true;
+        }
+        return receipt?.cancel() ?? false;
       });
     } catch (error) {
       logWarn(
