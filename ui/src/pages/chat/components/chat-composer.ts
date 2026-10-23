@@ -697,8 +697,9 @@ export function renderChatComposer(props: ChatComposerProps) {
     alternateFollowUpMode,
     suggestionComposer: props.suggestionComposer,
     submissionLabel: goalComposer.submissionLabel,
-    // Waiting for the IME to commit is part of sending: show it, take no new Send.
-    sending: props.sending || state.compositionSend?.key === draftKey,
+    sending: props.sending,
+    // Send stays in place (never swapped for Stop) and busy while the IME commits.
+    imeCommitPending: state.compositionSend?.key === draftKey,
     voiceActive: props.realtimeTalkActive,
     voiceStatus: props.realtimeTalkStatus,
     voiceDetail: props.realtimeTalkDetail,

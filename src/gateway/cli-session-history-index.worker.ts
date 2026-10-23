@@ -610,17 +610,24 @@ export class CliSessionHistoryIndex {
     ).rows;
     if (this.expanded) {
       // A queued input keeps its acceptance time but is recorded after the
-      // replies it waited behind; order a local user row by when it was recorded.
-      for (const row of order) {
-        if (row.local_seq === null || row.role !== "user" || !row.metadata) {
-          continue;
+      // replies it waited behind. When a local user row was recorded after the
+      // local row before it yet carries an earlier timestamp, place it just
+      // after that row instead of above it. Other rows keep timestamp order.
+      const locals = order
+        .filter((row) => row.local_seq !== null && row.timestamp !== null)
+        .toSorted((a, b) => a.local_seq! - b.local_seq!);
+      let previous: number | null = null;
+      for (const row of locals) {
+        const timestamp = row.timestamp!;
+        if (previous !== null && timestamp < previous && row.role === "user" && row.metadata) {
+          const recordedAt = asFiniteNumber(
+            asOptionalRecord(JSON.parse(row.metadata))?.recordTimestampMs,
+          );
+          if (recordedAt !== undefined && recordedAt >= previous) {
+            row.timestamp = previous + 0.5;
+          }
         }
-        const recordedAt = asFiniteNumber(
-          asOptionalRecord(JSON.parse(row.metadata))?.recordTimestampMs,
-        );
-        if (recordedAt !== undefined && row.timestamp !== null && recordedAt > row.timestamp) {
-          row.timestamp = recordedAt;
-        }
+        previous = row.timestamp;
       }
       order.sort((a, b) =>
         a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp

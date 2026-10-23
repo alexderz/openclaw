@@ -100,6 +100,39 @@ describe("imported Claude history merge", () => {
     ]);
   });
 
+  it("keeps a prompt above its own reply when the reply was stamped first", () => {
+    const start = Date.parse("2026-10-23T22:00:00.000Z");
+    const prompt = {
+      role: "user",
+      content: "Summarize the run",
+      timestamp: start,
+      // Mirrored after the run: recorded after the reply's own timestamp.
+      __openclaw: { id: "local-prompt", recordTimestampMs: start + 30_005 },
+    };
+    const reply = {
+      role: "assistant",
+      content: [{ type: "text", text: "The run passed." }],
+      timestamp: start + 30_000,
+    };
+    const toolCall = {
+      role: "assistant",
+      content: [{ type: "toolcall", id: "toolu_1", name: "Bash", arguments: { command: "ls" } }],
+      timestamp: start + 10_000,
+      __openclaw: { importedFrom: "claude-cli", externalId: "a-tool", cliSessionId: "s-1" },
+    };
+
+    const merged = mergeImportedChatHistoryMessages({
+      localMessages: [prompt, reply],
+      importedMessages: [toolCall],
+    }) as { content: unknown }[];
+
+    expect(merged.map((message) => message.content)).toEqual([
+      prompt.content,
+      toolCall.content,
+      reply.content,
+    ]);
+  });
+
   describe("a run with several native end_turn segments", () => {
     const start = Date.parse("2026-10-22T10:00:00.000Z");
     const meta = (externalId: string) => ({

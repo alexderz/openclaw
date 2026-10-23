@@ -160,7 +160,10 @@ describe("chat composer IME composition", () => {
 
 describe("chat composer IME send (DER-607)", () => {
   // A phone host that clears its draft on send, like the chat page does.
-  function renderSendHost({ coarsePointer = true } = {}) {
+  function renderSendHost({
+    coarsePointer = true,
+    ...overrides
+  }: { coarsePointer?: boolean } & Partial<Parameters<typeof createComposerProps>[0]> = {}) {
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: coarsePointer && query === "(pointer: coarse)",
       media: query,
@@ -182,6 +185,7 @@ describe("chat composer IME send (DER-607)", () => {
         draft = "";
         rerender();
       }),
+      ...overrides,
     });
     const rerender = () => render(renderChatComposer({ ...props, draft }), container);
     rerender();
@@ -368,5 +372,22 @@ describe("chat composer IME send (DER-607)", () => {
     expect(host.textarea.value).toBe("Ok");
     host.pressEnter();
     expect(host.sent).toEqual(["Ok", "Ok"]);
+  });
+
+  it("keeps the busy Send in place of Stop during a run while the IME commits", () => {
+    const host = renderSendHost({ canAbort: true, onAbort: vi.fn() });
+    host.startComposition("But yeah what's going");
+    host.clickSend();
+
+    const primary = findPrimaryButton(host.container);
+    expect(primary.classList.contains("chat-send-btn--send")).toBe(true);
+    expect(primary.disabled).toBe(true);
+    expect(primary.getAttribute("aria-busy")).toBe("true");
+    primary.click();
+    expect(host.props.onAbort).not.toHaveBeenCalled();
+
+    host.compose("But yeah what's going on");
+    host.endComposition();
+    expect(host.sent).toEqual(["But yeah what's going on"]);
   });
 });
