@@ -1,8 +1,15 @@
 import { expect, it } from "vitest";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  getOpenClawAgentDatabaseIfOpen,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { publishSessionEntryWorkerInvalidations } from "./session-accessor.sqlite-entry-worker-publication.js";
+import {
+  publishSessionEntryWorkerInvalidations,
+  retainSessionEntryWorkerPublication,
+} from "./session-accessor.sqlite-entry-worker-publication.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { prepareSessionGenerationFacts } from "./session-delivery-generation.js";
 
@@ -15,7 +22,9 @@ async function withUnknownPublication(
     generation: Awaited<ReturnType<typeof prepareSessionGenerationFacts>>;
     scope: { agentId: string; storePath: string; sessionKey: string };
     original: { sessionId: string; lifecycleRevision: string; updatedAt: number };
+    identity: string;
   }) => void | Promise<void>,
+  options: { closeNativeBeforePrepare?: true } = {},
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const database = openOpenClawAgentDatabase({ agentId: "main" });
@@ -30,18 +39,21 @@ async function withUnknownPublication(
       updatedAt: 1,
     };
     replaceSessionEntrySync(scope, original);
+    const identity = findOpenClawAgentDatabaseIdentity(database)?.identity;
+    if (typeof identity !== "string") {
+      throw new Error("Expected a file-backed agent database identity");
+    }
+    if (options.closeNativeBeforePrepare) {
+      await closeOpenClawAgentDatabasesAsync();
+    }
     const generation = await prepareSessionGenerationFacts({ ...scope, ...original });
     try {
       generation.assertCurrent();
-      const identity = findOpenClawAgentDatabaseIdentity(database)?.identity;
-      if (typeof identity !== "string") {
-        throw new Error("Expected a file-backed agent database identity");
-      }
       publishSessionEntryWorkerInvalidations(
         { agentId: scope.agentId, storePath: scope.storePath, databaseIdentity: identity },
         [scope.sessionKey],
       );
-      await run({ generation, scope, original });
+      await run({ generation, scope, original, identity });
     } finally {
       generation.release();
     }
@@ -92,4 +104,78 @@ it("still revokes when the committed row behind an unknown publication is a new 
       expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_REVOKED" }),
     );
   });
+});
+
+it("treats a present row that cannot be decoded as unavailable, not as a revocation", async () => {
+  await withUnknownPublication(({ generation, scope }) => {
+    const database = openOpenClawAgentDatabase({ agentId: scope.agentId });
+    const select = database.db.prepare(
+      "SELECT entry_json, entry_valid FROM session_nodes WHERE session_key = ?",
+    );
+    const committed = select.get(scope.sessionKey) as { entry_json: string; entry_valid: number };
+    const write = database.db.prepare(
+      "UPDATE session_nodes SET entry_json = ?, entry_valid = ? WHERE session_key = ?",
+    );
+    // A retained-window placeholder row decodes to no entry without throwing; its
+    // presence is not proof that the session is gone.
+    write.run("{}", -1, scope.sessionKey);
+    expect(generation.assertCurrent).toThrow(
+      expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE" }),
+    );
+    // The lease was not revoked: the decodable original row still re-validates it.
+    write.run(committed.entry_json, committed.entry_valid, scope.sessionKey);
+    expect(() => generation.assertCurrent()).not.toThrow();
+  });
+});
+
+it("reports a revocation found by prepareRead as a rejected read, not a synchronous throw", async () => {
+  await withUnknownPublication(async ({ generation, scope, original }) => {
+    replaceSessionEntrySync(scope, { ...original, lifecycleRevision: "reset-lifecycle" });
+    let read: Promise<void> | undefined;
+    expect(() => {
+      read = generation.prepareRead();
+    }).not.toThrow();
+    await expect(read).rejects.toMatchObject({ code: "SESSION_DELIVERY_GENERATION_REVOKED" });
+    expect(generation.assertCurrent).toThrow(
+      expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_REVOKED" }),
+    );
+  });
+});
+
+it("defers recovery while a publication for the key is pending", async () => {
+  await withUnknownPublication(async ({ generation, scope, identity }) => {
+    const publication = retainSessionEntryWorkerPublication({
+      agentId: scope.agentId,
+      storePath: scope.storePath,
+      databaseIdentity: identity,
+    });
+    publication.begin([scope.sessionKey], []);
+    // The committed row is unchanged, but a pending writer may still change it.
+    expect(generation.assertCurrent).toThrow(
+      expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE" }),
+    );
+    const read = generation.prepareRead();
+    expect(read).toBeInstanceOf(Promise);
+    publication.settle(undefined, false);
+    await read;
+    for (let next = generation.prepareRead(); next; next = generation.prepareRead()) {
+      await next;
+    }
+    expect(() => generation.assertCurrent()).not.toThrow();
+  });
+});
+
+it("stays unavailable when no native main-thread handle was open at capture", async () => {
+  await withUnknownPublication(
+    async ({ generation, scope }) => {
+      // Worker-only capture: no main-thread handle can certify a committed re-read,
+      // so the unknown generation fails closed exactly as before DER-594.
+      expect(getOpenClawAgentDatabaseIfOpen({ agentId: scope.agentId })).toBeUndefined();
+      expect(generation.prepareRead()).toBeUndefined();
+      expect(generation.assertCurrent).toThrow(
+        expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE" }),
+      );
+    },
+    { closeNativeBeforePrepare: true },
+  );
 });

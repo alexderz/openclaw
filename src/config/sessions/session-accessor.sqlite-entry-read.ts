@@ -437,7 +437,11 @@ export function readCommittedSessionEntryInDatabase(
   if (database.db.isTransaction || hasPendingSqliteNativeExecution(database.db)) {
     return undefined;
   }
-  return readExactSessionEntryRow(database, sessionKey, "full", "canonical")?.entry ?? null;
+  return runSqliteReadOperationSync(database.db, () => {
+    const row = getExactSessionEntryQueries(database.db).canonical(sessionKey, "full");
+    // Only a missing row proves absence; an undecodable row cannot certify either outcome.
+    return row ? (parseReadableSqliteSessionEntryRow(database, row, "full") ?? undefined) : null;
+  });
 }
 
 export function readExactSessionEntryRow(

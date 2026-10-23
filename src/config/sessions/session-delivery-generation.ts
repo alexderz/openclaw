@@ -43,6 +43,7 @@ import {
 import { loadSessionEntryReadOnlyResultInScope } from "./session-accessor.sqlite-entry.js";
 import { readCommittedIncognitoSessionSharing } from "./session-accessor.sqlite-incognito-sharing.js";
 import {
+  createSessionDeliveryGenerationFailureReporter,
   isSessionDeliveryGenerationRevokedError,
   isSessionDeliveryGenerationUnavailableError,
   SessionDeliveryGenerationRevokedError,
@@ -142,6 +143,7 @@ async function prepareSessionGenerationLease(
     release();
     onRevoked?.(new SessionDeliveryGenerationUnavailableError());
   };
+  const reportFailure = createSessionDeliveryGenerationFailureReporter(onRevoked);
   const assertActive = () => {
     if (revoked) {
       throw new SessionDeliveryGenerationRevokedError();
@@ -542,8 +544,17 @@ async function prepareSessionGenerationLease(
       prepareRead = () => {
         assertSourceCurrent();
         const pending = retained?.prepareRead();
+        if (pending) {
+          return pending.then(assertSourceCurrent);
+        }
         // Without a certifying native handle an unknown generation stays unavailable.
-        return pending ? pending.then(assertSourceCurrent) : void recoverUnknown();
+        // A committed revocation found here reaches its owner like an assertCurrent failure.
+        try {
+          recoverUnknown();
+        } catch (error) {
+          return Promise.reject(reportFailure(error));
+        }
+        return undefined;
       };
       if (generation.sessionId !== null && source) {
         workerSource = captureSessionEntrySourceAssertion({
@@ -580,13 +591,7 @@ async function prepareSessionGenerationLease(
         }
         return readCurrent();
       } catch (error) {
-        const failure =
-          isSessionDeliveryGenerationRevokedError(error) ||
-          isSessionDeliveryGenerationUnavailableError(error)
-            ? error
-            : new SessionDeliveryGenerationUnavailableError({ cause: error });
-        onRevoked?.(failure);
-        throw failure;
+        throw reportFailure(error);
       }
     };
     for (let pending = prepareRead(); pending; pending = prepareRead()) {
@@ -617,13 +622,7 @@ async function prepareSessionGenerationLease(
               assertActive();
               assertSource();
             } catch (error) {
-              const failure =
-                isSessionDeliveryGenerationRevokedError(error) ||
-                isSessionDeliveryGenerationUnavailableError(error)
-                  ? error
-                  : new SessionDeliveryGenerationUnavailableError({ cause: error });
-              onRevoked?.(failure);
-              throw failure;
+              throw reportFailure(error);
             }
           })
         : assertCurrent,

@@ -24,3 +24,22 @@ export const isSessionDeliveryGenerationRevokedError = (error: unknown) =>
   isRecord(error) && error.code === "SESSION_DELIVERY_GENERATION_REVOKED";
 export const isSessionDeliveryGenerationUnavailableError = (error: unknown) =>
   isRecord(error) && error.code === "SESSION_DELIVERY_GENERATION_UNAVAILABLE";
+
+/** Typed lease failures pass through; anything else is an unavailable read with its cause. */
+export function normalizeSessionDeliveryGenerationFailure(error: unknown) {
+  return isSessionDeliveryGenerationRevokedError(error) ||
+    isSessionDeliveryGenerationUnavailableError(error)
+    ? error
+    : new SessionDeliveryGenerationUnavailableError({ cause: error });
+}
+
+/** Normalize a lease failure and notify the execution owner before it is thrown or rejected. */
+export function createSessionDeliveryGenerationFailureReporter(
+  onRevoked?: (reason: unknown) => void,
+) {
+  return (error: unknown) => {
+    const failure = normalizeSessionDeliveryGenerationFailure(error);
+    onRevoked?.(failure);
+    return failure;
+  };
+}
