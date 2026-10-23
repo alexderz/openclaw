@@ -612,6 +612,54 @@ describe("sessions.files RPC handlers", () => {
     expect(error.code).toBe("INVALID_REQUEST");
     expect(hoisted.loadSessionEntry).not.toHaveBeenCalled();
   });
+
+  it("answers in one request which cited paths sessions.files.get would open", async () => {
+    const paths = [
+      "ui/chat.ts",
+      "ui/vite.config.ts",
+      "./src/readme.md",
+      "MOLTING-FOLLOWUP.json",
+      "ui",
+      "../outside.txt",
+    ];
+    const payload = expectOkPayload(await invoke("sessions.files.stat", { sessionKey, paths }));
+    expect(payload).toEqual({
+      sessionKey,
+      files: [
+        { path: "ui/chat.ts", exists: true },
+        { path: "ui/vite.config.ts", exists: true },
+        { path: "./src/readme.md", exists: true },
+        { path: "MOLTING-FOLLOWUP.json", exists: false },
+        { path: "ui", exists: false },
+        { path: "../outside.txt", exists: false },
+      ],
+    });
+    for (const file of payload.files as { path: string; exists: boolean }[]) {
+      const calls = await getFile(file.path);
+      expect(calls[0]?.ok, file.path).toBe(file.exists);
+    }
+
+    hoisted.loadSessionEntry.mockClear();
+    const error = expectError(
+      await invoke("sessions.files.stat", {
+        sessionKey,
+        paths: Array.from({ length: 65 }, (_, index) => `file-${index}.ts`),
+      }),
+    );
+    expect(error.code).toBe("INVALID_REQUEST");
+    expect(hoisted.loadSessionEntry).not.toHaveBeenCalled();
+  });
+
+  it("checks existence without reading file contents", async () => {
+    const large = "x".repeat(600 * 1024);
+    writeWorkspaceFile(workspaceRoot, "logs/large.txt", large);
+    const preview = expectError(await getFile("logs/large.txt"));
+    expect(preview.details).toMatchObject({ type: "session_file_too_large" });
+    const payload = expectOkPayload(
+      await invoke("sessions.files.stat", { sessionKey, paths: ["logs/large.txt"] }),
+    );
+    expect(payload.files).toEqual([{ path: "logs/large.txt", exists: true }]);
+  });
 });
 
 describe("sessions.files preview formats", () => {

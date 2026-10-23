@@ -14,6 +14,7 @@ import {
   startControlUiE2eServer,
   type ControlUiE2eServer,
 } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
 
 const captureUiProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
@@ -38,6 +39,78 @@ describeControlUiE2e("Control UI chat file links", () => {
   afterAll(async () => {
     await browser?.close();
     await server?.close();
+  });
+
+  it("links only paths that open and copies the exact path from the tap menu on a phone", async () => {
+    const context = await browser.newContext({
+      viewport: { height: 844, width: 390 },
+      hasTouch: true,
+      isMobile: true,
+    });
+    try {
+      const page = await context.newPage();
+      page.setDefaultTimeout(controlUiE2eWaitTimeoutMs);
+      await page.addInitScript(() => {
+        const writes: string[] = [];
+        Object.defineProperty(window, "clipboardWrites", { value: writes });
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: { writeText: async (text: string) => void writes.push(text) },
+        });
+      });
+      const outside = "/srv/checkout/dist/build-info.json";
+      const text = `Wrote \`MOLTING-FOLLOWUP.json\`, \`notes/today.md\` and \`${outside}\`.`;
+      const gateway = await installMockGateway(page, {
+        featureMethods: [...defaultControlUiFeatureMethods, "sessions.files.stat"],
+        historyMessages: [{ role: "assistant", content: [{ type: "text", text }], timestamp: 1 }],
+        methodResponses: {
+          "sessions.files.stat": {
+            sessionKey: "agent:main:main",
+            files: [
+              { path: "MOLTING-FOLLOWUP.json", exists: false },
+              { path: "notes/today.md", exists: true },
+              { path: outside, exists: true },
+            ],
+          },
+        },
+      });
+      await page.goto(`${server.baseUrl}chat`);
+      const bubble = page.locator(".chat-bubble").filter({ hasText: "Wrote" });
+      await bubble.waitFor({ state: "visible" });
+      await expect
+        .poll(() =>
+          bubble
+            .locator("a[data-file-path]")
+            .evaluateAll((links) => links.map((link) => link.getAttribute("data-file-path"))),
+        )
+        .toEqual(["notes/today.md", outside]);
+      const stats = await gateway.getRequests("sessions.files.stat");
+      expect(stats).toHaveLength(1);
+      expect(stats[0]?.params).toMatchObject({
+        sessionKey: "agent:main:main",
+        paths: ["MOLTING-FOLLOWUP.json", "notes/today.md", outside],
+      });
+      const bare = bubble.locator('a[data-file-ref-path="MOLTING-FOLLOWUP.json"] code');
+      expect(await bare.textContent()).toBe("MOLTING-FOLLOWUP.json");
+      await bare.tap();
+      expect(await page.locator(".chat-file-link-menu").count()).toBe(0);
+
+      await bubble.locator(`a[data-file-path="${outside}"]`).tap();
+      const menu = page.getByRole("menu", { name: "File actions" });
+      await menu.waitFor({ state: "visible" });
+      await page.screenshot({ path: path.join(artifactDir, "phone-file-link-menu.png") });
+      expect(await menu.locator(".chat-file-link-menu__path").textContent()).toBe(outside);
+      await menu.getByRole("menuitem", { name: "Copy path", exact: true }).tap();
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as unknown as { clipboardWrites: string[] }).clipboardWrites),
+        )
+        .toEqual([outside]);
+      expect(await gateway.getRequests("sessions.files.get")).toHaveLength(0);
+      expect(await gateway.getRequests("sessions.files.stat")).toHaveLength(1);
+    } finally {
+      await context.close();
+    }
   });
 
   it("preserves domain/path text in user messages", async () => {
@@ -121,6 +194,7 @@ describeControlUiE2e("Control UI chat file links", () => {
         }
 
         await page.locator('a.markdown-file-link[data-file-path="src/slow.ts"]').click();
+        await chooseChatFileLinkOpen(page);
         await gateway.waitForRequest("sessions.files.get");
 
         await page.locator('[data-region-header="side"]').waitFor({ state: "visible" });
@@ -277,6 +351,7 @@ describeControlUiE2e("Control UI chat file links", () => {
           await target.focus();
           await page.keyboard.press(index === 3 ? "Space" : "Enter");
         }
+        await chooseChatFileLinkOpen(page);
         await gateway.waitForRequest("sessions.files.get", { after: before });
         const fileView = page.locator(".sidebar-file-view");
         await fileView.waitFor({ state: "visible" });
@@ -456,6 +531,7 @@ describeControlUiE2e("Control UI chat file links", () => {
       await chatLink.waitFor({ state: "visible" });
       await page.screenshot({ path: path.join(artifactDir, "01-chat-file-link.png") });
       await chatLink.click();
+      await chooseChatFileLinkOpen(page);
 
       const fileView = page.locator(".sidebar-file-view");
       await fileView.waitFor({ state: "visible" });

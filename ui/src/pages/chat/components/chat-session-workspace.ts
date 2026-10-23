@@ -1,4 +1,7 @@
-import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
+import type {
+  SessionsDiffResult,
+  SessionsFilesStatResult,
+} from "../../../../../packages/gateway-protocol/src/index.js";
 import { BROWSER_IMAGE_MIME_TYPES } from "../../../../../src/shared/browser-image-mime-types.js";
 import {
   formatFencedCodeBlock,
@@ -19,6 +22,7 @@ import { pathDisplayName } from "../../../lib/path-display.ts";
 import { resolveSessionDisplayName } from "../../../lib/session-display.ts";
 import { parseAgentSessionKey } from "../../../lib/sessions/session-key.ts";
 import { sessionWorkspaceFileKey } from "../../../lib/sessions/workspace.ts";
+import { chatFileLinkKnownPaths, type ChatFileLinkResolver } from "./chat-file-link-resolution.ts";
 import { openWorkspaceItem } from "./chat-session-workspace-preview.ts";
 import {
   clearWorkspaceTimer,
@@ -372,6 +376,64 @@ export function openSessionWorkspaceFile(
   });
 }
 
+const knownPathsByList = new WeakMap<object, Set<string>>();
+
+/**
+ * Transcript file links: the Files panel listing answers first (no extra I/O), then one
+ * batched `sessions.files.stat` request per render covers the remaining paths.
+ */
+export function createChatFileLinkResolver(
+  state: SessionWorkspaceHost,
+): ChatFileLinkResolver | undefined {
+  const client = state.client;
+  if (!client) {
+    return undefined;
+  }
+  const workspace = getSessionWorkspace(state);
+  const sessionKey = state.sessionKey;
+  const canStat = isGatewayMethodAdvertised(state, "sessions.files.stat") === true;
+  return {
+    sessionKey,
+    cacheOwner: client,
+    knownPaths: (key) => {
+      const list = workspace.list;
+      if (key !== sessionKey || list?.sessionKey !== key) {
+        return null;
+      }
+      let known = knownPathsByList.get(list);
+      if (!known) {
+        known = chatFileLinkKnownPaths(list);
+        knownPathsByList.set(list, known);
+      }
+      return known;
+    },
+    statPaths: canStat
+      ? async (key, paths) => {
+          const agentId =
+            key === sessionKey ? workspace.agentId : parseAgentSessionKey(key)?.agentId;
+          const result = await client.request<SessionsFilesStatResult>("sessions.files.stat", {
+            sessionKey: key,
+            paths,
+            ...(agentId ? { agentId } : {}),
+          });
+          return new Map(result?.files.map((file) => [file.path, file.exists]) ?? []);
+        }
+      : undefined,
+  };
+}
+
+/** Transcript file-link props: links that open go through the workspace preview. */
+export function chatFileLinkProps(
+  state: SessionWorkspaceHost,
+  fileLinkResolver: ChatFileLinkResolver | undefined,
+) {
+  return {
+    onOpenWorkspaceFile: (target: MarkdownFileLinkTarget) =>
+      openSessionWorkspaceFile(state, target),
+    fileLinkResolver,
+  };
+}
+
 export function revealSessionWorkspaceFile(state: SessionWorkspaceHost, path: string) {
   const workspace = getSessionWorkspace(state);
   clearWorkspaceTimer(workspace);
@@ -523,6 +585,7 @@ export function createSessionWorkspaceProps(
     },
     onOpenArtifact: (artifactId) => openArtifact(state, workspace, artifactId),
     onOpenDiff: diffContent ? () => state.handleOpenSidebar(diffContent) : undefined,
+    fileLinkResolver: createChatFileLinkResolver(state),
   };
 }
 

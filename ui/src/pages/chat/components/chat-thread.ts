@@ -7,6 +7,7 @@ import { handleMarkdownCodeBlockClick } from "../../../components/markdown-code-
 import {
   markdownFileLinkFromEvent,
   markdownFileLinkFromKeyboardEvent,
+  type MarkdownFileLinkTarget,
 } from "../../../components/markdown-file-links.ts";
 import {
   markdownSessionLinkFromEvent,
@@ -20,11 +21,13 @@ import {
   shouldHandleNavigationClick,
 } from "../../../lib/navigation-click.ts";
 import { hydrateLinkFavicons } from "../link-favicon-loader.ts";
+import { openChatFileLinkMenu } from "./chat-file-link-menu.ts";
+import { chatFileLinkResolution } from "./chat-file-link-resolution.ts";
+import "./chat-comment-pins.ts";
 import {
   CHAT_HISTORY_BOUNDARY_HEIGHT_PX,
   renderChatHistoryBoundary,
 } from "./chat-history-boundary.ts";
-import "./chat-comment-pins.ts";
 import { renderChatPositionRail } from "./chat-position-rail.ts";
 import {
   handleTranscriptContextMenu,
@@ -37,6 +40,20 @@ import type { ChatTranscriptSession } from "./chat-transcript-session.ts";
 import { renderWelcomeState, resolveAssistantDisplayAvatar } from "./chat-welcome.ts";
 
 const EMPTY_ENTRY_KEYS: ReadonlyMap<string, string> = new Map();
+
+function openFileLinkMenuFromEvent(
+  event: Event,
+  target: MarkdownFileLinkTarget,
+  props: ChatThreadProps,
+): void {
+  const anchor =
+    event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-file-path]") : null;
+  if (anchor) {
+    openChatFileLinkMenu(anchor, target, props);
+  } else {
+    props.onOpenWorkspaceFile?.(target);
+  }
+}
 
 function navigateCronRunLink(event: Event, props: ChatThreadProps): boolean {
   const anchor = anchorFromNavigationEvent(event);
@@ -125,6 +142,7 @@ function renderTranscriptShell(
           routeLoading ? "chat-thread--route-loading" : ""
         } ${commentPins ? "chat-thread--comment-pins" : ""}"
         ${markdownBlocks(props.transcriptVisible ?? true)}
+        ${chatFileLinkResolution(props.fileLinkResolver)}
         ${linkReaderPrefetch(props.sessionKey, projection.showLoadingSkeleton ? false : (props.transcriptVisible ?? true), Boolean(props.gatewayClient?.connected))}
         ${ref((element) => {
           if (element instanceof HTMLElement) {
@@ -150,7 +168,7 @@ function renderTranscriptShell(
           }
           const target = markdownFileLinkFromKeyboardEvent(event);
           if (target) {
-            props.onOpenWorkspaceFile?.(target);
+            openFileLinkMenuFromEvent(event, target, props);
             return;
           }
           const sessionTarget = markdownSessionLinkFromKeyboardEvent(event, props.basePath);
@@ -176,7 +194,7 @@ function renderTranscriptShell(
           }
           const target = markdownFileLinkFromEvent(event);
           if (target) {
-            props.onOpenWorkspaceFile?.(target);
+            openFileLinkMenuFromEvent(event, target, props);
             return;
           }
           const sessionTarget = markdownSessionLinkFromEvent(event, props.basePath);

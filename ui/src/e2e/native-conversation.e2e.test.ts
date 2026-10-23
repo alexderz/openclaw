@@ -6,6 +6,7 @@ import {
   controlUiBundledSettingsStorageKey,
   defaultControlUiFeatureMethods,
 } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import {
   captureUiProofEnabled,
   controlUiSessionUrl,
@@ -253,6 +254,7 @@ suite.define(() => {
       const timeOrigin = await page.evaluate(() => performance.timeOrigin);
       const initialUrl = page.url();
       await pane.locator('a.markdown-file-link[data-file-path="notes.txt"]').click();
+      await chooseChatFileLinkOpen(page);
       expect(
         requireRecord((await gateway.waitForRequest("sessions.files.get")).params),
       ).toMatchObject({

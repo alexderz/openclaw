@@ -14,6 +14,7 @@ import {
   defaultControlUiFeatureMethods,
   installMockGateway,
 } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -140,6 +141,7 @@ suite.define(() => {
               });
               if (rejectedModes.length === 0) {
                 await page.locator('a.markdown-file-link[data-file-path="blocked.html"]').click();
+                await chooseChatFileLinkOpen(page);
               } else {
                 await preview.evaluate((_element, nextMode) => {
                   const current = document.querySelector("openclaw-chat-html-preview");

@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "File copy retirement" });
@@ -79,6 +80,7 @@ suite.define(() => {
         });
         await page.goto(`${suite.server.baseUrl}chat`);
         await page.locator('a.markdown-file-link[data-file-path="notes.txt"]').click();
+        await chooseChatFileLinkOpen(page);
         const panel = page.locator("openclaw-chat-detail-panel:visible");
         await panel.locator(".cm-content").waitFor({ state: "visible" });
         await panel

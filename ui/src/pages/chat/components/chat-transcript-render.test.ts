@@ -602,7 +602,7 @@ describe("chat transcript rendering", () => {
       "qa241-unicode/100% ready.txt",
       "qa241-unicode/日本語.txt",
     ].flatMap((path) => ["click", "Enter", " "].map((key) => ({ path, key }))),
-  )("opens focused transcript file $path with $key", async ({ path, key }) => {
+  )("offers Open for focused transcript file $path with $key", async ({ path, key }) => {
     const onOpenWorkspaceFile = vi.fn();
     const onOpenSessionLink = vi.fn();
     const onHistoryIntent = vi.fn();
@@ -631,10 +631,110 @@ describe("chat transcript rendering", () => {
       link?.dispatchEvent(event);
       expect(event.defaultPrevented).toBe(true);
     }
+    // A tap asks first; it never opens the file directly.
+    expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+    const menu = requireElement(document.body, ".chat-file-link-menu");
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.querySelector(".chat-file-link-menu__path")?.textContent).toBe(path);
+    const [open, copy] = menu.querySelectorAll<HTMLButtonElement>("button[role=menuitem]");
+    expect(open?.textContent).toBe("Open");
+    expect(copy?.textContent).toBe("Copy path");
+    expect(document.activeElement).toBe(open);
+    open?.click();
     expect(onOpenWorkspaceFile).toHaveBeenCalledExactlyOnceWith({ path, line: 17 });
+    expect(document.querySelector(".chat-file-link-menu")).toBeNull();
     expect(onOpenSessionLink).not.toHaveBeenCalled();
     expect(onHistoryIntent).not.toHaveBeenCalled();
     transcript.hostDisconnected();
+  });
+
+  it("copies the exact file path from the file link menu", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const onOpenWorkspaceFile = vi.fn();
+    const path = "/var/lib/openclaw/.openclaw/workspace/scratch/run/MOLTING-FOLLOWUP.json";
+    const props = {
+      ...threadProps("pane-file-copy", "agent:main:main", [
+        { role: "assistant", content: `Wrote \`${path}\``, timestamp: 1_000 },
+      ]),
+      onOpenWorkspaceFile,
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      container.querySelector<HTMLAnchorElement>("a.markdown-file-link")?.click();
+      const copy = requireElement(
+        document.body,
+        ".chat-file-link-menu",
+      ).querySelectorAll<HTMLButtonElement>("button[role=menuitem]")[1];
+      copy?.click();
+      await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(path));
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+      // An outside tap dismisses the menu without opening anything.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+      document.body.click();
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      transcript.hostDisconnected();
+    }
+  });
+
+  it("links only transcript paths that open, with one batched check", async () => {
+    const onOpenWorkspaceFile = vi.fn();
+    const statPaths = vi.fn(
+      async (_sessionKey: string, paths: readonly string[]) =>
+        new Map(paths.map((path) => [path, path === "/srv/checkout/dist/build-info.json"])),
+    );
+    const props = {
+      ...threadProps("pane-file-resolution", "agent:main:main", [
+        {
+          role: "assistant",
+          content:
+            "Wrote `MOLTING-FOLLOWUP.json`, `notes/today.md` and /srv/checkout/dist/build-info.json.",
+          timestamp: 1_000,
+        },
+      ]),
+      onOpenWorkspaceFile,
+      fileLinkResolver: {
+        sessionKey: "agent:main:main",
+        cacheOwner: {},
+        knownPaths: () => new Set(["notes/today.md"]),
+        statPaths,
+      },
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      await vi.waitFor(() => expect(statPaths).toHaveBeenCalledOnce());
+      expect(statPaths).toHaveBeenCalledWith("agent:main:main", [
+        "MOLTING-FOLLOWUP.json",
+        "/srv/checkout/dist/build-info.json",
+      ]);
+      await vi.waitFor(() =>
+        expect(
+          [...container.querySelectorAll<HTMLAnchorElement>("a[data-file-path]")].map(
+            (link) => link.dataset.filePath,
+          ),
+        ).toEqual(["notes/today.md", "/srv/checkout/dist/build-info.json"]),
+      );
+      const bare = requireElement(container, 'a[data-file-ref-path="MOLTING-FOLLOWUP.json"]');
+      expect(bare.classList.contains("markdown-file-link")).toBe(false);
+      bare.querySelector("code")?.click();
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+      await flushDeferredRowPrune();
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 60);
+      });
+      expect(statPaths).toHaveBeenCalledOnce();
+    } finally {
+      transcript.hostDisconnected();
+    }
   });
 
   it.each(["click", "Ctrl+click", "Enter", " "])(

@@ -12,6 +12,7 @@ import {
   startControlUiE2eServer,
   type ControlUiE2eServer,
 } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import {
   auditMarkdownTable,
   expectReadableAuditTable,
@@ -852,6 +853,9 @@ ${overflowTable}`,
           await anchor.click();
         } else {
           await anchor.press(activation);
+        }
+        if (link === "file") {
+          await chooseChatFileLinkOpen(page);
         }
       };
       const expectDestination = async (fileRequestCount: number) => {

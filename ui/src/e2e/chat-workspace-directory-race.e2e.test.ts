@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
 
@@ -144,6 +145,7 @@ suite.define(() => {
         .poll(async () => (await gateway.getRequests("sessions.files.list")).length)
         .toBe(2);
       await page.locator('a.markdown-file-link[data-file-path="reports/inventory.csv"]').click();
+      await chooseChatFileLinkOpen(page);
       await expect
         .poll(() => page.locator(".chat-files-panel__page:not([hidden]) .cm-content").textContent())
         .toContain("notebooks");

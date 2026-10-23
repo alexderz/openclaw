@@ -274,6 +274,28 @@ export const SessionsFilesGetResultSchema = closedObject({
   file: SessionFileEntrySchema,
 });
 
+export const SESSIONS_FILES_STAT_MAX_PATHS = 64;
+
+/** Reports which paths sessions.files.get would find, without reading file contents. */
+export const SessionsFilesStatParamsSchema = closedObject({
+  sessionKey: NonEmptyString,
+  paths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), {
+    maxItems: SESSIONS_FILES_STAT_MAX_PATHS,
+  }),
+  agentId: Type.Optional(NonEmptyString),
+});
+
+export const SessionsFilesStatResultSchema = closedObject({
+  sessionKey: NonEmptyString,
+  files: Type.Array(
+    closedObject({
+      path: Type.String({ minLength: 1, maxLength: 4096 }),
+      exists: Type.Boolean(),
+    }),
+    { maxItems: SESSIONS_FILES_STAT_MAX_PATHS },
+  ),
+});
+
 export const SESSIONS_FILES_ASSETS_MAX_REFS = 64;
 export const SESSIONS_FILES_ASSET_MAX_BYTES = 1024 * 1024;
 export const SESSIONS_FILES_ASSETS_MAX_TOTAL_BYTES = 4 * 1024 * 1024;
@@ -794,6 +816,8 @@ export type SessionsFilesListParams = Static<typeof SessionsFilesListParamsSchem
 export type SessionsFilesListResult = Static<typeof SessionsFilesListResultSchema>;
 export type SessionsFilesGetParams = Static<typeof SessionsFilesGetParamsSchema>;
 export type SessionsFilesGetResult = Static<typeof SessionsFilesGetResultSchema>;
+export type SessionsFilesStatParams = Static<typeof SessionsFilesStatParamsSchema>;
+export type SessionsFilesStatResult = Static<typeof SessionsFilesStatResultSchema>;
 export type SessionsFilesAssetsParams = Static<typeof SessionsFilesAssetsParamsSchema>;
 export type SessionsFilesAssetsResult = Static<typeof SessionsFilesAssetsResultSchema>;
 export type SessionsFilesSetParams = Static<typeof SessionsFilesSetParamsSchema>;

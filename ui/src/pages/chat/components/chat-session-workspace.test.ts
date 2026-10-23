@@ -14,6 +14,7 @@ import {
   createSidebarContentRecorder,
 } from "./chat-session-workspace.test-support.ts";
 import {
+  createChatFileLinkResolver,
   createSessionWorkspaceProps,
   openSessionWorkspaceFile,
   refreshSessionWorkspace,
@@ -974,5 +975,67 @@ describe("openSessionWorkspaceFile", () => {
     );
     expect(content).not.toContain("\n\n![remote]");
     expect(content).not.toContain("Updated:");
+  });
+});
+
+describe("chat file link resolver", () => {
+  function host(methods: readonly string[]) {
+    const request = vi.fn(async (_method: string, params: { paths: string[] }) => ({
+      sessionKey: "agent:main:current",
+      files: params.paths.map((path) => ({ path, exists: path.endsWith(".ts") })),
+    }));
+    const state = {
+      client: { request },
+      connected: true,
+      connectionEpoch: 1,
+      handleOpenSidebar: vi.fn(),
+      hello: gatewayHelloForMethods(methods),
+      sessionKey: "agent:main:current",
+      sidebarContent: null,
+      sessions: {},
+    } as unknown as SessionWorkspaceHost;
+    return { request, state };
+  }
+
+  it("answers from the loaded file list and batches the rest through sessions.files.stat", async () => {
+    const { request, state } = host(["sessions.files.stat"]);
+    const workspace = getSessionWorkspace(state);
+    workspace.list = {
+      sessionKey: "agent:main:current",
+      root: "/workspace",
+      files: [
+        {
+          kind: "read",
+          name: "a.md",
+          path: "docs/a.md",
+          workspacePath: "docs/a.md",
+          missing: false,
+        },
+      ],
+    } as never;
+    const resolver = createChatFileLinkResolver(state);
+    expect(resolver?.cacheOwner).toBe(state.client);
+    expect([...(resolver?.knownPaths("agent:main:current") ?? [])].toSorted()).toEqual([
+      "/workspace/docs/a.md",
+      "docs/a.md",
+    ]);
+    expect(resolver?.knownPaths("agent:research:report")).toBeNull();
+
+    const result = await resolver?.statPaths?.("agent:research:report", ["x.ts", "y.json"]);
+    expect(request).toHaveBeenCalledExactlyOnceWith("sessions.files.stat", {
+      sessionKey: "agent:research:report",
+      paths: ["x.ts", "y.json"],
+      agentId: "research",
+    });
+    expect([...(result ?? [])]).toEqual([
+      ["x.ts", true],
+      ["y.json", false],
+    ]);
+  });
+
+  it("does not check paths when the Gateway lacks sessions.files.stat", () => {
+    const { state } = host(["sessions.files.get"]);
+    expect(createChatFileLinkResolver(state)?.statPaths).toBeUndefined();
+    expect(createChatFileLinkResolver({ ...state, client: null })).toBeUndefined();
   });
 });

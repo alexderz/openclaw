@@ -2,6 +2,7 @@ import type { GatewayBrowserClient, GatewayHelloOk } from "../../../api/gateway.
 import type { SessionWorkspaceListResult } from "../../../api/types.ts";
 import type { UiSettings } from "../../../app/settings.ts";
 import type { SessionCapability, SessionScopeHost } from "../../../lib/sessions/index.ts";
+import type { ChatFileLinkResolver } from "./chat-file-link-resolution.ts";
 import type {
   FileSidebarNavigation,
   SidebarContent,
@@ -26,6 +27,8 @@ export type SessionWorkspaceProps = {
   onOpenArtifact: (artifactId: string) => void;
   /** Opens the session diff panel; absent until a usable checkout is known. */
   onOpenDiff?: () => void;
+  /** Transcript file links resolve against this session's files. */
+  fileLinkResolver?: ChatFileLinkResolver;
 };
 
 export type SessionWorkspacePreview = {
