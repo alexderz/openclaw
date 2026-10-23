@@ -36,9 +36,18 @@ import type {
   SessionEntryCreationOperation,
   SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
-import { readSessionEntryGenerationInDatabase } from "./session-accessor.sqlite-entry-read.js";
+import {
+  readCommittedSessionEntryInDatabase,
+  readSessionEntryGenerationInDatabase,
+} from "./session-accessor.sqlite-entry-read.js";
 import { loadSessionEntryReadOnlyResultInScope } from "./session-accessor.sqlite-entry.js";
 import { readCommittedIncognitoSessionSharing } from "./session-accessor.sqlite-incognito-sharing.js";
+import {
+  isSessionDeliveryGenerationRevokedError,
+  isSessionDeliveryGenerationUnavailableError,
+  SessionDeliveryGenerationRevokedError,
+  SessionDeliveryGenerationUnavailableError,
+} from "./session-delivery-generation-errors.js";
 import type { SessionDeliveryGeneration } from "./session-delivery-generation.types.js";
 import { withSessionEntriesFromStoresInWorker } from "./session-entry-read-runtime.js";
 import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
@@ -53,29 +62,7 @@ import {
   createSessionStoreRegistryMutationFilter,
 } from "./session-store-target-inventory.js";
 
-class SessionDeliveryGenerationRevokedError extends Error {
-  readonly code = "SESSION_DELIVERY_GENERATION_REVOKED";
-  constructor() {
-    super("The original session generation no longer accepts this delivery.");
-    this.name = "SessionDeliveryGenerationRevokedError";
-  }
-}
-
-class SessionDeliveryGenerationUnavailableError extends Error {
-  readonly code = "SESSION_DELIVERY_GENERATION_UNAVAILABLE";
-  constructor(options?: ErrorOptions) {
-    super(
-      "Session delivery generation is unavailable; retry after session storage is ready.",
-      options,
-    );
-    this.name = "SessionDeliveryGenerationUnavailableError";
-  }
-}
-
-export const isSessionDeliveryGenerationRevokedError = (error: unknown) =>
-  isRecord(error) && error.code === "SESSION_DELIVERY_GENERATION_REVOKED";
-const isSessionDeliveryGenerationUnavailableError = (error: unknown) =>
-  isRecord(error) && error.code === "SESSION_DELIVERY_GENERATION_UNAVAILABLE";
+export { isSessionDeliveryGenerationRevokedError };
 
 type SessionGenerationEntry = Pick<
   SessionSharingEntry,
@@ -398,6 +385,8 @@ async function prepareSessionGenerationLease(
       }
       let source: { path: string; identity: string } | undefined;
       let assertNativeCurrent: (entry: SessionGenerationEntry | null) => void = () => {};
+      let readNativeCommitted: () => ReturnType<typeof readCommittedSessionEntryInDatabase> = () =>
+        undefined;
       while (!retained) {
         assertActive();
         const before = publications;
@@ -519,6 +508,13 @@ async function prepareSessionGenerationLease(
                 throw error;
               }
             };
+            // Committed-only read on the exact native handle; undefined when it cannot certify.
+            readNativeCommitted = () => {
+              const opened = getOpenClawAgentDatabaseIfOpen(nativeOptions);
+              return opened && (!native || opened === native)
+                ? readCommittedSessionEntryInDatabase(opened, generation.sessionKey)
+                : undefined;
+            };
             return prepared;
           },
         );
@@ -531,15 +527,23 @@ async function prepareSessionGenerationLease(
           throw new SessionDeliveryGenerationUnavailableError();
         }
       };
+      // DER-594: an unknown worker settlement (for example an end-of-turn SessionManager
+      // commit whose metadata receipt was superseded) leaves the retained generation
+      // undefined forever. Re-validate it against the committed row: the same
+      // sessionId/lifecycleRevision re-seeds the lease, any other committed row revokes.
+      const recoverUnknown = () => retained?.recoverUnknown(readNativeCommitted, checkEntry);
       readCurrent = () => {
         assertSourceCurrent();
+        recoverUnknown();
         const entry = checkEntry(retained?.readCurrent());
         assertNativeCurrent(entry);
         return entry;
       };
       prepareRead = () => {
         assertSourceCurrent();
-        return retained?.prepareRead()?.then(assertSourceCurrent);
+        const pending = retained?.prepareRead();
+        // Without a certifying native handle an unknown generation stays unavailable.
+        return pending ? pending.then(assertSourceCurrent) : void recoverUnknown();
       };
       if (generation.sessionId !== null && source) {
         workerSource = captureSessionEntrySourceAssertion({
