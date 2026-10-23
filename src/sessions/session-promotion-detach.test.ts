@@ -189,6 +189,21 @@ describe("promotion detach", () => {
     expect(entry.spawnDepth).toBe(0);
   });
 
+  it("keeps a parent link that is not the spawner when there is no dashboard root", () => {
+    const entry: Record<string, unknown> = {
+      ...delegatedRow,
+      parentSessionKey: "agent:main:telegram:group:1",
+    };
+    detachPromotedSessionEntry({
+      entry,
+      key: "agent:main:telegram:group:1:thread:2",
+      promotion: { requestId: "request", profileId: "human", activatedAt: 5 },
+    });
+    expect(entry.parentSessionKey).toBe("agent:main:telegram:group:1");
+    expect(entry.spawnedBy).toBeUndefined();
+    expect(entry.promotedFrom).toMatchObject({ parentSessionKey: "agent:main:dashboard:parent" });
+  });
+
   it("never detaches a key that is delegated by its shape", () => {
     expect(canDetachPromotedSessionKey("agent:main:dashboard:visible")).toBe(true);
     expect(canDetachPromotedSessionKey("agent:main:cron:job:run:1")).toBe(true);

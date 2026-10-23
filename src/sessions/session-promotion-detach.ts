@@ -90,7 +90,8 @@ export function isDetachedPromotedSession(entry: DetachableEntry): boolean {
  * - Depth 0 and no spawner: every turn resolves as a never-delegated session, new spawns count
  *   from 0, completions and approvals no longer route to the former parent.
  * - The parent link becomes the agent's main root when the caller supplies it (what a dashboard
- *   session a human creates gets), otherwise it is removed.
+ *   session a human creates gets). Otherwise a parent link that is not the spawner (a thread's
+ *   own parent) is kept, and a spawner link is removed.
  * - The workspace a later turn re-enters stays the one it used before: a spawner-inherited
  *   workspace is kept as the session's own cwd.
  * - Sandbox, worktree, owner, creator and model settings are not touched; nothing is widened.
@@ -108,6 +109,16 @@ export function detachPromotedSessionEntry(params: {
   }
   const spawnedBy = text(entry.spawnedBy);
   const inheritedWorkspace = spawnedBy ? text(entry.spawnedWorkspaceDir) : undefined;
+  // A parent link that is not the delegation (a thread's or channel's own parent) is what the
+  // same session would carry had it never been delegated; the spawner link is not.
+  const priorParent = text(entry.parentSessionKey);
+  const nonDelegationParent =
+    spawnedBy &&
+    priorParent &&
+    priorParent !== spawnedBy &&
+    priorParent !== text(entry.completionOwnerSessionKey)
+      ? priorParent
+      : undefined;
   if (!decodeSessionPromotedFrom(entry.promotedFrom)) {
     const parentSessionKey = spawnedBy ?? text(entry.parentSessionKey);
     const parentSessionId = text(entry.spawnedBySessionId) ?? text(entry.parentSessionId);
@@ -129,7 +140,7 @@ export function detachPromotedSessionEntry(params: {
   }
   // Session creation persists every non-spawned root at an explicit depth 0.
   entry.spawnDepth = 0;
-  const root = text(params.rootParentSessionKey);
+  const root = text(params.rootParentSessionKey) ?? nonDelegationParent;
   if (root && root !== params.key) {
     entry.parentSessionKey = root;
   } else {

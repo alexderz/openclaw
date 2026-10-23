@@ -4,6 +4,10 @@ import {
   type SubagentRunRecordOverrides,
 } from "../../subagent-test-fixtures.test-helpers.js";
 import {
+  ensureSubagentControllerOwnsRun,
+  isSubagentRunVisibleToSession,
+} from "./subagent-control-scope.js";
+import {
   markSubagentChildHandedOff,
   subagentRunOwnsChildSession,
 } from "./subagent-registry-child-handoff.js";
@@ -168,5 +172,23 @@ describe("promoted child handoff in the subagent registry", () => {
     expect(subagentRunOwnsChildSession(null, spawned)).toBe(false);
     // A legacy root without a creation stamp keeps today's registry projection.
     expect(subagentRunOwnsChildSession(settled, { spawnDepth: 0 })).toBe(true);
+  });
+  it("takes control and visibility of a promoted child away from its former parent", async () => {
+    const runs = fixture();
+    await markSubagentChildHandedOff({ runs, childSessionKey: PROMOTED, at: 9 });
+    const handedOff = runs.get("spawn")!;
+    const live = settledRun({
+      runId: "other",
+      childSessionKey: GRANDCHILD,
+      requesterSessionKey: PARENT,
+    });
+    const controller = { controllerSessionKey: PARENT, controllerAgentId: "main" };
+    const cfg = {} as never;
+    expect(ensureSubagentControllerOwnsRun({ cfg, controller, entry: live })).toBeUndefined();
+    expect(isSubagentRunVisibleToSession(live, PARENT, "main")).toBe(true);
+    expect(ensureSubagentControllerOwnsRun({ cfg, controller, entry: handedOff })).toMatch(
+      /promoted/,
+    );
+    expect(isSubagentRunVisibleToSession(handedOff, PARENT, "main")).toBe(false);
   });
 });

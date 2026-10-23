@@ -155,10 +155,16 @@ async function prepareFreshHumanAuthority(params: {
  */
 async function releaseSpawnerCustody(sessionKey: string, sessionId: string): Promise<void> {
   try {
-    await releasePromotedSessionFromSpawner({
+    const { unsettled } = await releasePromotedSessionFromSpawner({
       childSessionKey: sessionKey,
       childSessionId: sessionId,
     });
+    if (unsettled > 0) {
+      // Activation required every spawner row settled; one created since waits for startup.
+      log.warn(
+        `promoted session ${sessionKey} detached; ${unsettled} spawner run(s) not yet settled`,
+      );
+    }
   } catch (error) {
     log.warn(
       `promoted session ${sessionKey} detached; spawner run release deferred: ${error instanceof Error ? error.name : "error"}`,

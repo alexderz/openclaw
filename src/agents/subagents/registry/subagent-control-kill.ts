@@ -522,10 +522,12 @@ export async function killSessionSubagentRuns(params: {
     ],
     // Ordinary controller mutations retain their narrower authority. Only an admitted
     // lifecycle boundary can retire work whose completion belongs to this session.
+    // A promoted child is no longer this session's to retire, by any boundary.
     ownsRoot: (entry) =>
-      !ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry }) ||
-      (entry.requesterSessionKey === params.sessionKey &&
-        resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId),
+      !entry.childHandoff &&
+      (!ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry }) ||
+        (entry.requesterSessionKey === params.sessionKey &&
+          resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId)),
     suppressTaskDelivery: true,
   });
 }
