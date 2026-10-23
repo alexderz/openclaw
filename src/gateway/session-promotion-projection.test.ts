@@ -191,6 +191,47 @@ describe("truthful ordinary scope after activation", () => {
     }
     expect(JSON.stringify(requester)).not.toContain("profileId");
   });
+  it("reports a detached promotion as ordinary on every turn for every viewer, with its history", () => {
+    const detached = {
+      sessionId: "session",
+      lifecycleRevision: "after",
+      updatedAt: 1,
+      spawnDepth: 0,
+      parentSessionKey: "agent:main:main",
+      sessionPromotion: receipt,
+      promotedFrom: {
+        version: 1,
+        requestId: "request",
+        profileId: "human",
+        at: 2,
+        parentSessionKey: "parent",
+        spawnDepth: 1,
+      },
+    };
+    for (const viewer of ["human", "someone-else", undefined]) {
+      const projection = project(viewer, detached);
+      expect(projection).toMatchObject({
+        historicalOrigin: "delegated",
+        effectiveClass: "ordinary",
+        classScope: "all-turns",
+        promotionState: "activated",
+        canPromote: false,
+        promotedFrom: { parentSessionKey: "parent", at: 2 },
+      });
+      expect(Value.Check(SessionPromotionProjectionSchema, projection)).toBe(true);
+      // History only: who promoted it and the request id are not published.
+      expect(JSON.stringify(projection)).not.toContain("profileId");
+      expect(JSON.stringify(projection)).not.toContain('"request"');
+    }
+    // A reset drops the receipt; the session stays a standard root with its history.
+    const reset = { ...detached, sessionId: "next", sessionPromotion: undefined };
+    expect(project("someone-else", reset)).toMatchObject({
+      effectiveClass: "ordinary",
+      classScope: "all-turns",
+      promotionState: "none",
+      promotedFrom: { at: 2 },
+    });
+  });
   it("reports a natively ordinary session as ordinary for all turns and a delegated one as scope none", () => {
     expect(
       projectSessionPromotion({

@@ -1,4 +1,5 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import { decodeSessionPromotedFrom } from "../../sessions/session-promotion-detach.js";
 import { decodeSessionPromotion } from "../../sessions/session-promotion-state.js";
 import {
   deliveryContextFromSession,
@@ -11,9 +12,17 @@ import type { SessionEntry } from "./types.js";
 
 export function normalizeSessionEntryTimestamp(input: SessionEntry): SessionEntry {
   const entry: SessionEntry =
-    input.sessionPromotion === undefined
+    input.sessionPromotion === undefined && input.promotedFrom === undefined
       ? input
-      : { ...input, sessionPromotion: decodeSessionPromotion(input.sessionPromotion) };
+      : {
+          ...input,
+          ...(input.sessionPromotion === undefined
+            ? {}
+            : { sessionPromotion: decodeSessionPromotion(input.sessionPromotion) }),
+          ...(input.promotedFrom === undefined
+            ? {}
+            : { promotedFrom: decodeSessionPromotedFrom(input.promotedFrom) }),
+        };
   const hasLegacyDeliveryFields = [
     "route",
     "deliveryContext",

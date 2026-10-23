@@ -30,6 +30,7 @@ export type PromotionFixtureKind =
   | "stale-identity"
   | "promoted-requester"
   | "promoted-other-viewer"
+  | "promoted-detached"
   | "revoked-authorized";
 
 export function promotionProjection(kind: PromotionFixtureKind): SessionCapabilityStatus {
@@ -77,6 +78,19 @@ export function promotionProjection(kind: PromotionFixtureKind): SessionCapabili
         classScope: "requesting-human-direct-turns",
         promotionState: "activated",
         disabledReasons: ["promotion-activated"],
+      };
+    case "promoted-detached":
+      // Backend: a detached promotion is a standard root for every viewer and every turn.
+      return {
+        ...base,
+        effectiveClass: "ordinary",
+        classScope: "all-turns",
+        promotionState: "activated",
+        disabledReasons: ["unsupported-target:not-delegated", "promotion-activated"],
+        promotedFrom: {
+          parentSessionKey: "agent:main:dashboard:parent",
+          at: Date.UTC(2026, 9, 21),
+        },
       };
     case "revoked-authorized":
       // Backend: a terminal revoke keeps its state visible but does not block a new request.

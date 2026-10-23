@@ -1,4 +1,5 @@
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { subagentRunOwnsChildSession } from "../agents/subagents/registry/subagent-registry-child-handoff.js";
 import {
   buildLatestSubagentSessionListReadIndex,
   getLatestLiveSubagentRunByChildSessionKey,
@@ -58,16 +59,39 @@ function resolveApprovalSessionAudience(
     queued.add(sessionKey);
     pending.push(sessionKey);
   };
+  const readStoredLineage = (sessionKey: string) => {
+    const parsed = parseAgentSessionKey(sessionKey);
+    const target =
+      parsed?.rest.toLowerCase() === "global"
+        ? { agentId: normalizeAgentId(parsed.agentId), sessionKey: "global" }
+        : { agentId: resolveSessionStoreAgentId(cfg, sessionKey), sessionKey };
+    return loadSessionEntryReadOnly({
+      ...target,
+      clone: false,
+      hydrateSkillPromptRefs: false,
+    });
+  };
   for (const sessionKey of pending) {
     const subagentLineage = persisted
       ? buildLatestSubagentSessionListReadIndex([sessionKey]).getLatestSubagentRun(sessionKey)
       : getLatestLiveSubagentRunByChildSessionKey(sessionKey);
-    const registryParents = [
-      subagentLineage?.controllerSessionKey,
-      subagentLineage?.requesterSessionKey,
-    ]
-      .map((parent) => canonicalize(parent, sessionKey))
-      .filter((candidate): candidate is string => Boolean(candidate));
+    let storedLineage: ReturnType<typeof readStoredLineage> | undefined;
+    // A handed-off run, or a settled run of an operator-created or promoted root, no longer
+    // makes its requester this session's approval audience; the stored lineage decides.
+    const registryOwned =
+      subagentLineage !== null &&
+      subagentLineage !== undefined &&
+      subagentRunOwnsChildSession(
+        subagentLineage,
+        subagentLineage.childHandoff || typeof subagentLineage.execution.endedAt !== "number"
+          ? undefined
+          : (storedLineage = readStoredLineage(sessionKey)),
+      );
+    const registryParents = registryOwned
+      ? [subagentLineage?.controllerSessionKey, subagentLineage?.requesterSessionKey]
+          .map((parent) => canonicalize(parent, sessionKey))
+          .filter((candidate): candidate is string => Boolean(candidate))
+      : [];
     if (registryParents.length > 0) {
       // Current registry ownership supersedes session metadata, whose spawnedBy
       // link can remain stale after steering or restart.
@@ -76,16 +100,7 @@ function resolveApprovalSessionAudience(
       }
       continue;
     }
-    const parsed = parseAgentSessionKey(sessionKey);
-    const target =
-      parsed?.rest.toLowerCase() === "global"
-        ? { agentId: normalizeAgentId(parsed.agentId), sessionKey: "global" }
-        : { agentId: resolveSessionStoreAgentId(cfg, sessionKey), sessionKey };
-    const storedLineage = loadSessionEntryReadOnly({
-      ...target,
-      clone: false,
-      hydrateSkillPromptRefs: false,
-    });
+    storedLineage ??= readStoredLineage(sessionKey);
     const parentSessionKey = storedLineage?.parentSessionKey?.trim()
       ? storedLineage.parentSessionKey
       : storedLineage?.spawnedBy;

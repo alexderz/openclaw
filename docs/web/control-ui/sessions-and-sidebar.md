@@ -315,7 +315,7 @@ your custom name.
 
 ### Session menu
 
-Root sessions and ordinary Home-linked dashboard sessions can be pinned. Spawned and nested-child sessions reject pin requests, including when they appear as top-level threads, unless a [promotion](#promote-a-delegated-session) of that session has activated. Subagent runs also reject pin requests unless promoted, and remain outside sidebar navigation.
+Root sessions and ordinary Home-linked dashboard sessions can be pinned. Spawned and nested-child sessions reject pin requests, including when they appear as top-level threads. A [promoted](#promote-a-delegated-session) session is a root and pins like one. Subagent runs also reject pin requests unless promoted, and remain outside sidebar navigation.
 
 An ordinary conversation's **Actions** menu also offers **Move to group**, even
 when its header links back to Home. That breadcrumb does not make the
@@ -361,8 +361,8 @@ A session started by an agent, such as a `sessions_spawn` child or a visible
 dashboard session created with `visible: true`, is _delegated_: its turns keep the
 spawning session's tool-policy ceiling and the sub-agent restriction layer (for
 example, no `sessions_send`, `message`, or `cron`). Promotion turns such a session
-into an ordinary session in place. It keeps the conversation, history, and
-dashboard; it does not stop running work.
+into a standard dashboard session in place, as if you had created it yourself. It
+keeps the conversation, history, and dashboard; it does not stop running work.
 
 The chat header shows a capability glyph next to its session menu: 🔒 delegated
 (also when a promotion applies to someone else), ⏳ promotion pending or being
@@ -402,15 +402,19 @@ no bar.
   the pending request. While it waits, **Session info**
   shows what it is waiting for. **Cancel pending promotion…** withdraws only the
   pending request; the original requester or the Gateway owner can cancel it.
-- **What changes:** after activation, chat turns that the promoting person types
-  directly in the Control UI run as an ordinary session on the embedded and
-  Claude CLI/MCP tool paths, without the inherited ceiling or the sub-agent
-  restriction layer. Completion wakes, automation, inbound `sessions_send`
-  messages, other people's turns, plugin harnesses, compaction, and Gateway tool
-  RPCs keep the delegated limits. Spawn depth for further children, spawn
-  lineage, and sidebar nesting also stay the same. Once the promotion has
-  activated, the session can be pinned and snoozed like a root session; a later
-  reset makes it delegated again and its pin no longer applies.
+- **What changes:** activation detaches the session from the session that
+  spawned it. Every turn runs as an ordinary session, without the inherited
+  ceiling or the sub-agent restriction layer: your turns, other people's turns,
+  completion and background-process wakes, automation, inbound `sessions_send`
+  messages, compaction, and Gateway tool RPCs, on the embedded and Claude CLI/MCP
+  paths alike. Its own sub-agents count from depth 0. It no longer reports to its
+  former parent: completions, approvals, and running work stop routing to or
+  counting against that parent, and the parent no longer waits on it. In the
+  sidebar it moves to the top level with no amber bar, and it can be pinned and
+  snoozed like any root session; a later reset keeps it a root. **Session info**
+  shows **Standard** and **Promoted from** the former parent with the date, as
+  history only. A sub-agent run promoted by an admin keeps its sub-agent key, so
+  only the promoting person's directly typed turns become ordinary for it.
 - **What still applies:** the person's role, global and agent tool policy,
   resource policy, and sandbox. Promotion never grants more than an ordinary session would get.
 
@@ -419,9 +423,12 @@ are shown to no longer own the session, the pending request is revoked and must
 be made again. If the Gateway only cannot read that proof, such as unreadable
 lineage, pairing, or identity storage, the request stays pending. An agent cannot promote its own session. When a delegated
 limit blocks something the person wants to do in that session themselves, the
-agent can point them to the 🔒 glyph or the sidebar **⋯** menu. Promotion does
-not lift limits for turns the agent runs on its own, and not every session is
-eligible.
+agent can point them to the 🔒 glyph or the sidebar **⋯** menu. Not every
+session is eligible.
+
+Sessions promoted by an earlier build, which became ordinary only for the
+promoting person's typed turns, are detached the same way at that person's next
+directly typed turn, once the session is quiet.
 
 ### Session placement
 

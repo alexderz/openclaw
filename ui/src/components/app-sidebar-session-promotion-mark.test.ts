@@ -19,6 +19,7 @@ describe("resolveSidebarPromotionMark", () => {
   it("leaves ordinary, promoted, unknown and unprojected rows unmarked", () => {
     const base = promotionProjection("authorized-none");
     expect(resolveSidebarPromotionMark(undefined)).toBeUndefined();
+    expect(resolveSidebarPromotionMark(promotionProjection("promoted-detached"))).toBeUndefined();
     expect(
       resolveSidebarPromotionMark({
         ...base,

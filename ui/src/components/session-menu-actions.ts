@@ -35,6 +35,8 @@ export type SessionMenuData = {
   promotionMessage?: string;
   promotionDisabledReason?: string;
   capabilityStatus?: SessionCapabilityStatus;
+  /** Display name of the session a promoted root was spawned from (history only). */
+  promotedFromLabel?: string;
   label: string;
   sessionId: string | null;
   isChild?: boolean;

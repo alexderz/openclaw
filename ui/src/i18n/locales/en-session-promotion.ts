@@ -23,9 +23,12 @@ const enSessionPromotion = {
           pending: "Promotion pending",
         },
         explanation:
-          "Promotion keeps this conversation, history and board. It takes effect only after accepted work settles; it does not stop work or grant tools beyond ordinary policy.",
+          "Promotion keeps this conversation, history and board, and turns it into a standard dashboard session: every turn runs under ordinary policy, it leaves its parent and its own subagents count from zero. It takes effect only after accepted work settles; it does not stop work or grant tools beyond ordinary policy.",
         info: {
           type: "Type",
+          origin: "Origin",
+          promotedFrom: "Promoted from {parent} on {date}",
+          promotedOn: "Promoted on {date}",
           permissions: "Permissions",
           status: "Status",
           why: "Why not",

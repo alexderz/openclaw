@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { subagentRunOwnsChildSession } from "../agents/subagents/registry/subagent-registry-child-handoff.js";
 import {
   buildSubagentSessionListReadIndex,
   getSubagentSessionRuntimeMs,
@@ -105,9 +106,11 @@ export function projectGatewaySessionRunState(params: {
   const { key, entry, now, rowContext } = params;
   const subagentRuns = rowContext?.subagentRuns ?? buildSubagentSessionListReadIndex(now);
   const subagentRun = subagentRuns.getDisplaySubagentRun(key);
-  const subagentOwner =
-    normalizeOptionalString(subagentRun?.controllerSessionKey) ||
-    normalizeOptionalString(subagentRun?.requesterSessionKey);
+  // A settled run cannot make an operator-created or promoted root its requester's child.
+  const subagentOwner = subagentRunOwnsChildSession(subagentRun, entry)
+    ? normalizeOptionalString(subagentRun?.controllerSessionKey) ||
+      normalizeOptionalString(subagentRun?.requesterSessionKey)
+    : undefined;
   const liveSubagentRunActive = isSubagentRunLive(subagentRun) || isSubagentRunQueued(subagentRun);
   const hasProjectedRun = (sessionKey: string, sessionId?: string) => {
     if (!rowContext?.projectedAgentRuns) {

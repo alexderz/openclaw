@@ -99,11 +99,14 @@ export function preserveSessionLineage(
     | "spawnDepth"
     | "subagentRole"
     | "subagentControlScope"
+    | "promotedFrom"
   >
 > &
   InheritedSessionToolPolicy {
   return {
     ...preserveSessionInheritedToolPolicy(entry),
+    // History only: a reset keeps showing where a promoted root came from.
+    ...(entry?.promotedFrom ? { promotedFrom: { ...entry.promotedFrom } } : {}),
     spawnedBy: entry?.spawnedBy,
     spawnedBySenderIsOwner: entry?.spawnedBySenderIsOwner,
     spawnedBySessionId: entry?.spawnedBySessionId,

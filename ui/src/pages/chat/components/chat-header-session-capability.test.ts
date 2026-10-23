@@ -215,6 +215,31 @@ it("shows a standard session as type and permissions only, with no promote butto
   expect(bubbleButtons(menu)).toEqual([]);
 });
 
+it("shows a detached promotion as Standard with where and when it was promoted from", async () => {
+  const status = promotionProjection("promoted-detached");
+  const menu = await mountMenu({
+    key: "k",
+    sessionId: "s",
+    capabilityStatus: status,
+    promotedFromLabel: "Parent board",
+  });
+  const date = new Date(status.promotedFrom!.at).toLocaleDateString();
+  expect(facts(menu)).toEqual({
+    Type: ["Standard"],
+    Origin: [`Promoted from Parent board on ${date}`],
+    Permissions: [
+      "Standard: every turn",
+      "Your role, resource policy and sandbox still apply",
+      "Session messaging: checked when used",
+    ],
+    Status: ["Promoted"],
+  });
+  expect(bubbleButtons(menu)).toEqual([]);
+  menu.session = { ...menu.session, promotedFromLabel: undefined };
+  await menu.updateComplete;
+  expect(facts(menu).Origin).toEqual([`Promoted on ${date}`]);
+});
+
 it("offers Promote on a delegated session through the same action as the menu", async () => {
   const onAction = vi.fn();
   const menu = await mountMenu(

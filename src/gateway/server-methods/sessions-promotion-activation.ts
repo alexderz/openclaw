@@ -1,8 +1,16 @@
 import { resolveSessionEntryAccessTarget } from "../../config/sessions/session-accessor.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { decodeSessionPromotion } from "../../sessions/session-promotion-state.js";
+import {
+  canDetachPromotedSessionKey,
+  hasDelegationLineage,
+} from "../../sessions/session-promotion-detach.js";
+import {
+  decodeSessionPromotion,
+  isActivatedSessionPromotionFor,
+} from "../../sessions/session-promotion-state.js";
 import {
   activatePendingSessionPromotion,
+  detachActivatedSessionPromotion,
   revokePendingSessionPromotion,
 } from "../../sessions/session-promotion.js";
 import { roleScopesAllow } from "../../shared/operator-scope-compat.js";
@@ -23,6 +31,7 @@ import {
 } from "../session-promotion-human.js";
 import { createSessionPromotionOwnerCheck } from "../session-promotion-owner-check.js";
 import { clearSessionPromotionPending } from "../session-promotion-pending-keys.js";
+import { releasePromotedSessionFromSpawner } from "../session-promotion-registry-handoff.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { probeSessionEntryObligations } from "./sessions-promotion-entry-obligations.js";
 import { probeSessionPromotionQuiescence } from "./sessions-promotion-quiescence.js";
@@ -33,7 +42,7 @@ type ActivationOptions = Pick<
   "client" | "context" | "signal" | "sessionMutationAuthorization" | "hasCurrentClientAuthority"
 >;
 
-export type SessionPromotionAdmissionOutcome = "unchanged" | "activated" | "revoked";
+export type SessionPromotionAdmissionOutcome = "unchanged" | "activated" | "detached" | "revoked";
 
 type Restored = Awaited<ReturnType<typeof restoreGitHubPublicationRequester>>;
 
@@ -78,6 +87,229 @@ function reportPromotionBlocked(
   );
 }
 
+type FreshHuman = ReturnType<typeof prepareFreshHumanPromotionRequester>;
+type PromotionSessionRef = {
+  sessionKey: string;
+  agentId: string;
+  authorizeOwner: ReturnType<typeof createSessionPromotionOwnerCheck>;
+};
+
+/**
+ * The live write access and current promotion-owner verdict of the human typing right now. Both
+ * activation and the completion of an older activation require it; releases run in reverse.
+ */
+async function prepareFreshHumanAuthority(params: {
+  context: GatewayRequestContext;
+  sessionKey: string;
+  sessionRef: PromotionSessionRef;
+  human: FreshHuman;
+  options: ActivationOptions;
+  releases: Array<() => void>;
+}) {
+  const { context, options: humanOptions, releases } = params;
+  const assertHuman = params.human.assertCurrent;
+  const preparedAccess = await prepareGatewaySessionAccessAuthority({
+    policy: { mode: "write" },
+    requestParams: { sessionKey: params.sessionKey },
+    client: humanOptions.client,
+    context,
+    // Ownership is the promotion rule the requester policies below enforce.
+    ownSessionOnly: false,
+    assertInvocationCurrent: assertHuman,
+    hasCurrentClientAuthority: () => {
+      assertHuman();
+      return true;
+    },
+  });
+  const access = preparedAccess.authority;
+  releases.push(access.release);
+  preparedAccess.assertPreparationCurrent();
+  const fresh = await captureGitHubPublicationRequester(
+    {
+      client: humanOptions.client,
+      context,
+      signal: humanOptions.signal,
+      sessionMutationAuthorization: humanOptions.sessionMutationAuthorization,
+      hasCurrentClientAuthority: () => {
+        assertHuman();
+        return true;
+      },
+    } as Parameters<typeof captureGitHubPublicationRequester>[0],
+    {
+      ...params.sessionRef,
+      // A live admission also needs the live, host-attested Control UI admin flag.
+      authorizeOwner: createSessionPromotionOwnerCheck(context, params.sessionKey, () =>
+        isControlUiAdminClient(humanOptions.client),
+      ),
+    },
+  );
+  releases.push(fresh.release);
+  return { access, fresh };
+}
+
+/**
+ * The session row is already a root; the spawner's settled run rows are marked handed off so
+ * the former parent stops counting, waiting on or cascading into this session's own work. A
+ * failure only delays that bookkeeping: startup repairs it from the detached row.
+ */
+async function releaseSpawnerCustody(sessionKey: string, sessionId: string): Promise<void> {
+  try {
+    await releasePromotedSessionFromSpawner({
+      childSessionKey: sessionKey,
+      childSessionId: sessionId,
+    });
+  } catch (error) {
+    log.warn(
+      `promoted session ${sessionKey} detached; spawner run release deferred: ${error instanceof Error ? error.name : "error"}`,
+    );
+  }
+}
+
+function createPromotionOwnerProbe(params: {
+  context: GatewayRequestContext;
+  target: ReturnType<typeof resolveSessionEntryAccessTarget>;
+  sessionKey: string;
+  sessionId: string;
+  agentId: string;
+}) {
+  const { target } = params;
+  const aliases = [
+    ...new Set([params.sessionKey, target.canonicalKey, target.storeKey, ...target.storeKeys]),
+  ];
+  return (
+    options: Pick<Parameters<typeof probeSessionPromotionQuiescence>[0], "quick" | "watch">,
+  ) =>
+    probeSessionPromotionQuiescence({
+      context: params.context,
+      storePath: target.storePath,
+      sessionKey: target.canonicalKey,
+      sessionKeys: aliases,
+      sessionId: params.sessionId,
+      agentId: params.agentId,
+      lifecycleIdentities: [...aliases, params.sessionId],
+      ...options,
+    });
+}
+
+/**
+ * An activation committed by an earlier build kept the spawn lineage and lifted delegation only
+ * for its requester's direct turns. The same human's next direct turn completes it into a
+ * dashboard root, under the same fresh authority and quiescence rules as an activation.
+ */
+async function completeActivatedPromotionDetach(params: {
+  context: GatewayRequestContext;
+  scope: {
+    cfg: ReturnType<GatewayRequestContext["getRuntimeConfig"]>;
+    agentId: string;
+    sessionKey: string;
+  };
+  target: ReturnType<typeof resolveSessionEntryAccessTarget>;
+  entry: NonNullable<ReturnType<typeof resolveSessionEntryAccessTarget>["entry"]>;
+  agentId: string;
+  sessionKey: string;
+  profileId: string;
+  requestId: string;
+  signal?: AbortSignal;
+  freshHuman: ActivationOptions;
+}): Promise<SessionPromotionAdmissionOutcome> {
+  const { context, target, entry } = params;
+  if (
+    !isActivatedSessionPromotionFor(target.canonicalKey, entry) ||
+    !canDetachPromotedSessionKey(target.canonicalKey) ||
+    !hasDelegationLineage(entry) ||
+    !entry.lifecycleRevision
+  ) {
+    return "unchanged";
+  }
+  let human: FreshHuman;
+  try {
+    human = prepareFreshHumanPromotionRequester(params.freshHuman);
+  } catch (error) {
+    if (error instanceof PromotionRequesterDeniedError) {
+      return "unchanged";
+    }
+    throw error;
+  }
+  if (human.profileId !== params.profileId) {
+    return "unchanged";
+  }
+  const probeOwners = createPromotionOwnerProbe({
+    context,
+    target,
+    sessionKey: params.sessionKey,
+    sessionId: entry.sessionId,
+    agentId: params.agentId,
+  });
+  const rowBlockers = probeSessionEntryObligations(entry);
+  if (rowBlockers.length > 0) {
+    reportPromotionBlocked(target.canonicalKey, params.requestId, "pre-check", rowBlockers);
+    return "unchanged";
+  }
+  const ownerBlockers = (await probeOwners({ quick: true })).blockers;
+  if (ownerBlockers.length > 0) {
+    reportPromotionBlocked(target.canonicalKey, params.requestId, "pre-check", ownerBlockers);
+    return "unchanged";
+  }
+  const releases: Array<() => void> = [];
+  try {
+    const { access, fresh } = await prepareFreshHumanAuthority({
+      context,
+      sessionKey: params.sessionKey,
+      sessionRef: {
+        sessionKey: params.sessionKey,
+        agentId: params.agentId,
+        authorizeOwner: createSessionPromotionOwnerCheck(context, params.sessionKey),
+      },
+      human,
+      options: params.freshHuman,
+      releases,
+    });
+    const assertCurrent = () => {
+      human.assertCurrent();
+      access.assertCurrent();
+      fresh.requester.assertCurrent();
+    };
+    assertCurrent();
+    let recheckOwners: (() => Array<{ code: string }>) | undefined;
+    const result = await detachActivatedSessionPromotion({
+      scope: params.scope,
+      expectedSessionId: entry.sessionId,
+      expectedLifecycleRevision: entry.lifecycleRevision,
+      signal: params.signal,
+      assertCurrent,
+      probeBlockers: async (watch) => {
+        const probe = await probeOwners({ quick: false, watch });
+        recheckOwners = probe.recheck;
+        return probe.blockers.map((blocker) => blocker.code);
+      },
+      recheckBlockers: (lockedEntry) => [
+        ...(recheckOwners?.() ?? [{ code: "inventory-unavailable" }]).map(
+          (blocker) => blocker.code,
+        ),
+        ...probeSessionEntryObligations(lockedEntry).map((blocker) => blocker.code),
+      ],
+    });
+    if (!result.detached) {
+      if (result.blockers.length > 0) {
+        reportPromotionBlocked(
+          target.canonicalKey,
+          params.requestId,
+          "commit",
+          result.blockers.map((code) => ({ code })),
+        );
+      }
+      return "unchanged";
+    }
+    forgetPromotionReport(target.canonicalKey, params.requestId);
+    await releaseSpawnerCustody(target.canonicalKey, entry.sessionId);
+    return "detached";
+  } finally {
+    for (const release of releases.toReversed()) {
+      release();
+    }
+  }
+}
+
 /**
  * Shared activation helper behind BOTH entrypoints. It never invents authority:
  * - fresh human (`human` supplied): the same recorded human must be the live authenticated
@@ -105,6 +337,20 @@ async function consumePendingPromotion(params: {
   const target = resolveSessionEntryAccessTarget(scope, { keyFormat: "agent-qualified" });
   const entry = target.entry;
   const pending = decodeSessionPromotion(entry?.sessionPromotion);
+  if (entry && pending?.state === "activated" && params.freshHuman) {
+    return await completeActivatedPromotionDetach({
+      context,
+      scope,
+      target,
+      entry,
+      agentId: owner.agentId,
+      sessionKey: params.sessionKey,
+      profileId: pending.profileId,
+      requestId: pending.requestId,
+      signal: params.signal,
+      freshHuman: params.freshHuman,
+    });
+  }
   if (
     !entry ||
     pending?.state !== "pending" ||
@@ -130,22 +376,13 @@ async function consumePendingPromotion(params: {
       return "unchanged";
     }
   }
-  const aliases = [
-    ...new Set([params.sessionKey, target.canonicalKey, target.storeKey, ...target.storeKeys]),
-  ];
-  const probeOwners = (
-    options: Pick<Parameters<typeof probeSessionPromotionQuiescence>[0], "quick" | "watch">,
-  ) =>
-    probeSessionPromotionQuiescence({
-      context,
-      storePath: target.storePath,
-      sessionKey: target.canonicalKey,
-      sessionKeys: aliases,
-      sessionId: entry.sessionId,
-      agentId: owner.agentId,
-      lifecycleIdentities: [...aliases, entry.sessionId],
-      ...options,
-    });
+  const probeOwners = createPromotionOwnerProbe({
+    context,
+    target,
+    sessionKey: params.sessionKey,
+    sessionId: entry.sessionId,
+    agentId: owner.agentId,
+  });
   // Advisory and read-only: every chat attempt and owner release lands here. Skip the identity
   // and grant restores below while the session is visibly busy.
   const rowBlockers = probeSessionEntryObligations(entry);
@@ -207,44 +444,14 @@ async function consumePendingPromotion(params: {
       | undefined;
     let fresh: Awaited<ReturnType<typeof captureGitHubPublicationRequester>> | undefined;
     if (human && params.freshHuman) {
-      const humanOptions = params.freshHuman;
-      const assertHuman = human.assertCurrent;
-      const preparedAccess = await prepareGatewaySessionAccessAuthority({
-        policy: { mode: "write" },
-        requestParams: { sessionKey: params.sessionKey },
-        client: humanOptions.client,
+      ({ access, fresh } = await prepareFreshHumanAuthority({
         context,
-        // Ownership is the promotion rule the requester policies below enforce.
-        ownSessionOnly: false,
-        assertInvocationCurrent: assertHuman,
-        hasCurrentClientAuthority: () => {
-          assertHuman();
-          return true;
-        },
-      });
-      access = preparedAccess.authority;
-      releases.push(access.release);
-      preparedAccess.assertPreparationCurrent();
-      fresh = await captureGitHubPublicationRequester(
-        {
-          client: humanOptions.client,
-          context,
-          signal: humanOptions.signal,
-          sessionMutationAuthorization: humanOptions.sessionMutationAuthorization,
-          hasCurrentClientAuthority: () => {
-            assertHuman();
-            return true;
-          },
-        } as Parameters<typeof captureGitHubPublicationRequester>[0],
-        {
-          ...sessionRef,
-          // A live admission also needs the live, host-attested Control UI admin flag.
-          authorizeOwner: createSessionPromotionOwnerCheck(context, params.sessionKey, () =>
-            isControlUiAdminClient(humanOptions.client),
-          ),
-        },
-      );
-      releases.push(fresh.release);
+        sessionKey: params.sessionKey,
+        sessionRef,
+        human,
+        options: params.freshHuman,
+        releases,
+      }));
     }
     let original: Restored | undefined;
     let basis: "original-basis" | "fresh-human-rebound" = "original-basis";
@@ -351,6 +558,9 @@ async function consumePendingPromotion(params: {
     }
     if (result.activated) {
       forgetPromotionReport(target.canonicalKey, pending.requestId);
+    }
+    if (result.detached) {
+      await releaseSpawnerCustody(target.canonicalKey, entry.sessionId);
     }
     return result.activated ? "activated" : "unchanged";
   } finally {

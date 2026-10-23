@@ -108,6 +108,14 @@ export abstract class ChatPaneSessionMenu extends ChatPaneSessionPromotion {
     const label = this.resolveHeaderSessionTitle(row);
     const promotionUi = this.readPromotionOutcome(row);
     const capabilityStatus = row.promotion;
+    const promotedFromKey = capabilityStatus?.promotedFrom?.parentSessionKey;
+    const promotedFromRow = promotedFromKey
+      ? this.state?.sessionsResult?.sessions.find((session) => session.key === promotedFromKey)
+      : undefined;
+    // An unlisted or deleted parent is named by its key, never by a generic "New session".
+    const promotedFromLabel = promotedFromRow
+      ? resolveSessionDisplayName(promotedFromRow.key, promotedFromRow)
+      : promotedFromKey;
     const promotionDisabledReason =
       this.context.gateway.snapshot.phase !== "connected" || !this.context.gateway.snapshot.client
         ? t("sessionsView.actionRequiresConnection")
@@ -119,6 +127,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneSessionPromotion {
         label,
         row.key,
         capabilityStatus,
+        promotedFromLabel,
         promotionDisabledReason,
         promotionUi?.busy,
         promotionUi?.uncertain,
@@ -140,6 +149,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneSessionPromotion {
       () => ({
         key: row.key,
         capabilityStatus,
+        ...(promotedFromLabel ? { promotedFromLabel } : {}),
         promotionDisabledReason,
         promotionBusy: promotionUi?.busy,
         promotionUncertain: promotionUi?.uncertain,

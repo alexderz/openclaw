@@ -308,6 +308,8 @@ type SessionEntryCore = SessionRestartRecoveryState &
     lifecycleRevision?: string;
     /** Core-owned durable human delegation handoff; never a reusable authority. */
     sessionPromotion?: import("../../sessions/session-promotion-state.js").SessionPromotion;
+    /** History of a completed promotion that detached this session from its spawner; never authority. */
+    promotedFrom?: import("../../sessions/session-promotion-detach.js").SessionPromotedFrom;
     /** Current provider precaution; only its acknowledged continuation may start work. */
     providerReview?: import("./provider-review.types.js").SessionProviderReview;
     // archivedAt/pinnedAt mirror the Codex thread-management shape (state DB

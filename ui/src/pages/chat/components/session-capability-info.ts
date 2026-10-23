@@ -64,9 +64,25 @@ export function capabilityPermissionLabels(status: SessionCapabilityStatus | und
     t(
       `${KEY}.permission.${send === "allowed" ? "sessionsSendAllowed" : send === "denied" ? "sessionsSendDenied" : "sessionsSendUnknown"}`,
     ),
-    ...(status.historicalOrigin === "delegated" && status.effectiveClass === "ordinary"
+    ...(status.historicalOrigin === "delegated" &&
+    status.effectiveClass === "ordinary" &&
+    !status.promotedFrom
       ? [t(`${KEY}.permission.originDelegated`)]
       : []),
+  ];
+}
+
+/** Where a promoted root came from and when: history, shown in place of the delegated origin. */
+export function capabilityOriginLabels(session: SessionMenuData): string[] {
+  const from = session.capabilityStatus?.promotedFrom;
+  if (!from) {
+    return [];
+  }
+  const date = new Date(from.at).toLocaleDateString();
+  return [
+    session.promotedFromLabel
+      ? t(`${KEY}.info.promotedFrom`, { parent: session.promotedFromLabel, date })
+      : t(`${KEY}.info.promotedOn`, { date }),
   ];
 }
 
@@ -179,6 +195,7 @@ export function renderSessionCapabilityDetails(props: CapabilityDetailsProps) {
   >
     <dl class="session-capability-details__facts">
       ${row("type", [capabilityTypeLabel(status)])}
+      ${row("origin", capabilityOriginLabels(session))}
       ${row("permissions", capabilityPermissionLabels(status))} ${row("status", states)}
       ${row("why", why)}
     </dl>

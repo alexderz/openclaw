@@ -172,6 +172,9 @@ const subagentSessionListPaths = [
   "generation",
   "createdAt",
   "expectsCompletionMessage",
+  "childHandoff.kind",
+  "childHandoff.at",
+  "childHandoff.childSessionId",
 ];
 
 function projectSessionListJsonMembers(
