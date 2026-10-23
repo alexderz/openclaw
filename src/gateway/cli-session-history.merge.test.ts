@@ -41,4 +41,99 @@ describe("imported Claude history merge", () => {
       }),
     ).toEqual([{ ...localMessage, __openclaw: { ...localMeta, ...importedMeta } }]);
   });
+
+  describe("a run with several native end_turn segments", () => {
+    const start = Date.parse("2026-10-22T10:00:00.000Z");
+    const meta = (externalId: string) => ({
+      importedFrom: "claude-cli",
+      externalId,
+      cliSessionId: "s-1",
+    });
+    const nativeText = (externalId: string, text: string, timestamp: number) => ({
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: "anthropic-messages",
+      provider: "claude-cli",
+      stopReason: "end_turn",
+      timestamp,
+      __openclaw: meta(externalId),
+    });
+    const prompt = { role: "user", content: "Set up the backups", timestamp: start };
+    const first = "I've started setting up the backups.";
+    const second = "Backups are running, and the first run finished.";
+    const notificationAt = start + 46 * 60_000;
+    const importedPrompt = { ...prompt, timestamp: start + 400, __openclaw: meta("u-prompt") };
+    const segmentA = nativeText("a-first", first, start + 60_000);
+    const notification = {
+      role: "user",
+      content:
+        "<task-notification>\n<task-id>t-1</task-id>\n<status>completed</status>\n</task-notification>",
+      provenance: { kind: "internal_system", sourceTool: "claude_cli_task_notification" },
+      timestamp: notificationAt,
+      __openclaw: meta("u-notification"),
+    };
+    const narration = nativeText(
+      "a-narration",
+      "Checking the first run now.",
+      notificationAt + 5_000,
+    );
+    const toolCall = {
+      role: "assistant",
+      content: [{ type: "toolcall", id: "toolu_1", name: "Bash", arguments: { command: "ls" } }],
+      timestamp: notificationAt + 10_000,
+      __openclaw: meta("a-tool"),
+    };
+    const segmentB = nativeText("a-second", second, notificationAt + 30_000);
+    const composite = (text: string) => ({
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: "cli",
+      provider: "claude-cli",
+      idempotencyKey: "cli-assistant:run-1",
+      timestamp: notificationAt + 30_300,
+      __openclaw: { id: "local-final" },
+    });
+
+    it("shows each segment once at its native position", () => {
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, composite(`${first}\n${second}`)],
+        importedMessages: [importedPrompt, segmentA, notification, narration, toolCall, segmentB],
+      });
+
+      expect(merged).toEqual([
+        { ...prompt, __openclaw: meta("u-prompt") },
+        segmentA,
+        notification,
+        narration,
+        toolCall,
+        segmentB,
+      ]);
+    });
+
+    it("keeps a local reply whose text the native segments do not fully cover", () => {
+      const local = composite(`${first}\n${second}\nA closing line only OpenClaw saw.`);
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, local],
+        importedMessages: [importedPrompt, segmentA, notification, segmentB],
+      });
+
+      expect(merged).toContainEqual(local);
+      expect(merged).toHaveLength(5);
+    });
+
+    it("does not claim a segment from an earlier operator turn", () => {
+      const nextPrompt = { role: "user", content: "And now?", timestamp: notificationAt + 20_000 };
+      const merged = mergeImportedChatHistoryMessages({
+        localMessages: [prompt, nextPrompt, composite(`${first}\n${second}`)],
+        importedMessages: [
+          importedPrompt,
+          segmentA,
+          { ...nextPrompt, timestamp: nextPrompt.timestamp + 300, __openclaw: meta("u-next") },
+          segmentB,
+        ],
+      });
+
+      expect(merged).toContainEqual(composite(`${first}\n${second}`));
+    });
+  });
 });
