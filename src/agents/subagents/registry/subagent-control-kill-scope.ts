@@ -142,6 +142,8 @@ export async function withSubagentKillScope<T>(
         continue;
       }
       const ownerCurrent = (candidate: SubagentRunRecord, requirePreparedSession = true) =>
+        !candidate.childHandoff &&
+        !snapshot.childHandoff &&
         isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) &&
         parent?.canTraverse(requirePreparedSession) !== false &&
         ownsRoot?.(candidate) !== false &&

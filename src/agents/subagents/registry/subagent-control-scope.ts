@@ -273,6 +273,10 @@ export function isSubagentRunVisibleToSession(
   agentId: string,
   cfg?: OpenClawConfig,
 ): boolean {
+  if (entry.childHandoff) {
+    // The child was promoted to a standard session; its former parent no longer sees it.
+    return false;
+  }
   const controllerKey = entry.controllerSessionKey?.trim();
   const requesterKey = entry.requesterSessionKey.trim();
   // Completion routing can target a different session than control ownership.
@@ -393,6 +397,11 @@ export function ensureSubagentControllerOwnsRun(params: {
   controller: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
   entry: SubagentRunReadRecord;
 }) {
+  if (params.entry.childHandoff) {
+    // A human promoted the child to a standard session: no former controller steers, waits on,
+    // resumes or cancels it, or reaches the work it started itself.
+    return "This session was promoted to a standard session; its former parent no longer controls it.";
+  }
   const controllerKey = params.entry.controllerSessionKey?.trim();
   const owner = controllerKey || params.entry.requesterSessionKey;
   const ownerStorePath = controllerKey

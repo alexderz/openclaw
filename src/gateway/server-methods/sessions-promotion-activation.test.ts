@@ -139,6 +139,7 @@ beforeEach(() => {
     release: () => mocks.releases.push("original"),
   });
   mocks.probe.mockResolvedValue({ blockers: [], recheck: () => [] });
+  mocks.release.mockResolvedValue({ marked: 0, unsettled: 0 });
   mocks.activate.mockImplementation(async (params) => {
     params.assertCurrent();
     await params.probeBlockers({ add: vi.fn() });
