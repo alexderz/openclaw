@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { serialize } from "node:v8";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { placeChildInChildCgroup } from "../process/child-cgroup-placement.js";
 import { BrokerChild } from "../process/spawn-broker/child.js";
 import type { SpawnBrokerHost } from "../process/spawn-broker/host.js";
 import { recordChildProcessSpawn } from "../process/spawn-diagnostics.js";
@@ -94,6 +95,9 @@ export function createSqliteReadOnlyWorkerSession(
     transport.kind === "broker"
       ? transport.owner.spawn(executable, argv, spawnOptions)
       : spawn(executable, argv, spawnOptions);
+  if (transport.kind === "native") {
+    placeChildInChildCgroup(child);
+  }
   recordChildProcessSpawn(executable, child);
   let retired = false;
   let sequence = 0;

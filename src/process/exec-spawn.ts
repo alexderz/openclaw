@@ -9,6 +9,7 @@ import { markOpenClawExecEnv } from "../infra/openclaw-exec-env.js";
 import { mergeProcessEnv } from "../infra/process-env.js";
 import { getFileLockProcessStartTime, getProcessInstanceStartTime } from "../shared/pid-alive.js";
 import { sleep } from "../utils/sleep.js";
+import { placeChildInChildCgroup } from "./child-cgroup-placement.js";
 import { isChildProcessTreeAlive } from "./child-process-tree.js";
 import type { CommandProcessCustody } from "./command-process-custody.types.js";
 import {
@@ -445,6 +446,9 @@ export function spawnCommandWithInvocation<
           remoteOptions,
         )
       : execa(invocation.command, invocation.args, commandOptions);
+  if (!(broker && remoteOptions)) {
+    placeChildInChildCgroup(child.nodeChildProcess);
+  }
   // nice execs Git in the same child; retain its family and operation attribution.
   const diagnosticCommand =
     argv[0] === "nice" && argv[1] === "-n" && argv[2] === "10" && argv[3] === "git"

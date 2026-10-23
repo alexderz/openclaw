@@ -619,6 +619,25 @@ Verify a child process:
 cat /proc/<child-pid>/oom_score_adj
 ```
 
+### Child cgroup placement under systemd delegation
+
+When the Gateway's systemd unit sets `Delegate=yes` and `DelegateSubgroup=main`,
+systemd starts the Gateway in `<unit>/main/`. The Gateway detects this at
+startup (its `/proc/self/cgroup` leaf is `main` and it can write the unit's
+`cgroup.procs`), creates the sibling `<unit>/children/`, and moves the children
+it starts there right after spawn: spawn brokers (their commands inherit the
+broker's cgroup), native command spawns, SQLite read-only workers, managed
+local model services, memory search workers, and managed Chrome. A sweep every
+15 seconds moves any remaining Gateway descendants out of `main/`, so `main/`
+holds only the Gateway and memory protection on it applies to the Gateway alone.
+
+Without delegation this does nothing. Set `OPENCLAW_CHILD_CGROUP=off` to
+disable it, or `OPENCLAW_CHILD_CGROUP_SUBGROUP` when `DelegateSubgroup=` uses
+another name. Set `OPENCLAW_GATEWAY_MEMORY_LOW` (bytes with optional `K`, `M`,
+or `G`, or `max`) to have the Gateway enable the memory controller below the
+unit and write that value to `main/memory.low`; keep the unit's own `MemoryLow=`
+at least that large, because protection is bounded by every ancestor.
+
 When the write succeeds, the expected value for covered children is `1000`.
 If `/proc` is unavailable or unwritable, the child still runs without the OOM
 bias. The Gateway process itself keeps its normal score (usually `0`).
