@@ -177,3 +177,19 @@ it("stays unavailable when no native main-thread handle was open at capture", as
     { closeNativeBeforePrepare: true },
   );
 });
+
+it("keeps the lease pending while the native handle holds a transaction, then recovers", async () => {
+  await withUnknownPublication(({ generation, scope }) => {
+    const database = openOpenClawAgentDatabase({ agentId: scope.agentId });
+    database.db.exec("BEGIN");
+    try {
+      // The handle cannot certify the committed row yet; that window is transient.
+      expect(generation.assertCurrent).toThrow(
+        expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE", pending: true }),
+      );
+    } finally {
+      database.db.exec("ROLLBACK");
+    }
+    expect(() => generation.assertCurrent()).not.toThrow();
+  });
+});

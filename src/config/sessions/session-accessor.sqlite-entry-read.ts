@@ -429,12 +429,39 @@ export function readSessionEntryGenerationInDatabase(
   return { sessionId, lifecycleRevision, permissionMode, toolOverrides };
 }
 
+/** True while this handle's transaction or unfinished native execution hides committed rows. */
+function isCommittedSessionReadDeferred(database: OpenClawAgentDatabaseReader | undefined) {
+  return (
+    database !== undefined &&
+    (database.db.isTransaction || hasPendingSqliteNativeExecution(database.db))
+  );
+}
+
+/** Committed-only reads on one exact native handle; undefined when it cannot certify. */
+export function createCommittedSessionEntryReader(
+  open: () => OpenClawAgentDatabaseReader | undefined,
+  expected: () => OpenClawAgentDatabaseReader | undefined,
+  sessionKey: string,
+) {
+  return {
+    read: () => {
+      const opened = open();
+      const native = expected();
+      return opened && (!native || opened === native)
+        ? readCommittedSessionEntryInDatabase(opened, sessionKey)
+        : undefined;
+    },
+    /** A deferred handle hides the committed row only transiently. */
+    deferred: () => isCommittedSessionReadDeferred(open()),
+  };
+}
+
 /** Committed row only; undefined while this handle holds a transaction or unfinished native execution. */
 export function readCommittedSessionEntryInDatabase(
   database: OpenClawAgentDatabaseReader,
   sessionKey: string,
 ): SessionEntry | null | undefined {
-  if (database.db.isTransaction || hasPendingSqliteNativeExecution(database.db)) {
+  if (isCommittedSessionReadDeferred(database)) {
     return undefined;
   }
   return runSqliteReadOperationSync(database.db, () => {
