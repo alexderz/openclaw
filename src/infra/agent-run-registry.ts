@@ -1,5 +1,6 @@
 // Owns process-local agent run context, ownership, and projection state.
 import { randomUUID } from "node:crypto";
+import { isSessionDeliveryGenerationPendingError } from "../config/sessions/session-delivery-generation-errors.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { registerListener } from "../shared/listeners.js";
 import { recordAgentEventRouting } from "./agent-event-execution-context.js";
@@ -328,34 +329,6 @@ export function getAgentRunContextOwnership(runId: string): AgentRunContextOwner
   return getAgentRunRegistryState().owners.get(runId);
 }
 
-/** Records the latest next-check proposal on the matching paced cron run. */
-export function recordCronNextCheckProposal(runId: string, jobId: string, delayMs: number): void {
-  const context = getAgentRunContext(runId);
-  const cronRun = context?.cronRunsByJobId?.get(jobId);
-  if (!cronRun) {
-    throw new Error("cron next_check is only available to the currently running job");
-  }
-  if (!cronRun.pacingEnabled) {
-    throw new Error("cron next_check requires pacing on the current job");
-  }
-  cronRun.nextCheckMs = delayMs;
-}
-
-/** Consumes one successful cron run's proposal so it cannot affect a later run. */
-export function consumeCronNextCheckProposal(runId: string, jobId: string): number | undefined {
-  const context = getAgentRunContext(runId);
-  const cronRuns = context?.cronRunsByJobId;
-  const cronRun = cronRuns?.get(jobId);
-  if (!cronRun) {
-    return undefined;
-  }
-  cronRuns?.delete(jobId);
-  if (cronRuns?.size === 0 && context) {
-    delete context.cronRunsByJobId;
-  }
-  return cronRun.nextCheckMs;
-}
-
 /** Claims approval authority for the exact admitted operational execution. */
 export function claimAgentRunDelegatedAuthority(
   operationalRunInstance: Readonly<{ instanceId: string; runId: string }>,
@@ -424,13 +397,14 @@ export function claimAgentRunDelegatedAuthority(
 export function getActiveAgentRunDelegatedAuthority(
   operationalRunInstance: Readonly<{ instanceId: string; runId: string }>,
 ): AgentRunDelegatedAuthority | undefined {
-  return readActiveAgentRunDelegatedAuthority(operationalRunInstance, (context) =>
+  return readActiveAgentRunDelegatedAuthority(operationalRunInstance, false, (context) =>
     context.assertSourceCurrent?.(),
   );
 }
 
 function readActiveAgentRunDelegatedAuthority(
   operationalRunInstance: Readonly<{ instanceId: string; runId: string }>,
+  rethrowPending: boolean,
   assertSource: (context: AgentRunContext) => void,
 ): AgentRunDelegatedAuthority | undefined {
   const context = getAgentRunRegistryState().contexts.get(operationalRunInstance.runId);
@@ -461,6 +435,13 @@ function readActiveAgentRunDelegatedAuthority(
       ? authority
       : undefined;
   } catch (error) {
+    // The source lease is still live and unrevoked; refuse this check and keep the claim.
+    if (isSessionDeliveryGenerationPendingError(error)) {
+      if (rethrowPending) {
+        throw error;
+      }
+      return undefined;
+    }
     if (!delegatedAuthorityFailures.has(authority)) {
       delegatedAuthorityFailures.set(authority, { cause: error });
     }
@@ -479,7 +460,8 @@ export function captureAgentRunDelegatedSourceAssertion(
   const context = getAgentRunContext(instance.runId);
   const source = context?.assertSourceCurrent;
   const assertActive = (assertSource: () => void) => {
-    const active = readActiveAgentRunDelegatedAuthority(instance, (current) => {
+    // A pending source surfaces its retryable failure, not a retired-authority refusal.
+    const active = readActiveAgentRunDelegatedAuthority(instance, true, (current) => {
       if (current !== context || current.assertSourceCurrent !== source) {
         refuse();
       }
@@ -492,7 +474,7 @@ export function captureAgentRunDelegatedSourceAssertion(
       refuse();
     }
   };
-  const active = readActiveAgentRunDelegatedAuthority(instance, () => {});
+  const active = readActiveAgentRunDelegatedAuthority(instance, false, () => {});
   if (!active || !isCurrentAgentRunApprovalAuthority(active, context?.approvalLeases, authority)) {
     return undefined;
   }

@@ -43,9 +43,9 @@ import {
 import { loadSessionEntryReadOnlyResultInScope } from "./session-accessor.sqlite-entry.js";
 import { readCommittedIncognitoSessionSharing } from "./session-accessor.sqlite-incognito-sharing.js";
 import {
-  createSessionDeliveryGenerationFailureReporter,
   isSessionDeliveryGenerationRevokedError,
   isSessionDeliveryGenerationUnavailableError,
+  reportSessionDeliveryGenerationFailure,
   SessionDeliveryGenerationRevokedError,
   SessionDeliveryGenerationUnavailableError,
 } from "./session-delivery-generation-errors.js";
@@ -143,7 +143,8 @@ async function prepareSessionGenerationLease(
     release();
     onRevoked?.(new SessionDeliveryGenerationUnavailableError());
   };
-  const reportFailure = createSessionDeliveryGenerationFailureReporter(onRevoked);
+  const reportFailure = (error: unknown) =>
+    reportSessionDeliveryGenerationFailure(error, onRevoked);
   const assertActive = () => {
     if (revoked) {
       throw new SessionDeliveryGenerationRevokedError();
@@ -154,14 +155,17 @@ async function prepareSessionGenerationLease(
   };
   const checkEntry = (entry: SessionGenerationEntry | null | undefined, committed = true) => {
     if (entry === undefined) {
-      throw new SessionDeliveryGenerationUnavailableError();
+      // Only a still-settling publication can resolve; prepareRead joins it.
+      throw new SessionDeliveryGenerationUnavailableError({
+        pending: retained?.hasPendingGeneration(),
+      });
     }
     if (
       (entry?.sessionId ?? null) !== generation.sessionId ||
       (entry?.lifecycleRevision ?? null) !== generation.lifecycleRevision
     ) {
       if (!committed) {
-        throw new SessionDeliveryGenerationUnavailableError();
+        throw new SessionDeliveryGenerationUnavailableError({ pending: true });
       }
       revoked = true;
       throw new SessionDeliveryGenerationRevokedError();
@@ -476,7 +480,7 @@ async function prepareSessionGenerationLease(
               }
               // Native callbacks and unfinished cursors cannot certify a committed write set.
               if (hasPendingSqliteNativeExecution(native.db)) {
-                throw new SessionDeliveryGenerationUnavailableError();
+                throw new SessionDeliveryGenerationUnavailableError({ pending: true });
               }
               const revision = readSqliteNativeMutationRevision(native.db);
               if (revision === undefined) {
@@ -498,7 +502,7 @@ async function prepareSessionGenerationLease(
                   !isDeepStrictEqual(observed?.toolOverrides, current?.toolOverrides) ||
                   readSqliteNativeMutationRevision(native.db) !== revision
                 ) {
-                  throw new SessionDeliveryGenerationUnavailableError();
+                  throw new SessionDeliveryGenerationUnavailableError({ pending: !committed });
                 }
                 assertActive();
                 nativeRevision = revision;

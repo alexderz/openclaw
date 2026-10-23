@@ -106,24 +106,22 @@ it("still revokes when the committed row behind an unknown publication is a new 
   });
 });
 
-it("treats a present row that cannot be decoded as unavailable, not as a revocation", async () => {
+it("treats an undecodable committed row as unavailable, not as a revocation", async () => {
   await withUnknownPublication(({ generation, scope }) => {
     const database = openOpenClawAgentDatabase({ agentId: scope.agentId });
     const select = database.db.prepare(
-      "SELECT entry_json, entry_valid FROM session_nodes WHERE session_key = ?",
+      "SELECT entry_json FROM session_nodes WHERE session_key = ?",
     );
-    const committed = select.get(scope.sessionKey) as { entry_json: string; entry_valid: number };
+    const { entry_json: committed } = select.get(scope.sessionKey) as { entry_json: string };
     const write = database.db.prepare(
-      "UPDATE session_nodes SET entry_json = ?, entry_valid = ? WHERE session_key = ?",
+      "UPDATE session_nodes SET entry_json = ? WHERE session_key = ?",
     );
-    // A retained-window placeholder row decodes to no entry without throwing; its
-    // presence is not proof that the session is gone.
-    write.run("{}", -1, scope.sessionKey);
+    write.run('{"undecodable":', scope.sessionKey);
     expect(generation.assertCurrent).toThrow(
       expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE" }),
     );
     // The lease was not revoked: the decodable original row still re-validates it.
-    write.run(committed.entry_json, committed.entry_valid, scope.sessionKey);
+    write.run(committed, scope.sessionKey);
     expect(() => generation.assertCurrent()).not.toThrow();
   });
 });

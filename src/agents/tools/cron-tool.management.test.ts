@@ -4,10 +4,10 @@ import {
   getCronManagementAuthority,
   withCronManagementGrant,
 } from "../../gateway/cron-creator-authority-grant.js";
+import { consumeCronNextCheckProposal } from "../../infra/agent-run-cron-next-check.js";
 import {
   claimAgentRunContext,
   clearAgentRunContext,
-  consumeCronNextCheckProposal,
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";

@@ -12,11 +12,8 @@ import {
   getAgentEventLifecycleGeneration,
   withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
-import {
-  claimAgentRunContext,
-  consumeCronNextCheckProposal,
-  releaseAgentRunContext,
-} from "../../infra/agent-run-registry.js";
+import { consumeCronNextCheckProposal } from "../../infra/agent-run-cron-next-check.js";
+import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import {
   createDiagnosticTraceContextFromActiveScope,
