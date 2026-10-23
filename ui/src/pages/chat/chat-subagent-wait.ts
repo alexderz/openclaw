@@ -152,7 +152,8 @@ export function projectSubagentStatus(
     activity,
     listed,
     // Key only the working line's facts so unrelated roster patches stay memoized.
-    statusKey: JSON.stringify([
+    // The activity rows render above the composer, not in the transcript.
+    statusKey: JSON.stringify(
       wait
         ? [
             wait.startedAt,
@@ -163,15 +164,7 @@ export function projectSubagentStatus(
             listed,
           ]
         : [running, listed],
-      activity.map(({ session: row, ...display }) => [
-        display,
-        row.sessionId,
-        row.lifecycleRevision,
-        row.agentId,
-        row.activeRunIds,
-        row.observerDigest,
-      ]),
-    ]),
+    ),
     rowsKey: spawnedSubagentsRenderKey(input.subagentSessions),
   };
 }

@@ -110,7 +110,8 @@ describe("chat waiting on subagents", () => {
       queued,
       delegated,
     ]);
-    expect(updated.statusKey).not.toBe(initial.statusKey);
+    // Headlines show above the composer; they do not re-key the transcript's working line.
+    expect(updated.statusKey).toBe(initial.statusKey);
     expect(updated.rowsKey).toBe(initial.rowsKey);
     expect(updated.activity[0]?.activity).toBe("Running the backend tests");
     expect(

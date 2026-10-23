@@ -370,6 +370,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
         ${renderChatGoalRecovery(props.goalRecovery, props.connected)} ${goalCard}
         ${props.composerRecovery ?? nothing}
       </div>
+      ${props.subagentPill ?? nothing}
       ${
         showComposerInput
           ? html`<div

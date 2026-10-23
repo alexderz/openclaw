@@ -1,0 +1,142 @@
+/* Between the composer's scrolling context stack and its input, so it moves
+   with the composer and the keyboard and never follows the message list. */
+.chat-subagent-pill {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* A plugin composer centers its context stack itself; the pill follows it. */
+.chat-footer > openclaw-plugin-view > openclaw-chat-subagent-pill > .chat-subagent-pill {
+  width: calc(100% - var(--chat-composer-side-inset));
+  max-width: var(--chat-thread-max-width);
+  margin-inline: auto;
+}
+
+/* The hit area is 44px tall; the visible chip stays compact inside it. */
+.chat-subagent-pill__toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-subagent-pill__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  font-size: var(--control-ui-text-sm);
+  font-weight: 500;
+}
+
+.chat-subagent-pill__toggle:is(:hover, :focus-visible) .chat-subagent-pill__chip {
+  background: var(--bg-hover);
+}
+
+.chat-subagent-pill__toggle:focus-visible {
+  outline: none;
+}
+
+.chat-subagent-pill__toggle:focus-visible .chat-subagent-pill__chip {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.chat-subagent-pill__icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  color: var(--accent);
+}
+
+.chat-subagent-pill__icon > svg,
+.chat-subagent-pill__icon > openclaw-theme-brand-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-subagent-pill__label {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-subagent-pill__chevron {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.chat-subagent-pill__chevron > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-subagent-pill[data-open="true"] .chat-subagent-pill__chevron {
+  transform: rotate(180deg);
+}
+
+/* Bounded so an open list leaves the input in view above a phone keyboard. */
+.chat-subagent-pill__sheet {
+  display: grid;
+  gap: 2px;
+  box-sizing: border-box;
+  width: 100%;
+  max-height: min(30dvh, 18rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.chat-subagent-pill__sheet .chat-subagent-activity {
+  margin-top: 0;
+}
+
+.chat-subagent-pill__sheet .chat-subagent-activity__row,
+.chat-subagent-pill__all {
+  min-height: 44px;
+  padding-inline: 6px;
+}
+
+.chat-subagent-pill__all {
+  justify-self: start;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--control-ui-text-sm);
+  cursor: pointer;
+}
+
+.chat-subagent-pill__all:is(:hover, :focus-visible) {
+  background: var(--bg-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-subagent-pill__chevron {
+    transition: none;
+  }
+}

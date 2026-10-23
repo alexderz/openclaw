@@ -1,4 +1,4 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { html, nothing } from "lit";
 import type {
   ThemeMascot,
   ThemeWorkingIndicator,
@@ -33,7 +33,6 @@ export function renderChatWorkingIndicator(
     waitingSubagents?: ChatSubagentWait;
     /** Unfinished subagents to mention while the session itself is still working. */
     runningSubagents?: number;
-    subagentActivity?: TemplateResult;
     /** Shows one subagent; without it a waited-on subagent's name is plain text. */
     onOpenSubagent?: (key: string) => void;
     /** Shows the session's subagents; without it their count is plain text. */
@@ -197,7 +196,6 @@ export function renderChatWorkingIndicator(
         }
       </span>
     </div>
-    ${options.subagentActivity ?? nothing}
   `;
 }
 

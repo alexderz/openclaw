@@ -152,6 +152,8 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   composerControls?: TemplateResult | typeof nothing;
   footerContent?: TemplateResult | typeof nothing;
   composerRecovery?: TemplateResult | typeof nothing;
+  /** Directly above the input, outside the scrolling context stack. */
+  subagentPill?: TemplateResult | typeof nothing;
   notices?: TemplateResult | typeof nothing;
   permissionPicker?: ChatPermissionPickerProps;
   onDraftChange: (next: string, mentions?: readonly HumanMention[]) => void;

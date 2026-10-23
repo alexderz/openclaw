@@ -46,6 +46,7 @@ import {
 import { chatStartupStatusLabel, type ChatRunStartupStatus } from "./chat-run-startup.ts";
 import { forwardChatWheelToTranscript } from "./chat-scroll-input.ts";
 import type { ChatState } from "./chat-state-contract.ts";
+import { projectSubagentStatus } from "./chat-subagent-wait.ts";
 import {
   type ChatPlacementStartupNoticeProps,
   renderChatComposerNotices,
@@ -72,6 +73,7 @@ import { renderChatSelectionAnnotations } from "./components/chat-selection-anno
 import { createChatSelectionAttachment } from "./components/chat-selection-attachment.ts";
 import { showChatAnnotationEditor } from "./components/chat-selection-popup.ts";
 import { renderChatSessionSuggestions } from "./components/chat-session-suggestions.ts";
+import "./components/chat-subagent-pill.ts";
 import { renderChatSwarmProgress } from "./components/chat-swarm-progress.ts";
 import {
   renderChatTaskSuggestionTray,
@@ -108,7 +110,10 @@ export type ChatProps = Omit<
   | "onOpenSession"
   | "onSend"
 > &
-  Omit<ChatComposerProps, "notices" | "footerContent" | "disabled" | "onOpenImage"> &
+  Omit<
+    ChatComposerProps,
+    "notices" | "footerContent" | "subagentPill" | "disabled" | "onOpenImage"
+  > &
   ChatTaskSuggestionTrayProps &
   ChatPlacementStartupNoticeProps & {
     onCompanionStageAttachment?: (attachment: ChatAttachment, sourceSessionKey: string) => boolean;
@@ -376,6 +381,9 @@ export function renderChat(props: ChatProps) {
     .agentId=${props.currentAgentId}
     .presented=${livePresentation(props.presented ?? true)}
   ></openclaw-plugin-contributions>`;
+  // Running subagents live above the composer, so their place never depends on
+  // how the message list loaded. Transcript search does not hide them.
+  const subagents = projectSubagentStatus(props, false);
   const footerContent = html`${
     pendingInputs &&
     (pendingInputs.error ||
@@ -431,6 +439,13 @@ export function renderChat(props: ChatProps) {
       props.onResolveSessionSuggestion?.(suggestion, resolution),
   })}
   ${props.swarm ? renderChatSwarmProgress(props.swarm) : nothing} ${renderContributions("composer")}`;
+  const subagentPill = html`<openclaw-chat-subagent-pill
+    .rows=${subagents.activity}
+    .sessionKey=${props.sessionKey}
+    .onOpenSubagent=${props.onOpenSubagent}
+    .onOpenSession=${props.onSessionSelect}
+    .onOpenSubagents=${subagents.listed ? props.onOpenSubagents : undefined}
+  ></openclaw-chat-subagent-pill>`;
   // The composer keeps the outbox queue; only the transcript includes the
   // placement initial turn, whose retry action belongs to startup.
   const notices = renderChatComposerNotices(props);
@@ -453,6 +468,7 @@ export function renderChat(props: ChatProps) {
     displayQueue,
     footerContent,
     notices,
+    subagentPill,
     onRequestUpdate: requestUpdate,
     onToggleRealtimeTalk: props.suggestionComposer ? undefined : props.onToggleRealtimeTalk,
     onOpenImage: openImmediateImage,
@@ -473,26 +489,27 @@ export function renderChat(props: ChatProps) {
     defaultComposer,
     props.presented ?? true,
     html`<div class="chat-footer__context">
-      ${footerContent}
-      <div class="agent-chat__composer-notices">${notices}</div>
-      ${renderComposerQuestionDock(
-        resolveComposerQuestionPanel(
-          { ...props, asyncQuestions },
-          getChatComposerState(props.paneId),
-          requestUpdate,
-        ),
-      )}
-      ${renderChatComposerQueue(
-        composerProps,
-        Boolean(props.canAbort && props.onAbort) && !hasTerminalRunStatus(props.runStatus),
-      )}
-      ${
-        props.suggestionComposer
-          ? nothing
-          : renderChatSelectionAnnotations({ ...props, disabled: !canCompose })
-      }
-      ${props.composerRecovery ?? nothing}
-    </div>`,
+        ${footerContent}
+        <div class="agent-chat__composer-notices">${notices}</div>
+        ${renderComposerQuestionDock(
+          resolveComposerQuestionPanel(
+            { ...props, asyncQuestions },
+            getChatComposerState(props.paneId),
+            requestUpdate,
+          ),
+        )}
+        ${renderChatComposerQueue(
+          composerProps,
+          Boolean(props.canAbort && props.onAbort) && !hasTerminalRunStatus(props.runStatus),
+        )}
+        ${
+          props.suggestionComposer
+            ? nothing
+            : renderChatSelectionAnnotations({ ...props, disabled: !canCompose })
+        }
+        ${props.composerRecovery ?? nothing}
+      </div>
+      ${subagentPill}`,
   );
   const taskSuggestionTray = renderChatTaskSuggestionTray(props);
   const gutterStack =

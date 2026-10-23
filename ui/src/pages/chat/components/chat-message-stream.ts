@@ -1,5 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { html, nothing, type TemplateResult } from "lit";
+import { html, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import type { ThemeBranding } from "../../../../../packages/gateway-protocol/src/theme.ts";
 import type { QuestionPrompt } from "../../../app/question-prompt.ts";
@@ -76,7 +76,6 @@ export type StreamGroupOptions = StreamMessageOptions & {
   waitingApproval?: boolean;
   waitingSubagents?: ChatSubagentWait;
   runningSubagents?: number;
-  subagentActivity?: TemplateResult;
   onOpenSubagent?: (key: string) => void;
   onOpenSubagents?: () => void;
   runOutputTokens?: number | null;
@@ -127,7 +126,6 @@ export function renderStreamGroupPart(
       waitingApproval: opts.waitingApproval === true,
       waitingSubagents: part.waitingOn === "subagents" ? opts.waitingSubagents : undefined,
       runningSubagents: opts.runningSubagents,
-      subagentActivity: opts.subagentActivity,
       onOpenSubagent: opts.onOpenSubagent,
       onOpenSubagents: opts.onOpenSubagents,
       startupLabel: opts.startupLabel,

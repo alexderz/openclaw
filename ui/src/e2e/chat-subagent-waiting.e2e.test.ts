@@ -145,8 +145,16 @@ suite.define(() => {
           .getByText("1 subagent running", { exact: true })
           .waitFor();
         expect(await indicator.textContent()).not.toContain("Waiting on");
-        // Its launch row reads as the subagent: its name, not its assignment, and its state.
-        const activityRow = activePane.locator(`[data-subagent-session-key="${child.key}"]`);
+        // Running subagents are a count above the composer, never rows in the transcript.
+        const pill = activePane.locator(".chat-footer openclaw-chat-subagent-pill");
+        const pillToggle = pill.locator(".chat-subagent-pill__toggle");
+        await pillToggle.getByText("1 agent", { exact: true }).waitFor();
+        expect(await activePane.locator(".chat-thread [data-subagent-session-key]").count()).toBe(
+          0,
+        );
+        // Its row in the opened list reads as the subagent: its name, not its assignment.
+        await pillToggle.click();
+        const activityRow = pill.locator(`[data-subagent-session-key="${child.key}"]`);
         await activityRow.getByText("Backend implementation", { exact: true }).waitFor();
         const childHistoryReads = () =>
           gateway.getRequests("chat.history", { sessionKey: child.key });
@@ -163,6 +171,8 @@ suite.define(() => {
         });
         await activityRow.getByText("Verifying the API response", { exact: true }).waitFor();
         expect(await childHistoryReads()).toHaveLength(0);
+        await pillToggle.click();
+        await activityRow.waitFor({ state: "detached" });
         const launchRow = activePane.locator(".chat-tool-row--subagent");
         const launchName = launchRow.locator(".chat-tool-row__subagent-link");
         const launchState = launchRow.locator(".chat-tool-row__subagent-state");
@@ -340,6 +350,11 @@ suite.define(() => {
         await captureWaiting("light", 1280);
         await captureWaiting("dark", 1280);
         await captureWaiting("dark", 390);
+        // On a phone the pill is a full tap target and sits clear of the composer.
+        const pillBox = await pillToggle.boundingBox();
+        const inputBox = await activePane.locator(".agent-chat__input").boundingBox();
+        expect(pillBox?.height).toBeGreaterThanOrEqual(44);
+        expect((pillBox?.y ?? 0) + (pillBox?.height ?? 0)).toBeLessThanOrEqual(inputBox?.y ?? 0);
         expect(
           await indicator.evaluate((element) => element.scrollWidth <= element.clientWidth),
         ).toBe(true);
@@ -349,7 +364,9 @@ suite.define(() => {
           ".chat-pane-cache__pane--active .chat-pane__session-title-text",
         );
         const detailTitle = panel.locator(".chat-subagent-detail__title");
+        await pillToggle.click();
         await activityRow.getByRole("button").click();
+        await activityRow.waitFor({ state: "detached" });
         await expect.poll(() => detailTitle.textContent()).toBe("Backend implementation");
         expect(await selectedTitle.textContent()).toBe("Build the implementation");
         await childLink.waitFor();
