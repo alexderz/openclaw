@@ -190,20 +190,40 @@ describe("createChildCgroupPlacement", () => {
       write.mockImplementationOnce(() => {
         throw Object.assign(new Error(code), { code });
       });
+    let pid = 4242;
     for (let round = 0; round < 3; round += 1) {
       for (let i = 0; i < 4; i += 1) {
         fail("EBUSY");
-        placement.place(4242);
+        placement.place((pid += 1));
       }
       placement.place(4343);
     }
     for (let i = 0; i < 10; i += 1) {
       fail("ESRCH");
-      placement.place(4242);
+      placement.place((pid += 1));
     }
     write.mockRestore();
     expect(placement.active).toBe(true);
     expect(fs.readFileSync(target, "utf8")).toBe("4343");
+  });
+
+  it("skips one unmovable descendant instead of letting sweeps disable placement", () => {
+    makeDelegatedUnit();
+    writeProcStat(10, GATEWAY_PID);
+    fs.writeFileSync(path.join(unitDir, "main", "cgroup.procs"), `${GATEWAY_PID}\n10\n`);
+    const placement = createChildCgroupPlacement(options());
+    const write = vi.spyOn(fs, "writeFileSync").mockImplementationOnce(() => {
+      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    });
+    for (let round = 0; round < 10; round += 1) {
+      placement.sweep();
+    }
+    // The pid failed once and was never retried, so later children still move.
+    expect(write).toHaveBeenCalledTimes(1);
+    write.mockRestore();
+    expect(placement.active).toBe(true);
+    expect(placement.place(4242)).toBe(true);
+    expect(childrenProcs()).toBe("4242");
   });
 
   it("sweeps only the Gateway's descendants out of main/", () => {
