@@ -22,6 +22,11 @@ function createChatComposerState(): ChatComposerState {
     composingDraft: null,
     composerInputIntentKey: null,
     pendingClearedSubmittedDraft: null,
+    compositionText: "",
+    compositionEndedAt: Number.NEGATIVE_INFINITY,
+    compositionSend: null,
+    flushCompositionSend: null,
+    submissionEcho: null,
     goalExpandedId: null,
     goalComposer: null,
     activeQuestionKey: null,
@@ -164,7 +169,93 @@ export function suppressStaleSubmittedDraftReplay(
   return true;
 }
 
+// Voice IMEs (Gboard dictation) commit their final words about a second and a
+// half after the user stops; bound the wait so a stuck composition cannot hold
+// the send forever.
+export const COMPOSITION_SEND_TIMEOUT_MS = 3000;
+// An IME that loses its composition to the post-send clear re-commits the
+// utterance shortly after; past this window new text is the user's own.
+export const SUBMISSION_ECHO_WINDOW_MS = 5000;
+// Only a send made while (or just after) the IME composed can be replayed.
+const RECENT_COMPOSITION_MS = 1500;
+
+// Dictation composes whole phrases; a keyboard composes one word at a time.
+export function isMultiWordComposition(text: string): boolean {
+  return /\S\s+\S/u.test(text);
+}
+
+export function cancelCompositionSend(state: ChatComposerState): void {
+  if (state.compositionSend) {
+    clearTimeout(state.compositionSend.timer);
+    state.compositionSend = null;
+  }
+}
+
+export function recordSubmissionEcho(
+  state: ChatComposerState,
+  key: string,
+  value: string,
+  composing: boolean,
+): void {
+  const trimmed = value.trim();
+  const at = performance.now();
+  state.submissionEcho =
+    trimmed && (composing || at - state.compositionEndedAt < RECENT_COMPOSITION_MS)
+      ? { key, value: trimmed, at, replay: null }
+      : null;
+}
+
+/**
+ * Classifies the first edit after a send. An IME replay inserts the whole
+ * submitted text into the cleared composer in one input event; typing cannot.
+ * Returns true while the edit is (part of) a replay.
+ */
+export function observeSubmissionEcho(
+  state: ChatComposerState,
+  key: string,
+  value: string,
+  currentDraft: string,
+): boolean {
+  const echo = state.submissionEcho;
+  if (!echo || echo.key !== key || performance.now() - echo.at > SUBMISSION_ECHO_WINDOW_MS) {
+    state.submissionEcho = null;
+    return false;
+  }
+  if (echo.replay === null) {
+    echo.replay = currentDraft.trim() === "" && value.trimStart().startsWith(echo.value);
+    if (!echo.replay) {
+      state.submissionEcho = null;
+    }
+  }
+  return echo.replay;
+}
+
+/**
+ * Drops the replayed, already-sent prefix once the IME has committed, keeping
+ * only words the first send missed. Returns true when the textarea changed.
+ */
+export function stripSubmissionEcho(
+  state: ChatComposerState,
+  key: string,
+  target: HTMLTextAreaElement,
+): boolean {
+  const echo = state.submissionEcho;
+  // The clear itself can end the open composition before any replay arrives.
+  if (!echo?.replay || echo.key !== key) {
+    return false;
+  }
+  state.submissionEcho = null;
+  const value = target.value.trimStart();
+  if (!value.startsWith(echo.value)) {
+    return false;
+  }
+  target.value = value.slice(echo.value.length).trimStart();
+  adjustTextareaHeight(target);
+  return true;
+}
+
 function disposeChatComposerState(state: ChatComposerState) {
+  cancelCompositionSend(state);
   state.emojiMenu.close();
   state.mentionMenu.dispose();
   state.composerDraftScopeKey = null;
