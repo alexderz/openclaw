@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatItemGroups } from "../chat-agent-run-grouping.ts";
 import { resetWorkingProgress } from "../chat-progress.ts";
 import { buildChatItems, type BuildChatItemsProps } from "../chat-thread-build.ts";
-import { buildCachedChatItems, resetChatThreadState, setExpansionState } from "../chat-thread.ts";
+import {
+  buildCachedChatItems,
+  persistedMessageEntryId,
+  resetChatThreadState,
+  setExpansionState,
+} from "../chat-thread.ts";
 import { rememberLiveTerminalRun } from "../terminal-message-identity.ts";
 import { projectTranscriptChain, projectTranscriptIndex } from "./chat-transcript-message-index.ts";
 
@@ -909,5 +914,37 @@ describe("subagent handoff", () => {
       chainOptions,
     );
     expect(framesOf(chain).map((frame) => frame.runId)).toEqual(["run-1", "run-2"]);
+  });
+});
+
+describe("reply targets", () => {
+  it("point at the first row that holds a repeated entry", () => {
+    const answer = {
+      role: "assistant",
+      content: "Answer",
+      timestamp: 30,
+      __openclaw: { id: "answer", seq: 3, runId: "run-2" },
+    };
+    const followUp = {
+      role: "user",
+      content: "Follow-up",
+      timestamp: 25,
+      __openclaw: { id: "follow-up", seq: 2, runId: "run-2" },
+    };
+    const chain = projectTranscriptChain(
+      chatItems({ messages: [history[0], followUp, answer, structuredClone(followUp), answer] }),
+      chainOptions,
+    );
+    const index = projectTranscriptIndex(chain, new Map(), labels);
+    const holds = (id: string) =>
+      index.rows
+        .filter((row) =>
+          chatItemGroups(row.item).some((group) =>
+            group.messages.some((source) => persistedMessageEntryId(source.message) === id),
+          ),
+        )
+        .map((row) => row.key);
+    expect(holds("follow-up")).toHaveLength(2);
+    expect(index.messageRowKeysById.get("follow-up")).toBe(holds("follow-up")[0]);
   });
 });

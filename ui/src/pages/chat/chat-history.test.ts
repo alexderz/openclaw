@@ -1,5 +1,8 @@
 // @vitest-environment node
-import { reduceSessionProjection } from "@openclaw/gateway-client/browser";
+import {
+  readSessionMessageIdentity,
+  reduceSessionProjection,
+} from "@openclaw/gateway-client/browser";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { missingScopeErrorShape } from "../../../../packages/gateway-protocol/src/schema/error-codes.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -490,6 +493,60 @@ describe("full tail refresh after the leaf advances", () => {
     });
     await loadChatHistory(state);
     expect(state.chatMessages).toEqual(branch);
+  });
+
+  it("never repeats a row when pagination ordinals run ahead of row sequences", async () => {
+    // CLI-backed history pages by merged-index ordinal: two imported rows before
+    // local seq 1 put every local row two ordinals ahead of its own seq.
+    const ids = () => state.chatMessages.map((entry) => readSessionMessageIdentity(entry)?.id);
+    const state = createState({ messages: [] });
+    state.currentSessionId = "session";
+    state.chatDisplayedLeafEntryId = "m10";
+    state.chatHistoryPagination = { hasMore: false, totalMessages: 12 };
+    state.chatMessages = Array.from({ length: 10 }, (_, index) => row(index + 1));
+    const request = vi.spyOn(state.client!, "request");
+    for (const last of [12, 13, 14]) {
+      // A background run finishes: its rows arrive live, then the run's cursor
+      // reset forces a full read of the newest six rows.
+      for (let seq = last - (last === 12 ? 1 : 0); seq <= last; seq += 1) {
+        publishLive(state, row(seq));
+      }
+      const window = Array.from({ length: 6 }, (_, index) => row(last - 5 + index));
+      const totalMessages = last + 2;
+      request.mockResolvedValue({
+        messages: window,
+        hasMore: true,
+        nextOffset: totalMessages - (last - 5 + 2) + 1,
+        totalMessages,
+        sessionInfo: {
+          key: "main",
+          kind: "direct",
+          updatedAt: last,
+          sessionId: "session",
+          activeLeafEntryId: `m${last}`,
+        },
+      });
+      await loadChatHistory(state);
+      expect(ids()).toEqual(Array.from({ length: last }, (_, index) => `m${index + 1}`));
+    }
+  });
+
+  it("collapses copies an earlier merge already retained", async () => {
+    const { state, tail } = readerWithOlderPages();
+    state.chatMessages = [
+      row(1),
+      row(2),
+      row(2),
+      row(3),
+      row(3),
+      row(3),
+      ...state.chatMessages.slice(3),
+    ];
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([
+      ...Array.from({ length: 8 }, (_, index) => row(index + 1)),
+      ...tail,
+    ]);
   });
 });
 

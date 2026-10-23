@@ -13,6 +13,7 @@ import type {
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { GatewaySessionRow, GatewaySessionsDefaults } from "../../api/types.ts";
 import type { ChatMetadataResult } from "../../lib/chat/chat-metadata-cache.ts";
+import { nativeHistoryMessageIdentity } from "../../lib/chat/history-message-identity.ts";
 import {
   isUiSelectedGlobalSessionKey,
   resolveUiSelectedSessionAgentId,
@@ -189,9 +190,41 @@ export function reconcileHistoryTail(options: {
   ) {
     return null;
   }
+  // Pagination offsets and row sequences can live in different number spaces:
+  // CLI-backed history pages by merged-index ordinal while rows keep their
+  // local transcript seq. Cut at the new window's oldest native row too, so a
+  // row the window already holds is never retained a second time.
+  let cut = nextStart;
+  const nextIds = new Set<string>();
+  for (const message of options.nextMessages) {
+    const identity = readSessionMessageIdentity(message);
+    if (identity?.id) {
+      nextIds.add(identity.id);
+    }
+    if (identity && identity.sequence !== null && !identity.isImported) {
+      cut = Math.min(cut, identity.sequence);
+    }
+  }
+  // The new window is authoritative for every entry it holds; identical copies
+  // already retained (from an earlier merge) collapse to their first occurrence.
+  const seen = new Set<string>();
   const prefix = options.previousMessages.filter((message) => {
     const seq = readSessionMessageSequence(message);
-    return seq !== null && seq < nextStart;
+    if (seq === null || seq >= cut) {
+      return false;
+    }
+    const id = readSessionMessageIdentity(message)?.id;
+    if (id && nextIds.has(id)) {
+      return false;
+    }
+    const identity = nativeHistoryMessageIdentity(message);
+    if (identity) {
+      if (seen.has(identity)) {
+        return false;
+      }
+      seen.add(identity);
+    }
+    return true;
   });
   if (prefix.length === 0) {
     return null;
