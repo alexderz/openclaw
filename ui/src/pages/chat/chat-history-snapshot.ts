@@ -1,4 +1,7 @@
-import { readSessionMessageSequence } from "@openclaw/gateway-client/browser";
+import {
+  readSessionMessageIdentity,
+  readSessionMessageSequence,
+} from "@openclaw/gateway-client/browser";
 import { asSafeIntegerInRange } from "@openclaw/normalization-core/number-coercion";
 import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
 import type {
@@ -123,6 +126,37 @@ function retainedRawHistoryStart(pagination: ChatHistoryPagination): number | nu
   const retainedDepth = pagination.hasMore ? pagination.nextOffset : totalMessages;
   const start = totalMessages - retainedDepth + 1;
   return asSafeIntegerInRange(start, { min: 1 }) ?? null;
+}
+
+/**
+ * Prove that a refreshed tail extends the displayed branch: its oldest native
+ * row is the very row the previous transcript held at that position. A path to
+ * one entry is unique, so every earlier retained row is shared ancestry.
+ */
+export function historyTailContinuesLineage(
+  previousMessages: readonly unknown[],
+  nextMessages: readonly unknown[],
+): boolean {
+  let oldest: { sequence: number; id: string } | null = null;
+  for (const message of nextMessages) {
+    const identity = readSessionMessageIdentity(message);
+    if (
+      identity?.id &&
+      identity.sequence !== null &&
+      !identity.isImported &&
+      (!oldest || identity.sequence < oldest.sequence)
+    ) {
+      oldest = { sequence: identity.sequence, id: identity.id };
+    }
+  }
+  if (!oldest) {
+    return false;
+  }
+  const anchor = oldest;
+  return previousMessages.some((message) => {
+    const identity = readSessionMessageIdentity(message);
+    return identity?.sequence === anchor.sequence && identity.id === anchor.id;
+  });
 }
 
 export function reconcileHistoryTail(options: {

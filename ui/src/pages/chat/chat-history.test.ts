@@ -434,6 +434,65 @@ it.each([
   },
 );
 
+describe("full tail refresh after the leaf advances", () => {
+  const row = (seq: number, id = `m${seq}`) =>
+    message(seq % 2 ? "user" : "assistant", `message ${seq}`, { id, seq });
+  // The reader paged back to seq 1 of 10; the refreshed newest window is seq 9..12.
+  function readerWithOlderPages() {
+    const tail = [row(9), row(10), row(11), row(12)];
+    const state = createState({
+      messages: tail,
+      hasMore: true,
+      nextOffset: 4,
+      totalMessages: 12,
+      sessionInfo: {
+        key: "main",
+        kind: "direct",
+        updatedAt: 2,
+        sessionId: "session",
+        activeLeafEntryId: "m12",
+      },
+    });
+    state.currentSessionId = "session";
+    state.chatDisplayedLeafEntryId = "m10";
+    state.chatHistoryPagination = { hasMore: false, totalMessages: 10 };
+    state.chatMessages = Array.from({ length: 10 }, (_, index) => row(index + 1));
+    return { state, tail };
+  }
+
+  it("keeps paged-in older history when the new tail continues the same lineage", async () => {
+    // An exec completion appends a turn, then a cursor reset forces a full tail read.
+    const { state, tail } = readerWithOlderPages();
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([
+      ...Array.from({ length: 8 }, (_, index) => row(index + 1)),
+      ...tail,
+    ]);
+    expect(state.chatHistoryPagination).toEqual({ hasMore: false, totalMessages: 12 });
+    expect(state.chatDisplayedLeafEntryId).toBe("m12");
+  });
+
+  it("still drops older history when the tail belongs to another branch", async () => {
+    const { state } = readerWithOlderPages();
+    const branch = [row(9, "b9"), row(10, "b10"), row(11, "b11"), row(12, "b12")];
+    vi.spyOn(state.client!, "request").mockResolvedValue({
+      messages: branch,
+      hasMore: true,
+      nextOffset: 4,
+      totalMessages: 12,
+      sessionInfo: {
+        key: "main",
+        kind: "direct",
+        updatedAt: 2,
+        sessionId: "session",
+        activeLeafEntryId: "b12",
+      },
+    });
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual(branch);
+  });
+});
+
 it("clears live projection ownership after history access is denied", async () => {
   const state = createState({ messages: [] });
   const scopeError = missingScopeErrorShape({

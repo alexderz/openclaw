@@ -17,6 +17,7 @@ import {
   isHistoryCursor,
   resolveChatHistoryPagination,
   historySessionId,
+  historyTailContinuesLineage,
   reconcileHistoryTail,
   commitCurrentChatHistorySnapshot,
   clearHistoryCursor,
@@ -272,11 +273,17 @@ export async function hydrateChatHistory(
     const nextDisplayedLeafEntryId = Object.hasOwn(res.sessionInfo ?? {}, "activeLeafEntryId")
       ? res.sessionInfo?.activeLeafEntryId?.trim() || null
       : (previousDisplayedLeafEntryId ?? null);
+    // Every append advances the leaf, and live appends never record it. A full
+    // tail read after a cursor reset therefore normally sees a newer leaf on the
+    // same branch; dropping paged-in rows there collapses the reader's viewport.
     const retainsTranscriptIdentity =
       res.windowReset !== true &&
       (!previousSessionId || !nextSessionId || previousSessionId === nextSessionId) &&
       (previousDisplayedLeafEntryId === undefined ||
-        previousDisplayedLeafEntryId === nextDisplayedLeafEntryId);
+        previousDisplayedLeafEntryId === nextDisplayedLeafEntryId ||
+        (previousDisplayedLeafEntryId !== null &&
+          nextDisplayedLeafEntryId !== null &&
+          historyTailContinuesLineage(previousTerminalMessages, visibleMessages)));
     const reconciledHistory = reconcileHistoryTail({
       nextMessages: visibleMessages,
       nextPagination,
