@@ -37,7 +37,7 @@ import type {
   SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import {
-  readCommittedSessionEntryInDatabase,
+  createCommittedSessionEntryReader,
   readSessionEntryGenerationInDatabase,
 } from "./session-accessor.sqlite-entry-read.js";
 import { loadSessionEntryReadOnlyResultInScope } from "./session-accessor.sqlite-entry.js";
@@ -153,11 +153,11 @@ async function prepareSessionGenerationLease(
       throw new SessionDeliveryGenerationUnavailableError();
     }
   };
+  let committedReader: ReturnType<typeof createCommittedSessionEntryReader> | undefined;
   const checkEntry = (entry: SessionGenerationEntry | null | undefined, committed = true) => {
     if (entry === undefined) {
-      // Only a still-settling publication can resolve; prepareRead joins it.
       throw new SessionDeliveryGenerationUnavailableError({
-        pending: retained?.hasPendingGeneration(),
+        pending: !committed || retained?.hasPendingGeneration() || committedReader?.deferred(),
       });
     }
     if (
@@ -391,8 +391,6 @@ async function prepareSessionGenerationLease(
       }
       let source: { path: string; identity: string } | undefined;
       let assertNativeCurrent: (entry: SessionGenerationEntry | null) => void = () => {};
-      let readNativeCommitted: () => ReturnType<typeof readCommittedSessionEntryInDatabase> = () =>
-        undefined;
       while (!retained) {
         assertActive();
         const before = publications;
@@ -514,13 +512,11 @@ async function prepareSessionGenerationLease(
                 throw error;
               }
             };
-            // Committed-only read on the exact native handle; undefined when it cannot certify.
-            readNativeCommitted = () => {
-              const opened = getOpenClawAgentDatabaseIfOpen(nativeOptions);
-              return opened && (!native || opened === native)
-                ? readCommittedSessionEntryInDatabase(opened, generation.sessionKey)
-                : undefined;
-            };
+            committedReader = createCommittedSessionEntryReader(
+              () => getOpenClawAgentDatabaseIfOpen(nativeOptions),
+              () => native,
+              generation.sessionKey,
+            );
             return prepared;
           },
         );
@@ -533,11 +529,10 @@ async function prepareSessionGenerationLease(
           throw new SessionDeliveryGenerationUnavailableError();
         }
       };
-      // DER-594: an unknown worker settlement (for example an end-of-turn SessionManager
-      // commit whose metadata receipt was superseded) leaves the retained generation
-      // undefined forever. Re-validate it against the committed row: the same
-      // sessionId/lifecycleRevision re-seeds the lease, any other committed row revokes.
-      const recoverUnknown = () => retained?.recoverUnknown(readNativeCommitted, checkEntry);
+      // DER-594: an unknown worker settlement leaves the generation undefined; the same
+      // committed sessionId/lifecycleRevision re-seeds the lease, any other row revokes.
+      const recoverUnknown = () =>
+        retained?.recoverUnknown(() => committedReader?.read(), checkEntry);
       readCurrent = () => {
         assertSourceCurrent();
         recoverUnknown();
@@ -551,7 +546,6 @@ async function prepareSessionGenerationLease(
         if (pending) {
           return pending.then(assertSourceCurrent);
         }
-        // Without a certifying native handle an unknown generation stays unavailable.
         // A committed revocation found here reaches its owner like an assertCurrent failure.
         try {
           recoverUnknown();
@@ -635,7 +629,7 @@ async function prepareSessionGenerationLease(
         const current = assertCurrent();
         // Identity-preserving writes may bypass generation readiness, but a pending
         // policy publication cannot donate stale permissions to retained work.
-        const entry = retained ? checkEntry(retained.readSessionSettings()) : current;
+        const entry = retained ? checkEntry(retained.readSessionSettings(), false) : current;
         return {
           permissionMode: entry?.permissionMode,
           toolOverrides: entry?.toolOverrides,
