@@ -11,12 +11,18 @@ export class SessionDeliveryGenerationRevokedError extends Error {
 
 export class SessionDeliveryGenerationUnavailableError extends Error {
   readonly code = "SESSION_DELIVERY_GENERATION_UNAVAILABLE";
-  constructor(options?: ErrorOptions) {
+  /**
+   * True only while a live, unrevoked lease waits on another writer's publication or
+   * native transaction: the same lease can become current again without being re-prepared.
+   */
+  readonly pending: boolean;
+  constructor(options?: ErrorOptions & { pending?: boolean }) {
     super(
       "Session delivery generation is unavailable; retry after session storage is ready.",
       options,
     );
     this.name = "SessionDeliveryGenerationUnavailableError";
+    this.pending = options?.pending === true;
   }
 }
 
@@ -24,6 +30,8 @@ export const isSessionDeliveryGenerationRevokedError = (error: unknown) =>
   isRecord(error) && error.code === "SESSION_DELIVERY_GENERATION_REVOKED";
 export const isSessionDeliveryGenerationUnavailableError = (error: unknown) =>
   isRecord(error) && error.code === "SESSION_DELIVERY_GENERATION_UNAVAILABLE";
+export const isSessionDeliveryGenerationPendingError = (error: unknown) =>
+  isSessionDeliveryGenerationUnavailableError(error) && isRecord(error) && error.pending === true;
 
 /** Typed lease failures pass through; anything else is an unavailable read with its cause. */
 export function normalizeSessionDeliveryGenerationFailure(error: unknown) {
@@ -33,13 +41,14 @@ export function normalizeSessionDeliveryGenerationFailure(error: unknown) {
     : new SessionDeliveryGenerationUnavailableError({ cause: error });
 }
 
-/** Normalize a lease failure and notify the execution owner before it is thrown or rejected. */
-export function createSessionDeliveryGenerationFailureReporter(
-  onRevoked?: (reason: unknown) => void,
+/** Normalizes a lease failure; a pending window refuses one check without revoking its owner. */
+export function reportSessionDeliveryGenerationFailure(
+  error: unknown,
+  onRevoked: ((reason: unknown) => void) | undefined,
 ) {
-  return (error: unknown) => {
-    const failure = normalizeSessionDeliveryGenerationFailure(error);
+  const failure = normalizeSessionDeliveryGenerationFailure(error);
+  if (!isSessionDeliveryGenerationPendingError(failure)) {
     onRevoked?.(failure);
-    return failure;
-  };
+  }
+  return failure;
 }

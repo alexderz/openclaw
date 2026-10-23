@@ -9,6 +9,7 @@ import {
   type ExecutionIdentityAdmissionToken,
 } from "../audit/execution-identity-admission.js";
 import { executionIdentitySpawnAdmission } from "../audit/execution-identity-spawn-admission.js";
+import { isSessionDeliveryGenerationPendingError } from "../config/sessions/session-delivery-generation-errors.js";
 import {
   composeSessionSourceAssertion,
   prepareSessionSourceScope,
@@ -582,9 +583,12 @@ export function prepareAgentRunAdmission(params: {
       try {
         assertSources();
       } catch (error) {
-        sourceFailure = new Error("source execution authority is no longer active", {
-          cause: error,
-        });
+        // A pending storage window is not a source revocation; later checks re-read it.
+        if (!isSessionDeliveryGenerationPendingError(error)) {
+          sourceFailure = new Error("source execution authority is no longer active", {
+            cause: error,
+          });
+        }
         throw error;
       }
     });

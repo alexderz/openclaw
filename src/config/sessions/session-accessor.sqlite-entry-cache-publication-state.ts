@@ -525,6 +525,7 @@ export function retainPreparedSessionGenerationFacts(params: {
       return true;
     },
     readCurrent: retained.readGeneration,
+    hasPendingGeneration: retained.hasPendingGeneration,
     readSessionSettings: retained.readGenerationSettings,
     prepareRead: retained.prepareRead,
     release: retained.release,
