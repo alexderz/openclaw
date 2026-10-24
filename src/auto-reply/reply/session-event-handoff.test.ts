@@ -576,7 +576,7 @@ describe("session event target custody", () => {
   );
 
   it.each(["awaited", "ignored"] as const)(
-    "reports a queued event's policy failure once with an %s receipt",
+    "re-admits a queued event refused by a policy publication and reports its failure once with an %s receipt",
     async (receiptUse) => {
       await withTargetFixture(async ({ env }) => {
         const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
@@ -596,15 +596,21 @@ describe("session event target custody", () => {
             status: "failed",
             executionStarted: false,
             delivered: false,
-            error: expect.stringContaining("configuration changed"),
+            error: expect.stringContaining("Unexpected reply dispatch"),
           });
         }
-        // Join the independent owner without requiring a producer to consume its receipt.
-        await Promise.allSettled(
-          continuation.mock.results.flatMap((result) =>
-            result.type === "return" ? [result.value] : [],
-          ),
-        );
+        // Join the independent owners (the stale attempt starts its re-admission) without
+        // requiring a producer to consume its receipt.
+        let joined: number;
+        do {
+          joined = continuation.mock.results.length;
+          await Promise.allSettled(
+            continuation.mock.results.flatMap((result) =>
+              result.type === "return" ? [result.value] : [],
+            ),
+          );
+        } while (joined !== continuation.mock.results.length);
+        expect(continuation).toHaveBeenCalledTimes(2);
         expect(receipt.cancel()).toBe(false);
         resetSystemEventsForTest();
         expect(eventLogError).toHaveBeenCalledExactlyOnceWith("session event execution failed", {
@@ -612,9 +618,15 @@ describe("session event target custody", () => {
           agentId: "main",
           sessionKey,
           eventId: receipt.id,
-          error: expect.stringContaining("configuration changed"),
+          error: expect.stringContaining("Unexpected reply dispatch"),
         });
-        expect(dispatch).not.toHaveBeenCalled();
+        // The stale attempt never dispatched; one re-admission dispatched under the new policy.
+        expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            cfg: expect.objectContaining({ tools: { deny: ["write", "message"] } }),
+            ctx: expect.objectContaining({ MessageSid: `${receipt.id}:readmission-1` }),
+          }),
+        );
         expect(peekSystemEventEntries(sessionKey)).toEqual([]);
       });
     },
