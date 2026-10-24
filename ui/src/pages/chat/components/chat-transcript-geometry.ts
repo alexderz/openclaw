@@ -1,4 +1,4 @@
-import { measureElement, type Virtualizer } from "@tanstack/virtual-core";
+import { measureElement, type VirtualItem, type Virtualizer } from "@tanstack/virtual-core";
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import { captureChatSessionScrollPosition, type ChatSessionScrollPosition } from "../scroll.ts";
 import type { TranscriptViewportMeasurement } from "./chat-transcript-scroll-events.ts";
@@ -174,6 +174,27 @@ export function measureTranscriptRow(
     virtualizer.itemSizeCache.get(virtualizer.options.getItemKey(index)) ??
     virtualizer.options.estimateSize(index)
   );
+}
+
+/**
+ * Whether a row's height change shifts the scroll offset by the same amount.
+ * First measurements of rows above the viewport always compensate. While the
+ * reader holds a position, a re-measured row compensates when it sits wholly
+ * above the viewport, also while they scroll up: virtual-core's default skips
+ * that case, so a late image, embed or collapsing card above moved the text
+ * being read. A following transcript keeps the default.
+ */
+export function shouldCompensateTranscriptRowResize(
+  item: VirtualItem,
+  virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
+  following: boolean,
+): boolean {
+  const offset = (virtualizer.scrollOffset ?? 0) + virtualizer.scrollAdjustments;
+  if (!virtualizer.itemSizeCache.has(item.key)) {
+    return item.start < offset;
+  }
+  const size = virtualizer.itemSizeCache.get(item.key) ?? item.size;
+  return item.start + size <= offset && (!following || virtualizer.scrollDirection !== "backward");
 }
 
 export function maxTranscriptScrollOffset(element: HTMLElement | null): number | null {

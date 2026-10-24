@@ -38,6 +38,7 @@ import {
   projectSessionsYieldItems,
 } from "./chat-sessions-yield.ts";
 import { projectChatSystemNotice } from "./chat-system-notice.ts";
+import { holdChatDisplayOrder, type ChatDisplayOrderState } from "./chat-thread-display-order.ts";
 import { groupMessages } from "./chat-thread-grouping.ts";
 import {
   placeChatInputs,
@@ -121,6 +122,8 @@ function canvasAssistantItemKey(
 export function buildChatItems(
   props: BuildChatItemsProps,
   inputOrder: ChatInputOrderState = { keys: [] },
+  /** The view's on-screen order; omitted, the projection follows source order. */
+  displayOrder?: ChatDisplayOrderState,
 ): Array<ChatItem | MessageGroup> {
   let items: ChatItem[] = [];
   const tools = props.toolMessages.filter(
@@ -602,6 +605,22 @@ export function buildChatItems(
       waitingOn: "subagents",
       runId: props.subagentWait.runId,
     });
+  }
+  if (displayOrder) {
+    // The live edge (generated reply, working indicator, inputs queued behind
+    // the run) trails everything; every other row holds its on-screen place.
+    const floating = new Set<string>();
+    for (const item of items.toReversed()) {
+      const live =
+        item.kind === "reading-indicator" ||
+        (item.kind === "stream" && item.isStreaming) ||
+        (pendingKeys.has(item.key) && item.key !== activeInputKey);
+      if (!live) {
+        break;
+      }
+      floating.add(item.key);
+    }
+    items = holdChatDisplayOrder(items, displayOrder, floating);
   }
   // Place output against the complete transcript before search hides any rows.
   // Pending/local inputs contribute people and turn boundaries just like history;

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expectDefined } from "@openclaw/normalization-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { markInboundContextLabel } from "../../../../src/auto-reply/reply/inbound-context-marker.js";
 import { createRequireRecord } from "../../../../test/helpers/record.js";
 import type { MessageGroup } from "../../lib/chat/chat-types.ts";
@@ -189,6 +189,11 @@ function messageAt(group: MessageGroup, index: number) {
 function messageRecord(group: MessageGroup, index = 0): Record<string, unknown> {
   return requireRecord(group.messages[index]?.message);
 }
+
+// Each case is its own transcript; the cache holds one view's on-screen order.
+afterEach(() => {
+  resetChatThreadState();
+});
 
 describe("assistant commentary grouping", () => {
   it("keeps later target-run tool output after an accepted steer", () => {

@@ -16,6 +16,11 @@ import {
 } from "./chat-message-recovery.ts";
 import { resetWorkingProgress } from "./chat-progress.ts";
 import { buildChatItems, type BuildChatItemsProps } from "./chat-thread-build.ts";
+import {
+  createChatDisplayOrderState,
+  resetChatDisplayOrder,
+  type ChatDisplayOrderState,
+} from "./chat-thread-display-order.ts";
 import type { ChatInputOrderState } from "./chat-thread-inputs.ts";
 import { readChatThreadMessageIdentity, sanitizeStreamText } from "./chat-thread-items.ts";
 import { getOrCreateSessionCacheValue, setSessionCacheValue } from "./session-cache.ts";
@@ -33,6 +38,8 @@ type CachedChatItems = {
   generation: number;
   input: BuildChatItemsProps | null;
   items: ReturnType<typeof buildChatItems>;
+  /** Rows already on screen hold their order until an explicit Reload (DER-615). */
+  displayOrder: ChatDisplayOrderState;
   liveStream: {
     index: number;
     identity: string;
@@ -375,6 +382,7 @@ export function buildCachedChatItems(
     for (const cached of [projections.visible, projections.unfiltered]) {
       if (cached) {
         cached.input = null;
+        resetChatDisplayOrder(cached.displayOrder);
       }
     }
   }
@@ -382,6 +390,7 @@ export function buildCachedChatItems(
     generation: 0,
     input: null,
     items: [],
+    displayOrder: createChatDisplayOrderState(),
     liveStream: null,
   });
   // Keep stream-only updates off the loaded-history path; structural changes
@@ -395,7 +404,10 @@ export function buildCachedChatItems(
       return cached.items;
     }
   }
-  const items = stabilizeChatItems(cached.items, buildChatItems(input, projections.inputOrder));
+  const items = stabilizeChatItems(
+    cached.items,
+    buildChatItems(input, projections.inputOrder, cached.displayOrder),
+  );
   // A rebuild can retain every row and the array. Consumers still need to
   // observe the structural pass; text-only slot replacements do not advance it.
   chatItemsGenerations.set(items, ++cached.generation);
