@@ -270,6 +270,9 @@ export function resolveQueuedSendsAwaitingTurn(
     } else if (!item.serverQueued && shouldRenderQueuedSendInThread(item)) {
       // Includes inline delivery states, so a retried bubble stays where it is.
       placed.add(item.id);
+    } else {
+      // A row back in plain queued state is no longer shown; its turn rule applies again.
+      placed.delete(item.id);
     }
   }
   if (placed.size > 0) {

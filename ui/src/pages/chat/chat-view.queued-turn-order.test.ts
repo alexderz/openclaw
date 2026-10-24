@@ -228,6 +228,30 @@ describe("follow-ups queued during a run (DER-621)", () => {
     expect(trayTexts(container)).toEqual([]);
   });
 
+  it("applies the turn rule again once a shown row is back in plain queued state", () => {
+    const container = document.createElement("div");
+    const unconfirmed: ChatQueueItem = {
+      ...sent("message-2", "Message 2", 10),
+      sendState: "unconfirmed",
+    };
+    const render = (item: ChatQueueItem) =>
+      renderChatInto(container, {
+        messages: history,
+        runId: activeRun,
+        runActive: true,
+        queue: [item],
+      });
+    render(unconfirmed);
+    expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2"]);
+    // Custody confirmation parks it as plain queued input, back in the tray.
+    render({ ...unconfirmed, sendState: "waiting-idle", sendError: undefined });
+    expect(trayTexts(container)).toEqual(["Message 2"]);
+    // Sent again during another run, it waits for its own turn.
+    render({ ...unconfirmed, sendState: "sending", sendRunId: "run-message-2-retry" });
+    expect(transcriptUserTexts(container)).toEqual(["Message 1"]);
+    expect(trayTexts(container)).toEqual(["Message 2"]);
+  });
+
   it("lets only the next turn enter the transcript between runs", () => {
     const container = renderChatView({
       messages: history,
