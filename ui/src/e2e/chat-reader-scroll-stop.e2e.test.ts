@@ -231,9 +231,20 @@ suite.define(() => {
           await grow();
         }
         await page.waitForTimeout(2_000);
-        const { release, jumps } = jumpsAgainstReader(await stopRecorder(page));
+        // Growth that lands under the moving finger can still shift the text
+        // mid-drag, on the base too (DER-622 follow-up); this guards release.
+        const { release, rest, jumps, marks } = jumpsAgainstReader(await stopRecorder(page), {
+          fromRelease: true,
+        });
         expect(grown).toBe(true);
         expect(release).toBeGreaterThan(0);
+        expect(rest, "scrolling never came to rest").toBeGreaterThanOrEqual(release);
+        if (variant.grow === "fling") {
+          // The growth must land inside the momentum to test the fling's end.
+          const [grewAt] = marks("grow");
+          expect(grewAt).toBeGreaterThan(release);
+          expect(grewAt).toBeLessThan(rest);
+        }
         expect(jumps).toEqual([]);
       } finally {
         await suite.closeBrowserContext(context);

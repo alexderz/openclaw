@@ -4,7 +4,7 @@ import type { CDPSession, Page } from "playwright";
 // gesture, to prove nothing but the finger (or its fling) moves the text.
 
 type Frame = { scrollTop: number; bubbles: [string, number][]; events?: string };
-type Recorder = { frames: Frame[]; stopped: boolean };
+type Recorder = { frames: Frame[]; stopped: boolean; mark: (name: string) => void };
 type RecorderWindow = Window & { chatReaderScrollRecorder?: Recorder };
 
 export const thread = (page: Page) => page.locator(".chat-pane-cache__pane--visible .chat-thread");
@@ -17,17 +17,14 @@ const sleep = (ms: number) =>
 /** Record every frame: scroll offset, gesture events, and where each bubble sits. */
 export async function startRecorder(page: Page) {
   await thread(page).evaluate((element) => {
-    const recorder: Recorder = { frames: [], stopped: false };
-    (window as RecorderWindow).chatReaderScrollRecorder = recorder;
     let events: string | undefined;
+    const mark = (name: string) => {
+      events = events ? `${events},${name}` : name;
+    };
+    const recorder: Recorder = { frames: [], stopped: false, mark };
+    (window as RecorderWindow).chatReaderScrollRecorder = recorder;
     for (const type of ["touchstart", "touchend", "scrollend"]) {
-      element.addEventListener(
-        type,
-        () => {
-          events = events ? `${events},${type}` : type;
-        },
-        { passive: true },
-      );
+      element.addEventListener(type, () => mark(type), { passive: true });
     }
     // Read each frame as painted: after its layout and resize-observer
     // compensation, not in requestAnimationFrame before them.
@@ -65,18 +62,27 @@ export async function stopRecorder(page: Page): Promise<Frame[]> {
 /**
  * Frames where the text moved against a drag toward the latest messages
  * (back toward older ones), during the gesture or after it; moved at all
- * once scrolling settled; or was replaced so its movement cannot be read.
+ * once scrolling came to rest; or was replaced so its movement cannot be
+ * read. Movement with the drag before rest (extra momentum) is allowed.
+ * `rest` is the first frame after release from which the offset held still
+ * for several frames, or -1 when scrolling never came to rest. With
+ * `fromRelease`, frames before the finger lifts are not checked.
  */
-export function jumpsAgainstReader(frames: Frame[]) {
+export function jumpsAgainstReader(frames: Frame[], { fromRelease = false } = {}) {
   const release = frames.findIndex((frame) => frame.events?.includes("touchend"));
-  let settle = release;
-  for (let index = Math.max(release, 0); index < frames.length; index++) {
-    if (frames[index]!.events?.includes("scrollend")) {
-      settle = index;
+  const STILL_FRAMES = 6;
+  let rest = -1;
+  for (let index = Math.max(release, 1); index + STILL_FRAMES < frames.length; index++) {
+    const still = frames
+      .slice(index, index + STILL_FRAMES + 1)
+      .every((frame) => frame.scrollTop === frames[index]!.scrollTop);
+    if (still) {
+      rest = index;
+      break;
     }
   }
   const jumps: string[] = [];
-  for (let index = 1; index < frames.length; index++) {
+  for (let index = fromRelease ? Math.max(release, 1) : 1; index < frames.length; index++) {
     const previous = new Map(frames[index - 1]!.bubbles);
     const shared = frames[index]!.bubbles.filter(([id]) => previous.has(id));
     const [id, y] = shared.toSorted((a, b) => Math.abs(a[1]) - Math.abs(b[1]))[0] ?? [];
@@ -85,13 +91,15 @@ export function jumpsAgainstReader(frames: Frame[]) {
       continue;
     }
     const shift = y - previous.get(id)!;
-    if (shift > 1 || (release >= 0 && index > settle && Math.abs(shift) > 1)) {
+    if (shift > 1 || (rest >= 0 && index > rest && Math.abs(shift) > 1)) {
       jumps.push(
         `frame ${index}: ${id} moved ${Math.round(shift)}px, scrollTop ${Math.round(frames[index - 1]!.scrollTop)} -> ${Math.round(frames[index]!.scrollTop)}`,
       );
     }
   }
-  return { release, jumps };
+  const marks = (name: string) =>
+    frames.flatMap((frame, index) => (frame.events?.split(",").includes(name) ? [index] : []));
+  return { release, rest, jumps, marks };
 }
 
 /**
@@ -143,6 +151,7 @@ export async function growPassedBubble(page: Page): Promise<boolean> {
       );
     if (passed) {
       passed.style.paddingBottom = "260px";
+      (window as RecorderWindow).chatReaderScrollRecorder?.mark("grow");
     }
     return passed !== undefined;
   });

@@ -260,9 +260,14 @@ suite.define(() => {
         },
       });
       await browserPage.waitForTimeout(1_500);
-      const { release, jumps } = jumpsAgainstReader(await stopRecorder(browserPage));
+      // A re-read that commits under the moving finger can still shift the text
+      // mid-drag (DER-622 follow-up); this guards that release adds no jump.
+      const { release, rest, jumps } = jumpsAgainstReader(await stopRecorder(browserPage), {
+        fromRelease: true,
+      });
       expect(grown).toBe(true);
       expect(release).toBeGreaterThan(0);
+      expect(rest, "scrolling never came to rest").toBeGreaterThanOrEqual(release);
       expect(jumps).toEqual([]);
     } finally {
       await suite.closeBrowserContext(context);

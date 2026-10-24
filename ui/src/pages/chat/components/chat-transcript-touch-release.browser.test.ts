@@ -161,11 +161,15 @@ async function fling(thread: HTMLElement, distance: number, step = 30) {
   for (let moved = 0; moved < distance; moved += step) {
     const id = readerBubble(thread);
     const before = bubbleTop(thread, id)!;
+    const offset = thread.scrollTop;
     thread.scrollTop += step;
+    const written = thread.scrollTop;
     await settleFrames(1);
     const after = bubbleTop(thread, id);
-    if (after !== null && Math.abs(after - (before - step)) > 1) {
-      jumps.push(`${id}: ${before} -> ${after}`);
+    if (after === null || Math.abs(after - (before - step)) > 1) {
+      jumps.push(
+        `${id}: ${before} -> ${after}, scrollTop ${offset} -> ${written} -> ${thread.scrollTop}`,
+      );
     }
   }
   return jumps;
@@ -187,5 +191,38 @@ it("moves the transcript only with the fling after the finger lifts", async () =
   thread.dispatchEvent(new Event("scrollend"));
   await settleFrames(12);
   expect(jumps).toEqual([]);
+  expect(bubbleTop(thread, reading)).toBe(before);
+});
+
+/**
+ * Chromium ends every scripted scroll with its own scrollend, which would end
+ * the simulated momentum at once. Hold those back until the fling stops.
+ */
+function holdNativeScrollEnd(thread: HTMLElement) {
+  const swallow = (event: Event) => event.stopImmediatePropagation();
+  thread.addEventListener("scrollend", swallow, { capture: true });
+  return () => {
+    thread.removeEventListener("scrollend", swallow, { capture: true });
+    thread.dispatchEvent(new Event("scrollend"));
+  };
+}
+
+it("leaves the reader's line where it is when a row passed during the fling grows before it stops", async () => {
+  const { host, thread } = await mountReader();
+  const stopFling = holdNativeScrollEnd(thread);
+  touch(thread, "touchstart");
+  streamRow(host, "live-1");
+  await settleFrames(2);
+  await dragDown(thread, 300);
+  touch(thread, "touchend");
+  // Momentum carries the reader past whole rows after the finger lifted.
+  expect(await fling(thread, 600)).toEqual([]);
+  growPassedRow(host, thread);
+  await settleFrames(2);
+  expect(await fling(thread, 60)).toEqual([]);
+  const reading = readerBubble(thread);
+  const before = bubbleTop(thread, reading)!;
+  stopFling();
+  await settleFrames(12);
   expect(bubbleTop(thread, reading)).toBe(before);
 });
