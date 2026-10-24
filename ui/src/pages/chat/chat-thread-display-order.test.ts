@@ -458,7 +458,12 @@ describe("holdChatDisplayOrder with stored rows (DER-623)", () => {
 
   it("loads an older page above a notice that opens the view", () => {
     const state = createChatDisplayOrderState();
-    const notice: ChatItem = { kind: "notice", key: "notice", text: "delivery blocked", timestamp: 0 };
+    const notice: ChatItem = {
+      kind: "notice",
+      key: "notice",
+      text: "delivery blocked",
+      timestamp: 0,
+    };
     const after = storedRow("after", "assistant", "after", 10);
     holdChatDisplayOrder([notice, after], state);
     const older = [storedRow("q", "user", "q", 1), storedRow("a", "assistant", "a", 2)];
