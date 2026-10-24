@@ -23,11 +23,9 @@ import {
   initialTranscriptRect,
   measureConnectedTranscriptRows,
   measureTranscriptRow,
-  captureTranscriptReaderMark,
-  compensateTranscriptRowResize,
   reconcileInitialTranscriptOffset,
+  TranscriptReaderLine,
   transcriptRowsChangedInView,
-  type TranscriptReaderMark,
   resolveTranscriptScrollMargin,
   PositionRailGutterController,
 } from "./chat-transcript-geometry.ts";
@@ -173,8 +171,12 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     this.viewportRect.recordMeasuredWidth(rect.width);
     this.measureConnectedRows();
   };
-  // The element on the reader's top line, recorded on every offset change.
-  private readerMark: TranscriptReaderMark | null = null;
+  private readonly readerLine = new TranscriptReaderLine(
+    this,
+    () => this.virtualizer,
+    () => this.canAutoFollow(),
+    () => this.offsetState.touchActive,
+  );
   private rowKeys: readonly string[] = [];
   // Committed row payloads: one changing under a reader is a projection change.
   private rowItems: readonly unknown[] = [];
@@ -233,10 +235,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
             onLayoutCorrection: this.recordEndLayoutCorrection,
             requestUpdate: () => this.host.requestUpdate(),
             onOffset: () => {
-              this.readerMark = captureTranscriptReaderMark(
-                this.scrollElement,
-                this.canAutoFollow(),
-              );
+              this.readerLine.record();
               return this.endAnchor.recordViewport(this.scrollElement);
             },
             onComposerLayout: (changed) => this.commitComposerResize(changed),
@@ -259,10 +258,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     });
     // A row wholly above the viewport that changes height moves the reader
     // unless compensated, whichever way they scroll (DER-615).
-    this.virtualizer.shouldAdjustScrollPositionOnItemSizeChange = compensateTranscriptRowResize(
-      () => this.readerMark,
-      () => this.canAutoFollow(),
-    );
+    this.virtualizer.shouldAdjustScrollPositionOnItemSizeChange = this.readerLine.shouldAdjust;
     // Virtual-core exposes these lifecycle hooks as bound arrow functions.
     const { _didMount: mountVirtualizer, _willUpdate: updateVirtualizer } = this.virtualizer;
     this.updateVirtualizer = updateVirtualizer;

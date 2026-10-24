@@ -249,6 +249,30 @@ describe("holdChatDisplayOrder", () => {
     ).toEqual(["a", "c", "x"]);
   });
 
+  it("never gives a removed row's slot to equal text from another run", () => {
+    const state = createChatDisplayOrderState();
+    holdChatDisplayOrder(
+      [
+        row("a", "user", "a"),
+        row("done-a", "assistant", "Done", undefined, "run-a"),
+        row("c", "user", "c"),
+      ],
+      state,
+    );
+    expect(
+      keys(
+        holdChatDisplayOrder(
+          [
+            row("a", "user", "a"),
+            row("c", "user", "c"),
+            row("done-b", "assistant", "Done", undefined, "run-b"),
+          ],
+          state,
+        ),
+      ),
+    ).toEqual(["a", "c", "done-b"]);
+  });
+
   it("returns a row that left and came back to its old place", () => {
     const state = createChatDisplayOrderState();
     holdChatDisplayOrder(

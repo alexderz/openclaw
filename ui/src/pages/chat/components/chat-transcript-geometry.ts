@@ -176,9 +176,43 @@ export function measureTranscriptRow(
   );
 }
 
-export type TranscriptReaderMark = { element: Element; top: number };
+export type TranscriptReaderMark = {
+  /** The virtual row holding the reader's top line. */
+  row: HTMLElement;
+  /** Where the line sat, in viewport coordinates, when last observed. */
+  top: number;
+  measure: () => number | null;
+};
 
-/** The element on the reader's top line while they hold a position. */
+type CaretDocument = Document & {
+  caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  caretRangeFromPoint?: (x: number, y: number) => Range | null;
+};
+
+/** The text (or element) on the reader's top line, finer than its paragraph. */
+function readerLineAt(document: CaretDocument, x: number, y: number): (() => number | null) | null {
+  const caret = document.caretPositionFromPoint?.(x, y);
+  const range = caret ? null : document.caretRangeFromPoint?.(x, y);
+  const node = caret?.offsetNode ?? range?.startContainer;
+  const offset = caret?.offset ?? range?.startOffset ?? 0;
+  if (node?.nodeType === Node.TEXT_NODE && (node.textContent?.length ?? 0) > 0) {
+    const start = Math.min(offset, node.textContent!.length - 1);
+    return () => {
+      if (!node.isConnected || start >= (node.textContent?.length ?? 0)) {
+        return null;
+      }
+      const glyph = document.createRange();
+      glyph.setStart(node, start);
+      glyph.setEnd(node, start + 1);
+      const rect = glyph.getBoundingClientRect();
+      return rect.height > 0 ? rect.top : null;
+    };
+  }
+  const element = document.elementFromPoint?.(x, y);
+  return element ? () => (element.isConnected ? element.getBoundingClientRect().top : null) : null;
+}
+
+/** The line on the reader's top edge while they hold a position. */
 export function captureTranscriptReaderMark(
   scrollElement: HTMLElement | null,
   following: boolean,
@@ -187,27 +221,32 @@ export function captureTranscriptReaderMark(
     return null;
   }
   const viewport = scrollElement.getBoundingClientRect();
-  const document = scrollElement.ownerDocument;
-  if (viewport.width === 0 || viewport.height === 0 || !document.elementFromPoint) {
+  if (viewport.width === 0 || viewport.height === 0) {
     return null;
   }
-  const element = document.elementFromPoint(viewport.left + viewport.width / 2, viewport.top + 4);
-  return element && scrollElement.contains(element) && element.closest(".chat-virtual-row")
-    ? { element, top: element.getBoundingClientRect().top }
-    : null;
+  const document = scrollElement.ownerDocument as CaretDocument;
+  const x = viewport.left + viewport.width / 2;
+  const y = viewport.top + 4;
+  const target = document.elementFromPoint?.(x, y);
+  const row =
+    target && scrollElement.contains(target)
+      ? target.closest<HTMLElement>(".chat-virtual-row")
+      : null;
+  const measure = row ? readerLineAt(document, x, y) : null;
+  const top = measure?.();
+  return row && measure && top != null ? { row, top, measure } : null;
 }
 
-/** How far a resize inside the mark's row moved the mark, or null for another row. */
+/** How far a resize inside the mark's row moved the reader's line, or null for another row. */
 export function transcriptReaderMarkShift(
   mark: TranscriptReaderMark,
   rowKey: VirtualItem["key"],
 ): number | null {
-  const row = mark.element.isConnected
-    ? mark.element.closest<HTMLElement>(".chat-virtual-row")
-    : null;
-  return row?.dataset.virtualRowKey === String(rowKey)
-    ? mark.element.getBoundingClientRect().top - mark.top
-    : null;
+  if (!mark.row.isConnected || mark.row.dataset.virtualRowKey !== String(rowKey)) {
+    return null;
+  }
+  const top = mark.measure();
+  return top === null ? null : top - mark.top;
 }
 
 /**
@@ -244,31 +283,66 @@ export function shouldCompensateTranscriptRowResize(
   );
 }
 
-/** Virtual-core's resize predicate for a transcript that keeps the reader's line still. */
-export function compensateTranscriptRowResize(
-  readerMark: () => TranscriptReaderMark | null,
-  following: () => boolean,
-): (
-  item: VirtualItem,
-  delta: number,
-  virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
-) => boolean {
-  return (item, delta, virtualizer) => {
-    const mark = readerMark();
-    const shift = mark ? transcriptReaderMarkShift(mark, item.key) : null;
-    const compensate = shouldCompensateTranscriptRowResize(
-      item,
-      virtualizer,
-      following(),
-      delta,
-      shift,
-    );
-    if (mark && shift !== null && !compensate) {
-      // The reader saw this move; later growth is measured from here.
-      mark.top += shift;
+/**
+ * Keeps the reader's top line still while they hold a position. Rows wholly
+ * above it compensate through virtual-core; a resize inside the row that spans
+ * the viewport top is settled after the update commits, by the line's own net
+ * displacement, so a change partly above and partly below it (two images) or
+ * inside the paragraph being read holds too.
+ */
+export class TranscriptReaderLine {
+  private mark: TranscriptReaderMark | null = null;
+  private settling = false;
+
+  constructor(
+    private readonly host: {
+      readonly scrollElement: HTMLDivElement | null;
+      readonly updateComplete: Promise<unknown>;
+    },
+    private readonly virtualizer: () => Virtualizer<HTMLDivElement, HTMLElement>,
+    private readonly following: () => boolean,
+    private readonly touching: () => boolean,
+  ) {}
+
+  /** Record the line on every offset change; a pending settle owns the old one. */
+  record(): void {
+    if (!this.settling) {
+      this.mark = captureTranscriptReaderMark(this.host.scrollElement, this.following());
     }
-    return compensate;
+  }
+
+  readonly shouldAdjust = (
+    item: VirtualItem,
+    delta: number,
+    virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
+  ): boolean => {
+    const following = this.following();
+    const shift = this.mark ? transcriptReaderMarkShift(this.mark, item.key) : null;
+    if (shift !== null && shift !== 0 && !following) {
+      this.settle();
+    }
+    return shouldCompensateTranscriptRowResize(item, virtualizer, following, delta, shift);
   };
+
+  private settle(): void {
+    // Writing scrollTop mid-touch cancels the gesture; the reader is moving it anyway.
+    if (this.settling || this.touching()) {
+      return;
+    }
+    this.settling = true;
+    void this.host.updateComplete.then(() => {
+      this.settling = false;
+      const mark = this.mark;
+      const element = this.host.scrollElement;
+      const top = mark?.row.isConnected ? mark.measure() : null;
+      if (!mark || !element || top === null || this.following() || Math.abs(top - mark.top) <= 1) {
+        return;
+      }
+      this.virtualizer().scrollToOffset(element.scrollTop + top - mark.top, {
+        behavior: "instant",
+      });
+    });
+  }
 }
 
 /**

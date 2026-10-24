@@ -16,7 +16,7 @@ export type ChatDisplayOrderState = {
   shown: Map<string, ShownRow>;
 };
 
-type ShownRow = { signatures: readonly string[]; gapKey: string | null };
+type ShownRow = { signatures: readonly string[]; runId: string | null; gapKey: string | null };
 
 export function createChatDisplayOrderState(): ChatDisplayOrderState {
   return { ledger: [], shown: new Map() };
@@ -84,19 +84,24 @@ function replacementSignatures(item: ChatItem): readonly string[] {
   }
 }
 
+function rowRunId(item: ChatItem): string | null {
+  if (item.kind === "message") {
+    return readSessionMessageIdentity(item.message)?.runId ?? null;
+  }
+  return "runId" in item && typeof item.runId === "string" ? item.runId : null;
+}
+
 /**
  * What lets a new row take a removed row's place between the same neighbors:
  * the same run, or, for rows without any stored identity (keyed by content),
  * the same role.
  */
 function rowGapKey(item: ChatItem): string | null {
-  if (item.kind !== "message") {
-    return "runId" in item && typeof item.runId === "string" ? `run:${item.runId}` : null;
+  const runId = rowRunId(item);
+  if (runId || item.kind !== "message") {
+    return runId ? `run:${runId}` : null;
   }
   const identity = readSessionMessageIdentity(item.message);
-  if (identity?.runId) {
-    return `run:${identity.runId}`;
-  }
   const record = asRecord(item.message);
   return identity?.id || identity?.sendId || identity?.sequence != null
     ? null
@@ -140,7 +145,11 @@ export function holdChatDisplayOrder(
     state.shown = new Map(
       placed.map((item) => [
         item.key,
-        { signatures: replacementSignatures(item), gapKey: rowGapKey(item) },
+        {
+          signatures: replacementSignatures(item),
+          runId: rowRunId(item),
+          gapKey: rowGapKey(item),
+        },
       ]),
     );
   };
@@ -177,8 +186,16 @@ export function holdChatDisplayOrder(
       if (ledgerIndex.has(item.key)) {
         continue;
       }
+      // Equal text from another run is another message ("Done" twice).
+      const runId = rowRunId(item);
+      const compatible = (key: string) => {
+        const shownRunId = state.shown.get(key)?.runId;
+        return !runId || !shownRunId || shownRunId === runId;
+      };
       for (const signature of replacementSignatures(item)) {
-        const slot = removedBySignature.get(signature)?.find((key) => !slotOwners.has(key));
+        const slot = removedBySignature
+          .get(signature)
+          ?.find((key) => !slotOwners.has(key) && compatible(key));
         if (slot) {
           claim(slot, item.key);
           break;
@@ -198,10 +215,13 @@ export function holdChatDisplayOrder(
     }
   }
   const firstRetained = keys.findIndex((key) => positionOf(key) !== undefined);
-  const prefix = placed.slice(0, Math.max(0, firstRetained));
+  const isHistory = (item: ChatItem) => historyKeys?.has(item.key) ?? true;
+  const olderRows = placed.slice(0, Math.max(0, firstRetained)).filter(isHistory);
   const olderPage =
-    prefix.some((item) => historyKeys?.has(item.key) ?? true) &&
-    prefix.every((item) => (rowSequence(item) ?? Number.NEGATIVE_INFINITY) < oldestShownSequence);
+    olderRows.length > 0 &&
+    olderRows.every(
+      (item) => (rowSequence(item) ?? Number.NEGATIVE_INFINITY) < oldestShownSequence,
+    );
   const prepended: string[] = [];
   const appended: string[] = [];
   let anchor = -1;
@@ -212,7 +232,7 @@ export function holdChatDisplayOrder(
       anchor = Math.max(anchor, known);
       continue;
     }
-    if (olderPage && index < firstRetained) {
+    if (olderPage && index < firstRetained && isHistory(item)) {
       prepended.push(key);
       continue;
     }
