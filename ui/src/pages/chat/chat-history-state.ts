@@ -27,12 +27,15 @@ type ChatHistoryLoadState =
       client: GatewayBrowserClient;
       connectionEpoch: number;
       key: string;
+      /** The read skips the delta cursor and returns the newest page in full. */
+      fullRead?: boolean;
       sessions: ChatHistorySessions;
       promise: Promise<ObservedChatHistoryResult | undefined>;
       refresh?: {
         promise: Promise<ObservedChatHistoryResult | undefined>;
         startup: boolean;
         deferBranches: boolean;
+        reconcile?: boolean;
       };
     } & ChatHistoryLoadRequest)
   | {
@@ -68,6 +71,8 @@ type ChatHistoryPaneRequests = {
   historyLoad: ChatHistoryLoadState;
   acceptedHistory?: Extract<ChatHistoryLoadState, { phase: "committed" }>;
   initialSnapshotHydration?: InitialChatSnapshotHydration;
+  /** Session whose next live history read must skip the delta cursor. */
+  reconcileWanted?: string;
 };
 
 export type InitialChatSnapshotHydration = {

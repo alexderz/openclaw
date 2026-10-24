@@ -20,6 +20,7 @@ import { resolveSessionKey } from "../../lib/sessions/index.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import * as chatAvatars from "./chat-avatar.ts";
 import { CHAT_ROUTE_READY_EVENT } from "./chat-history-events.ts";
+import { reconcileChatOnReentry } from "./chat-history-reentry.ts";
 import { retireInitialChatSnapshot } from "./chat-history-state.ts";
 import { syncSelectedSessionMessageSubscription } from "./chat-history-subscription.ts";
 import {
@@ -299,7 +300,10 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
       this.requestUpdate();
       if (pageState.chatMetadataIsPresented?.()) {
         void refreshChatMetadata(pageState, { automatic: true });
-        this.resumeDeferredSessionHydration();
+        // Returning to the foreground keeps the cached chat; one full read heals drift.
+        if (!this.resumeDeferredSessionHydration() && this.resolveChatReadTarget()) {
+          void reconcileChatOnReentry(pageState);
+        }
         void this.refreshTaskSuggestions({ automatic: true });
       }
     };

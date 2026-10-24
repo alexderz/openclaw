@@ -10,6 +10,7 @@ import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsRewindResult } from "../../api/types.ts";
 import { handleChatGatewayEvent } from "./chat-gateway.ts";
 import { rewindChatHistory, switchChatHistoryBranch } from "./chat-history-actions.ts";
+import { reconcileChatOnReentry } from "./chat-history-reentry.ts";
 import { loadOlderChatHistoryPage, requestChatSessionSnapshot } from "./chat-history-request.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
@@ -28,6 +29,7 @@ import { reconcileChatRunFromSessionRow, reconcileChatRunLifecycle } from "./run
 import {
   cacheChatSessionSnapshot,
   readChatMessagesFromCache,
+  setChatHistoryCursor,
   type ChatMessageCache,
 } from "./session-message-cache.ts";
 import { buildToolStreamIdentity } from "./tool-stream-identity.ts";
@@ -605,6 +607,110 @@ describe("full tail refresh after the leaf advances", () => {
     });
     await loadChatHistory(state);
     expect(state.chatMessages).toEqual(Array.from({ length: 12 }, (_, index) => row(index + 1)));
+  });
+});
+
+describe("re-entering a chat", () => {
+  const row = (seq: number, id = `r${seq}`) =>
+    message(seq % 2 ? "user" : "assistant", `message ${seq}`, { id, seq });
+  const server = [row(1), row(2), row(3), row(4)];
+  const sessionInfo = (key: string) => ({
+    key,
+    kind: "direct" as const,
+    updatedAt: 1,
+    sessionId: "session",
+  });
+  function drifted(sessionKey: string) {
+    const state = createState({ messages: [] });
+    // A cursor read answers with an empty delta, as the server would when
+    // nothing changed: drift survives unless the cursor is skipped.
+    const request = vi
+      .spyOn(state.client!, "request")
+      .mockImplementation(async (_method, params) =>
+        (params as { cursor?: string } | undefined)?.cursor
+          ? {
+              kind: "delta",
+              messages: [],
+              deltaCursor: "cursor-2",
+              sessionInfo: sessionInfo(sessionKey),
+            }
+          : {
+              messages: server,
+              hasMore: false,
+              totalMessages: 4,
+              deltaCursor: "cursor-2",
+              sessionInfo: sessionInfo(sessionKey),
+            },
+      );
+    // Test clients never open a socket; this one is live.
+    const wake = (value: boolean) =>
+      Object.defineProperty(state.client!, "needsWakeReconnect", { value, configurable: true });
+    wake(false);
+    state.sessionKey = sessionKey;
+    state.currentSessionId = "session";
+    state.chatHistoryPagination = { hasMore: false, totalMessages: 4 };
+    // Client drift: one reply repeated while the cursor still claims it is current.
+    state.chatMessages = [row(1), row(2), row(3), row(2), row(3), row(4)];
+    setChatHistoryCursor(state, "cursor-1");
+    return { state, request, wake };
+  }
+
+  it("keeps drift on a cursor read but replaces it on re-entry", async () => {
+    const { state, request } = drifted("agent:main:reentry-a");
+    await loadChatHistory(state);
+    expect(state.chatMessages).toHaveLength(6);
+    setChatHistoryCursor(state, "cursor-1");
+    await reconcileChatOnReentry(state, 1_000);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[1]![1]).not.toHaveProperty("cursor");
+    expect(state.chatMessages).toEqual(server);
+  });
+
+  it("drops a settled live copy the server window does not list", async () => {
+    const { state } = drifted("agent:main:reentry-live");
+    state.chatMessages = [...server];
+    publishLive(state, row(3, "stale-live-copy"));
+    expect(state.chatMessages).toHaveLength(5);
+    await reconcileChatOnReentry(state, 1_000);
+    expect(state.chatMessages).toEqual(server);
+  });
+
+  it("refetches at most once every ten seconds per chat", async () => {
+    const { state, request } = drifted("agent:main:reentry-b");
+    await reconcileChatOnReentry(state, 50_000);
+    expect(reconcileChatOnReentry(state, 59_999)).toBeUndefined();
+    await reconcileChatOnReentry(state, 60_000);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins a full read already in flight instead of adding one", async () => {
+    const { state, request } = drifted("agent:main:reentry-c");
+    setChatHistoryCursor(state, undefined);
+    const pending = loadChatHistory(state);
+    expect(reconcileChatOnReentry(state, 1_000)).toBeUndefined();
+    await pending;
+    expect(request).toHaveBeenCalledOnce();
+    // The skipped entry left its budget: the next one reads.
+    const next = reconcileChatOnReentry(state, 1_001);
+    expect(next).toBeDefined();
+    await next;
+  });
+
+  it("hands the full read to the reconnect when the socket is dead", async () => {
+    const { state, request, wake } = drifted("agent:main:reentry-d");
+    wake(true);
+    expect(reconcileChatOnReentry(state, 1_000)).toBe("deferred");
+    expect(request).not.toHaveBeenCalled();
+    // A read that still runs on the doomed socket does not take the handoff.
+    await loadChatHistory(state);
+    expect(request.mock.calls[0]![1]).toHaveProperty("cursor", "cursor-1");
+    expect(state.chatMessages).toHaveLength(6);
+    setChatHistoryCursor(state, "cursor-1");
+    wake(false);
+    // The reconnect's ordinary history read skips the stored cursor once.
+    await loadChatHistory(state);
+    expect(request.mock.calls[1]![1]).not.toHaveProperty("cursor");
+    expect(state.chatMessages).toEqual(server);
   });
 });
 

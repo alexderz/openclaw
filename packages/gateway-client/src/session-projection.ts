@@ -28,6 +28,7 @@ import {
   type SessionProjectionEntry,
 } from "./session-projection-message-identity.js";
 import { retainSessionProjectionRuns } from "./session-projection-run-retention.js";
+import * as snapshotAuthority from "./session-projection-snapshot-authority.js";
 export {
   hasSessionProjectionAcceptedFinal,
   readSessionProjectionFinalMessageIdentity,
@@ -63,9 +64,7 @@ export type SessionProjectionScope = {
   activeLeafEntryId?: string | null;
 };
 
-export type SessionProjectionSnapshotOptions = {
-  shouldIncludeMessage?: (message: unknown) => boolean;
-};
+export type { SessionProjectionSnapshotOptions } from "./session-projection-snapshot-authority.js";
 
 export type SessionProjectionRunStatus =
   | "streaming"
@@ -114,7 +113,7 @@ export type SessionProjectionEvent = ScopedSessionProjectionEvent &
     | {
         type: "snapshotLoaded";
         messages: readonly unknown[];
-        options?: SessionProjectionSnapshotOptions;
+        options?: snapshotAuthority.SessionProjectionSnapshotOptions;
       }
     | ({
         type: "messagePersisted";
@@ -449,7 +448,7 @@ export function reconcileSessionProjectionSnapshot(
   state: SessionProjectionState,
   messages: readonly unknown[],
   scope: SessionProjectionScope = {},
-  options: SessionProjectionSnapshotOptions = {},
+  options: snapshotAuthority.SessionProjectionSnapshotOptions = {},
 ): SessionProjectionState {
   const visibleMessages = options.shouldIncludeMessage
     ? messages.filter(options.shouldIncludeMessage)
@@ -462,7 +461,8 @@ export function reconcileSessionProjectionSnapshot(
   for (const current of state.entries) {
     if (
       (!current.live && !current.pending) ||
-      options.shouldIncludeMessage?.(current.message) === false
+      options.shouldIncludeMessage?.(current.message) === false ||
+      snapshotAuthority.isSupersededLiveCopy(current, runs, options)
     ) {
       continue;
     }

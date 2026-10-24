@@ -1,6 +1,7 @@
 import type { ChatEvent } from "../../../../packages/gateway-protocol/src/schema/logs-chat.ts";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { AgentsListResult } from "../../api/types.ts";
+import { readReconcileAfterReload } from "../../app/manual-reload.ts";
 import {
   areUiSessionKeysEquivalent,
   isUiSelectedGlobalSessionKey,
@@ -22,12 +23,26 @@ import { readChatInputRunIds } from "./chat-pending-inputs.ts";
 import type { ChatRunStartupPhase } from "./chat-run-startup.ts";
 import type { ChatHistoryHost, ChatState } from "./chat-state-contract.ts";
 import { readChatHistoryCursor } from "./session-message-cache.ts";
+import { resolveChatSnapshotKey } from "./session-snapshot-key.ts";
 
 type LoadChatHistoryOptions = {
   deferBranches?: boolean;
   supersedeInFlight?: boolean;
   startup?: boolean;
+  /** Read the newest page in full, skipping the delta cursor, so the window replaces drifted rows. */
+  reconcile?: boolean;
 };
+
+// A manual Reload asks its document to read every chat in full once.
+let reloadReconcile: { pending: boolean; done: Set<string> } | undefined;
+function takeReloadReconcile(chatKey: string): boolean {
+  reloadReconcile ??= { pending: readReconcileAfterReload(), done: new Set() };
+  if (!reloadReconcile.pending || reloadReconcile.done.has(chatKey)) {
+    return false;
+  }
+  reloadReconcile.done.add(chatKey);
+  return true;
+}
 
 type ChatErrorDetail = Extract<ChatEvent, { state: "error" }>["errorDetail"];
 
@@ -96,7 +111,20 @@ export async function loadChatHistory(
       }
     }
   }
-  const deltaCursor = readChatHistoryCursor(state);
+  // A re-entry that met a dead or busy connection hands its full read to the
+  // next live one; a read on a socket awaiting replacement leaves it pending.
+  const wanted =
+    requests.reconcileWanted !== undefined &&
+    !client.needsWakeReconnect &&
+    areUiSessionKeysEquivalent(requests.reconcileWanted, sessionKey);
+  if (wanted) {
+    delete requests.reconcileWanted;
+  }
+  const reconcile =
+    opts.reconcile === true ||
+    wanted ||
+    takeReloadReconcile(resolveChatSnapshotKey(state, { sessionKey }));
+  const deltaCursor = reconcile ? undefined : readChatHistoryCursor(state);
   const requestModeKey = deltaCursor === undefined ? "page" : `cursor:${deltaCursor}`;
   const inputRunIds = readChatInputRunIds(state);
   const requestKeyPrefix = JSON.stringify([
@@ -122,6 +150,7 @@ export async function loadChatHistory(
     if (inFlight.refresh) {
       inFlight.refresh.startup ||= startup;
       inFlight.refresh.deferBranches &&= opts.deferBranches === true;
+      inFlight.refresh.reconcile ||= reconcile;
       return inFlight.refresh.promise;
     }
     if (opts.supersedeInFlight !== true && inFlight.key === requestKey) {
@@ -131,6 +160,7 @@ export async function loadChatHistory(
     const refresh = {
       startup: startup || inFlight.startup,
       deferBranches: opts.deferBranches === true,
+      reconcile,
       promise: Promise.resolve<ObservedChatHistoryResult | undefined>(undefined),
     };
     refresh.promise = inFlight.promise.then(() => {
@@ -158,6 +188,7 @@ export async function loadChatHistory(
     deltaCursor,
     inputRunIds,
     requestKeyPrefix,
+    reconcile,
   ).then((result) => {
     const current = requests.historyLoad;
     if (current.phase === "in-flight" && current.promise === promise) {
@@ -203,10 +234,15 @@ export async function loadChatHistory(
       }
       state.requestUpdate?.();
     }
+    // A handed-off full read that never committed stays owed to the next read.
+    if (!result && wanted && state.sessionKey === sessionKey) {
+      requests.reconcileWanted ??= sessionKey;
+    }
     return result;
   });
   setChatHistoryLoad(state, {
     phase: "in-flight",
+    fullRead: deltaCursor === undefined,
     sessions,
     client,
     connectionEpoch,

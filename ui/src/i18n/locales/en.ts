@@ -2561,6 +2561,9 @@ export const en: TranslationMap & {
     suspending: "Suspending…",
     suspended: "Suspended",
     retryNow: "Retry now",
+    reloadApp: "Reload",
+    reloadUnreachable:
+      "Can't reach the Gateway right now. The app stays open; try Reload again shortly.",
     actionsUnavailable: "Actions are unavailable while the Gateway reconnects.",
     settingsChangesUnavailable:
       "Changes to settings are disabled while the Gateway is reconnecting.",
