@@ -1,6 +1,7 @@
 import type { SessionsListParams } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import { SESSION_ROW_DETAIL_FIELDS } from "../../packages/gateway-protocol/src/session-row-fields.js";
+import { resolveRuntimeConfigCacheKey } from "../config/config.js";
 import { resolveProjectedAgentRunModel } from "../infra/agent-run-registry.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
@@ -38,6 +39,7 @@ import {
   projectGatewaySessionRunState,
 } from "./session-utils-display.js";
 import type { GatewaySessionRow } from "./session-utils.types.js";
+import { peekToolsEffectiveRestrictions } from "./tools-effective-restrictions.js";
 
 type PresentationOptions = Omit<
   records.SnapshotOptions,
@@ -191,6 +193,7 @@ export function prepareProjectedSessionPresentation(
     return view;
   };
   const promotionAdmin = isControlUiAdminClient(client ?? null);
+  let configKey: string | undefined;
   const viewer = (value: SessionSharingTarget) => ({
     visibility: resolveSessionVisibility(value.entry),
     ...(profileId && !value.entry.incognito && !isIncognitoSessionKey(value.canonicalKey)
@@ -206,6 +209,12 @@ export function prepareProjectedSessionPresentation(
       now,
       viewerProfileId: profile?.id,
       admin: promotionAdmin,
+      toolRestrictions: peekToolsEffectiveRestrictions({
+        sessionKey: value.canonicalKey,
+        sessionId: value.entry.sessionId,
+        lifecycleRevision: value.entry.lifecycleRevision,
+        configKey: (configKey ??= resolveRuntimeConfigCacheKey(cfg)),
+      }),
       // Mirrors sessions.promote: live Control UI human, method and role scopes, sharing and
       // agent access, then the one shared promotion ownership rule (admin, own or lineage).
       authorize: () => {

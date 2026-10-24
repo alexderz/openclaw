@@ -1,3 +1,7 @@
+import type {
+  ToolRestrictionOrigin,
+  ToolsEffectiveRestrictionSummary,
+} from "../../packages/gateway-protocol/src/schema/tools-catalog.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { decodeSessionPromotedFrom } from "../sessions/session-promotion-detach.js";
 import {
@@ -30,8 +34,11 @@ export type SessionPromotionProjection = {
   pendingBlockers: string[];
   activationBoundary: "next-fresh-human-run-after-quiescence";
   policyEvaluatedAt: number;
-  effectiveRestrictions: string[];
+  /** Delegation layers that limit this session compared with an ordinary one; [] when none. */
+  effectiveRestrictions: ToolRestrictionOrigin[];
   capabilities: { sessionsSend: "allowed" | "denied" | "unknown" };
+  /** Present only when the values above come from a matching `tools.effective` evaluation. */
+  toolLimits?: { count: number; evaluatedAt: number };
 };
 
 /** Viewer capability is computed for this read, never persisted in shared rows. */
@@ -47,6 +54,8 @@ export function projectSessionPromotion(params: {
   admin?: boolean;
   /** The viewing profile; a promotion is ordinary only for the human who requested it. */
   viewerProfileId?: string;
+  /** Latest `tools.effective` summary for this exact session revision, if one was computed. */
+  toolRestrictions?: ToolsEffectiveRestrictionSummary;
   now: number;
 }): SessionPromotionProjection {
   const { entry, key } = params;
@@ -95,17 +104,24 @@ export function projectSessionPromotion(params: {
   }
   const canCancel =
     eligible && authorized && !malformed && receipt?.state === "pending" && targetMatches;
+  const effectiveClass = malformed
+    ? "unknown"
+    : historicalDelegated
+      ? promoted &&
+        params.viewerProfileId !== undefined &&
+        params.viewerProfileId === receipt?.profileId
+        ? "ordinary"
+        : "delegated"
+      : "ordinary";
+  // The tool surface was evaluated for one class; a promoted requester's own turns, or a stale
+  // evaluation, run under the other one, so its limits say nothing about this viewer's turns.
+  const restrictions =
+    params.toolRestrictions?.evaluatedClass === effectiveClass
+      ? params.toolRestrictions
+      : undefined;
   return {
     historicalOrigin: historicalDelegated || promotedFrom ? "delegated" : "ordinary",
-    effectiveClass: malformed
-      ? "unknown"
-      : historicalDelegated
-        ? promoted &&
-          params.viewerProfileId !== undefined &&
-          params.viewerProfileId === receipt?.profileId
-          ? "ordinary"
-          : "delegated"
-        : "ordinary",
+    effectiveClass,
     classScope: historicalDelegated
       ? promoted && !malformed
         ? "requesting-human-direct-turns"
@@ -125,9 +141,19 @@ export function projectSessionPromotion(params: {
       promotionState === "pending" ? ["quiescence-and-current-human-revalidation-required"] : [],
     activationBoundary: "next-fresh-human-run-after-quiescence",
     policyEvaluatedAt: params.now,
-    effectiveRestrictions: ["current-role-grants-resource-policy-and-sandbox-still-apply"],
-    // A receipt and tool visibility are not effect-time resource authorization.
-    capabilities: { sessionsSend: "unknown" },
+    effectiveRestrictions: restrictions
+      ? [...new Set(restrictions.limitedTools.flatMap((tool) => tool.origins))].toSorted()
+      : [],
+    // Tool visibility only: effect-time send and resource policy still apply.
+    capabilities: { sessionsSend: restrictions?.sessionsSend ?? "unknown" },
+    ...(restrictions
+      ? {
+          toolLimits: {
+            count: restrictions.limitedTools.length,
+            evaluatedAt: restrictions.evaluatedAt,
+          },
+        }
+      : {}),
     ...(promotedFrom && !historicalDelegated
       ? {
           promotedFrom: {

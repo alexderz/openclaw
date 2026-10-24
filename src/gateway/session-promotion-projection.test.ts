@@ -291,3 +291,65 @@ describe("terminal revoked intent contract", () => {
     expect(incognito.disabledReasons).toContain("unsupported-target:incognito");
   });
 });
+describe("restrictions from tools.effective", () => {
+  it("reports real restrictions from a matching tools.effective summary, never guessed", () => {
+    const summary = {
+      evaluatedClass: "delegated" as const,
+      limitedTools: [
+        { id: "exec", origins: ["inherited-limit" as const] },
+        { id: "sessions_send", origins: ["inherited-limit" as const, "subagent-layer" as const] },
+      ],
+      sessionsSend: "denied" as const,
+      evaluatedAt: 2,
+    };
+    const delegated = projectSessionPromotion({
+      key,
+      entry,
+      authorize: () => true,
+      toolRestrictions: summary,
+      now: 3,
+    });
+    expect(delegated).toMatchObject({
+      effectiveClass: "delegated",
+      effectiveRestrictions: ["inherited-limit", "subagent-layer"],
+      capabilities: { sessionsSend: "denied" },
+      toolLimits: { count: 2, evaluatedAt: 2 },
+    });
+    expect(Value.Check(SessionPromotionProjectionSchema, delegated)).toBe(true);
+
+    const ordinary = projectSessionPromotion({
+      key,
+      entry: { sessionId: "session", lifecycleRevision: "before", updatedAt: 1 },
+      authorize: () => true,
+      toolRestrictions: {
+        evaluatedClass: "ordinary",
+        limitedTools: [],
+        sessionsSend: "allowed",
+        evaluatedAt: 2,
+      },
+      now: 3,
+    });
+    expect(ordinary).toMatchObject({
+      effectiveRestrictions: [],
+      capabilities: { sessionsSend: "allowed" },
+      toolLimits: { count: 0, evaluatedAt: 2 },
+    });
+
+    // Without an evaluation, or one made for the other class, nothing is claimed.
+    for (const toolRestrictions of [
+      undefined,
+      { ...summary, evaluatedClass: "ordinary" as const },
+    ]) {
+      const unknown = projectSessionPromotion({
+        key,
+        entry,
+        authorize: () => true,
+        toolRestrictions,
+        now: 3,
+      });
+      expect(unknown.effectiveRestrictions).toEqual([]);
+      expect(unknown.capabilities.sessionsSend).toBe("unknown");
+      expect(unknown).not.toHaveProperty("toolLimits");
+    }
+  });
+});
