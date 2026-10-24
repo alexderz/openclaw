@@ -29,6 +29,8 @@ export type ChatRunControlsProps = Omit<ComposerVoiceButtonProps, "idleLabel"> &
   sending: boolean;
   isBusy: boolean;
   submitPending?: boolean;
+  // Send was pressed and waits for the IME to commit the composed words.
+  imeCommitPending?: boolean;
   draft: string;
   hasAttachments?: boolean;
   preparingAttachments?: boolean;
@@ -566,7 +568,10 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
       : nothing;
   const sendDisabledReason =
     props.canSend && canSubmitBeforeChatHistory(props.draft) ? null : props.submitDisabledReason;
-  const sendBusy = props.sending || Boolean(sendDisabledReason && props.submitPending);
+  const sendBusy =
+    props.sending ||
+    Boolean(props.imeCommitPending) ||
+    Boolean(sendDisabledReason && props.submitPending);
   const sendStatus =
     sendDisabledReason ??
     (props.sending
@@ -587,7 +592,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
         class="chat-send-btn chat-send-btn--send${props.sending ? " chat-send-btn--sending" : ""}"
         @pointerdown=${props.onPrimaryActionPointerDown}
         @click=${props.onSend}
-        ?disabled=${!hasSendableContent}
+        ?disabled=${!hasSendableContent || Boolean(props.imeCommitPending)}
         aria-label=${sendStatus ?? activeRunActionDescription}
         aria-busy=${sendBusy || props.preparingAttachments ? "true" : "false"}
       >
@@ -606,7 +611,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
       : sendAction;
   const activePrimaryAction = props.dictation?.active
     ? dictationSendAction
-    : props.canAbort && !hasSendableContent
+    : props.canAbort && !hasSendableContent && !props.imeCommitPending
       ? abortAction
       : null;
   const desktopPrimaryAction = activePrimaryAction ?? sendAction;

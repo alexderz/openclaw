@@ -45,16 +45,24 @@ import {
   updateSlashMenu,
 } from "./chat-composer-slash-menu.ts";
 import {
+  cancelCompositionSend,
   clearPendingClearedSubmittedDraft,
   commitComposerDraft,
+  COMPOSITION_SEND_TIMEOUT_MS,
   composerDraftKey,
   consumeComposerInputIntent,
   getChatComposerState,
   hasTerminalRunStatus,
   isChatRunWorking,
   isCurrentSessionSubmittedProgress,
+  isMultiWordComposition,
   markComposerInputIntent,
+  observeSubmissionEcho,
+  recordSubmissionEcho,
+  sendMayCutDictation,
+  stripSubmissionEcho,
   suppressStaleSubmittedDraftReplay,
+  waitsForDictationCommit,
 } from "./chat-composer-state.ts";
 import type { ChatComposerProps } from "./chat-composer-types.ts";
 import { renderChatComposerView } from "./chat-composer-view.ts";
@@ -91,6 +99,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     state.dictation?.dispose();
     state.dictation = null;
     state.dictationSelection = null;
+    cancelCompositionSend(state);
+    state.submissionEcho = null;
   }
   state.composerDraftScopeKey = draftKey;
   const visibleDraft =
@@ -209,6 +219,8 @@ export function renderChatComposer(props: ChatComposerProps) {
       state.composingDraft = null;
     }
     state.composerComposing = false;
+    // The committed draft stays; a Send still waiting on the IME is dropped.
+    cancelCompositionSend(state);
   }
   if (state.questionTakeoverActive && !questionTakeoverActive) {
     state.restoreComposerFocus = true;
@@ -254,15 +266,18 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
   };
 
-  const submitDraft = (
+  const sendDraft = (
     draft: string,
     submissionAction?: Event,
     followUpModeOverride?: ChatFollowUpMode,
+    imeCommitted = false,
   ) => {
     if (!canSubmitDraft(draft)) {
       return;
     }
+    const mayReplay = !imeCommitted && sendMayCutDictation(state);
     state.composerComposing = false;
+    state.compositionText = "";
     state.composingDraft = null;
     commitComposerDraft(props, draft);
     props.onTypingChange?.(false);
@@ -274,7 +289,58 @@ export function renderChatComposer(props: ChatComposerProps) {
       return;
     }
     void props.onSend(followUpModeOverride, submissionAction);
+    recordSubmissionEcho(state, draftKey, draft, mayReplay);
     syncComposerDraftAfterSend(state.composerTextarea);
+  };
+
+  const flushCompositionSend = (imeCommitted: boolean) => {
+    const pending = state.compositionSend;
+    cancelCompositionSend(state);
+    if (pending?.key !== draftKey) {
+      return;
+    }
+    // Clears the waiting state even when the send is no longer allowed.
+    requestUpdate();
+    const target = state.composerTextarea;
+    sendDraft(
+      target?.isConnected ? target.value : (props.getDraft?.() ?? props.draft),
+      pending.submissionAction,
+      pending.followUpModeOverride,
+      imeCommitted,
+    );
+  };
+  // The fallback timer outlives this render; it must reach the current props.
+  state.flushCompositionSend = () => flushCompositionSend(false);
+
+  const submitDraft = (
+    draft: string,
+    submissionAction?: Event,
+    followUpModeOverride?: ChatFollowUpMode,
+  ) => {
+    if (state.compositionSend) {
+      // One send per draft: a repeated Send while the IME commits is the same action.
+      return;
+    }
+    if (
+      state.composerComposing &&
+      state.composerTextarea?.isConnected &&
+      isMultiWordComposition(state.compositionText) &&
+      waitsForDictationCommit() &&
+      canSubmitDraft(draft)
+    ) {
+      // Dictation is still composing and its final words are not in the value
+      // yet. Clearing the textarea now would also make the IME re-commit the
+      // whole phrase. Send once the IME commits (compositionend or blur).
+      state.compositionSend = {
+        key: draftKey,
+        submissionAction,
+        followUpModeOverride,
+        timer: setTimeout(() => state.flushCompositionSend?.(), COMPOSITION_SEND_TIMEOUT_MS),
+      };
+      requestUpdate();
+      return;
+    }
+    sendDraft(draft, submissionAction, followUpModeOverride);
   };
 
   const handleKeyDown = createComposerKeyDownHandler({
@@ -355,6 +421,15 @@ export function renderChatComposer(props: ChatComposerProps) {
   const handleInput = (event: InputEvent) => {
     const target = event.target as HTMLTextAreaElement;
     const hasInputIntent = consumeComposerInputIntent(state, draftKey);
+    if (event.inputType === "insertFromPaste" || event.inputType === "insertFromDrop") {
+      state.submissionEcho = null;
+    }
+    const submissionEcho = observeSubmissionEcho(
+      state,
+      draftKey,
+      target.value,
+      props.getDraft?.() ?? props.draft,
+    );
     if (state.composerComposing || event.isComposing) {
       state.composingDraft = { key: draftKey, value: target.value };
       requestUpdate();
@@ -362,6 +437,10 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     if (state.composingDraft?.key === draftKey) {
       state.composingDraft = null;
+    }
+    if (submissionEcho && stripSubmissionEcho(state, draftKey, target)) {
+      syncComposerValue(target);
+      return;
     }
     if (
       suppressStaleSubmittedDraftReplay(
@@ -396,10 +475,26 @@ export function renderChatComposer(props: ChatComposerProps) {
   const handleCompositionEnd = (event: CompositionEvent) => {
     recordCompositionEnd(event);
     state.composerComposing = false;
+    state.compositionEndedMultiWord = isMultiWordComposition(state.compositionText);
+    state.compositionText = "";
+    state.compositionEndedAt = performance.now();
     if (state.composingDraft?.key === draftKey) {
       state.composingDraft = null;
     }
-    syncComposerValue(event.target as HTMLTextAreaElement);
+    const target = event.target as HTMLTextAreaElement;
+    // The IME has committed, so the post-send clear can no longer be replayed.
+    const replayed = stripSubmissionEcho(state, draftKey, target);
+    syncComposerValue(target);
+    if (replayed) {
+      // A Send during the replay meant the message already sent; leave the
+      // words it missed in the composer instead of sending them alone.
+      if (state.compositionSend) {
+        cancelCompositionSend(state);
+        requestUpdate();
+      }
+    } else if (state.compositionSend) {
+      flushCompositionSend(true);
+    }
   };
   const handleBlur = (event: FocusEvent) => {
     clearCompositionEnd(event);
@@ -413,6 +508,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     // composing flag: it persists across renders and kills Enter-send,
     // history keys, and command menus until the Send button resets it.
     state.composerComposing = false;
+    state.compositionText = "";
     if (state.composingDraft?.key === draftKey) {
       state.composingDraft = null;
     }
@@ -426,6 +522,10 @@ export function renderChatComposer(props: ChatComposerProps) {
       commitComposerDraft(props, normalizedDraft);
     }
     props.onTypingChange?.(false);
+    // Blur commits the composition even when compositionend was dropped.
+    if (state.compositionSend) {
+      flushCompositionSend(true);
+    }
   };
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;
@@ -598,6 +698,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     suggestionComposer: props.suggestionComposer,
     submissionLabel: goalComposer.submissionLabel,
     sending: props.sending,
+    // Send stays in place (never swapped for Stop) and busy while the IME commits.
+    imeCommitPending: state.compositionSend?.key === draftKey,
     voiceActive: props.realtimeTalkActive,
     voiceStatus: props.realtimeTalkStatus,
     voiceDetail: props.realtimeTalkDetail,

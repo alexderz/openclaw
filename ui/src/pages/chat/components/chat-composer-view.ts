@@ -566,6 +566,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                       state.emojiMenu.close();
                       state.editRevision += 1;
                       state.composerComposing = true;
+                      state.compositionText = event.data ?? "";
                       state.composingDraft = {
                         key: draftKey,
                         value: (event.target as HTMLTextAreaElement).value,
@@ -573,6 +574,9 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                       if (emojiWasOpen) {
                         requestUpdate();
                       }
+                    }}
+                    @compositionupdate=${(event: CompositionEvent) => {
+                      state.compositionText = event.data ?? "";
                     }}
                     @compositionend=${handleCompositionEnd}
                     @blur=${handleBlur}

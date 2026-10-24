@@ -192,6 +192,26 @@ type ScopedComposerDraft = {
   value: string;
 };
 
+// A Send pressed while a multi-word IME composition (voice dictation) is still
+// open waits for the IME to commit, so the final words are not cut off.
+export type ComposerCompositionSend = {
+  key: string;
+  submissionAction?: Event;
+  followUpModeOverride?: ChatFollowUpMode;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+// The last composer submission, kept briefly so an IME that re-commits the
+// already-sent text into the cleared composer cannot produce a second send.
+export type ComposerSubmissionEcho = {
+  key: string;
+  value: string;
+  at: number;
+  // null until the first edit after the send; true when that edit carried the
+  // whole submitted text at once (an IME replay), never typing.
+  replay: boolean | null;
+};
+
 export type ChatComposerState = SkillMenuState &
   SlashMenuState & {
     composerComposing: boolean;
@@ -202,6 +222,12 @@ export type ChatComposerState = SkillMenuState &
     composingDraft: ScopedComposerDraft | null;
     composerInputIntentKey: string | null;
     pendingClearedSubmittedDraft: ScopedComposerDraft | null;
+    compositionText: string;
+    compositionEndedAt: number;
+    compositionEndedMultiWord: boolean;
+    compositionSend: ComposerCompositionSend | null;
+    flushCompositionSend: (() => void) | null;
+    submissionEcho: ComposerSubmissionEcho | null;
     goalExpandedId: string | null;
     goalComposer: (ChatGoalDraftMode & { key: string; pending: boolean }) | null;
     activeQuestionKey: string | null;
