@@ -7,6 +7,7 @@ import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import {
   chatQueueMovableSegments,
+  compareChatQueueOrder,
   isMovableChatQueueItem,
 } from "../../../lib/chat/chat-queue-order.ts";
 import type { ChatQueueItem, ChatQueueDisplayItem } from "../../../lib/chat/chat-types.ts";
@@ -17,14 +18,23 @@ import {
   recordCompositionEnd,
 } from "../../../lib/ime.ts";
 import { getChatAttachmentPreviewUrl } from "../attachment-payload-store.ts";
-import { isQueuedSendInlineState } from "../chat-progress.ts";
+import {
+  isQueuedSendInlineState,
+  queuedSendsAwaitingTurn,
+  resolveQueuedSendsAwaitingTurn,
+} from "../chat-progress.ts";
 import { isSteerableQueuedMessage } from "../chat-queue.ts";
 import { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
 import type { ChatComposerProps } from "./chat-composer-types.ts";
 
 type ChatQueueProps = {
+  /** The transcript this tray belongs to; both apply one placement record. */
+  placement?: { paneId: string; sessionKey: string };
   queue: ChatQueueItem[];
   displayQueue?: ChatQueueDisplayItem[];
+  /** The session's current run; sends queued behind it stay here until their turn. */
+  activeRunId?: string | null;
+  pendingTurnAhead?: boolean;
   offline?: boolean;
   canAbort?: boolean;
   canRemoveServerQueued?: boolean;
@@ -164,11 +174,29 @@ function sendStateLabel(item: ChatQueueItem, offline: boolean): string | null {
 
 export function renderChatQueue(props: ChatQueueProps) {
   const edit = props.queuedEdit;
-  const visibleQueue = (props.displayQueue ?? props.queue).filter(
+  const displayQueue: ChatQueueDisplayItem[] = props.displayQueue ?? props.queue;
+  // The transcript applies the same rule, so an input is in exactly one place.
+  const awaitingArgs = [
+    props.activeRunId,
+    props.pendingTurnAhead === true || displayQueue.some((item) => item.serverQueued),
+  ] as const;
+  const localQueue = displayQueue
+    .filter((item) => !item.serverQueued)
+    .toSorted(compareChatQueueOrder);
+  const awaitingTurn = props.placement
+    ? resolveQueuedSendsAwaitingTurn(
+        props.placement,
+        localQueue,
+        new Set(props.queue.map((item) => item.id)),
+        ...awaitingArgs,
+      )
+    : queuedSendsAwaitingTurn(localQueue, ...awaitingArgs);
+  const visibleQueue = displayQueue.filter(
     (item) =>
-      item.sendState !== "submitting" &&
-      item.sendState !== "sending" &&
-      !isQueuedSendInlineState(item),
+      awaitingTurn.has(item.id) ||
+      (item.sendState !== "submitting" &&
+        item.sendState !== "sending" &&
+        !isQueuedSendInlineState(item)),
   );
   // A peer can retire the source while this pane is away. Render its retained
   // correction for recovery/cancel; this never recreates a row in the outbox.
@@ -289,7 +317,11 @@ function renderChatQueueItem(
     !item.serverQueued && !failed && (props.offline || item.sendState === "waiting-reconnect");
   const stateLabel = sendStateLabel(item, !item.serverQueued && props.offline === true);
   const steered = item.queueMode === "steer" && stateLabel === null;
-  const busy = item.sendState === "executing-command";
+  // A sent row waiting for its turn has left the outbox's removable custody.
+  const busy =
+    item.sendState === "executing-command" ||
+    item.sendState === "submitting" ||
+    item.sendState === "sending";
   const editing = edit?.editingId === item.id;
   const mentionText = editing ? (edit?.editingText ?? item.text) : item.text;
   const mentions = editing ? edit?.editingMentions : item.mentions;

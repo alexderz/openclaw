@@ -165,7 +165,11 @@ describe("chat transcript entry lifecycle", () => {
     view.update();
     expect(entering(view.container)).toHaveLength(0);
     vi.stubGlobal("matchMedia", media(false));
-    view.props.queue = [...view.props.queue, pendingSend("later-prompt")];
+    // A steer enters the transcript at once; a queued follow-up would wait in the tray.
+    view.props.queue = [
+      ...view.props.queue,
+      { ...pendingSend("later-prompt"), queueMode: "steer" },
+    ];
     view.update();
     expect(entering(view.container).map((bubble) => bubble.dataset.messageText)).toEqual([
       "later-prompt",

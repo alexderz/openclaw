@@ -42,6 +42,7 @@ import { holdChatDisplayOrder, type ChatDisplayOrderState } from "./chat-thread-
 import { groupMessages } from "./chat-thread-grouping.ts";
 import {
   placeChatInputs,
+  resolveHeldQueuedSends,
   type ChatInputOrderState,
   type ChatInputPlacementProps,
 } from "./chat-thread-inputs.ts";
@@ -141,6 +142,9 @@ export function buildChatItems(
     };
   });
   const queuedSends = props.queue ?? [];
+  // Sends held in the composer tray own no transcript row and no run progress yet.
+  const heldSends = resolveHeldQueuedSends(props.messages, props);
+  const threadSends = queuedSends.filter((item) => !heldSends.has(item.id));
   const segments = props.streamSegments;
   let progress: ReturnType<typeof resolveWorkingProgress> | null = null;
   const resolveProgress = () => {
@@ -155,7 +159,7 @@ export function buildChatItems(
       props.sessionKey,
       props.runId ?? null,
       props.streamStartedAt,
-      queuedSends,
+      threadSends,
       handedOff ? segments.filter((segment) => segment.runId !== handedOff) : segments,
       handedOff ? tools.filter((message) => message.runId !== handedOff) : tools,
     );
@@ -316,7 +320,7 @@ export function buildChatItems(
   const historyKeys = new Set(items.map((item) => item.key));
   const currentRunId =
     props.runId ??
-    (props.stream !== null || queuedSends.some(shouldRenderQueuedSendInThread)
+    (props.stream !== null || threadSends.some(shouldRenderQueuedSendInThread)
       ? resolveProgress().runId
       : null);
   const historyTurnBounds = findCurrentTurnBounds(items);
@@ -326,6 +330,7 @@ export function buildChatItems(
     props,
     inputOrder,
     currentRunId,
+    heldSends,
   );
   const executionItems = () => items.filter((item) => !historicalKeys.has(item.key));
   const canvasRunBounds = createRunTurnLookup(executionItems());

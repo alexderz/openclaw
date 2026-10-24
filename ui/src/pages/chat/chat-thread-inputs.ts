@@ -4,7 +4,12 @@ import { compareChatQueueOrder } from "../../lib/chat/chat-queue-order.ts";
 import type { ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
 import { buildPendingInputItems } from "./chat-pending-inputs.ts";
-import { isQueuedSendInlineState, shouldRenderQueuedSendInThread } from "./chat-progress.ts";
+import {
+  isQueuedSendInlineState,
+  pendingInputHoldsTurn,
+  resolveQueuedSendsAwaitingTurn,
+  shouldRenderQueuedSendInThread,
+} from "./chat-progress.ts";
 import {
   buildMessageItems,
   hasRenderableNormalizedMessage,
@@ -27,7 +32,11 @@ type InputBlock = {
 export type ChatInputOrderState = { keys: string[] };
 
 export type ChatInputPlacementProps = {
+  paneId: string;
+  sessionKey: string;
   queue?: ChatQueueItem[];
+  /** The session's current run; sends queued behind it stay in the composer tray. */
+  runId?: string | null;
   initialTurnId?: string;
   pendingInputs?: ChatPendingInputsPage["items"];
   workspaceSyncPendingRunIds?: readonly string[];
@@ -37,6 +46,30 @@ export type ChatInputPlacementProps = {
   messageRecovery?: ChatMessageRecovery;
 };
 
+/**
+ * Local sends that wait in the composer tray for their own turn; they enter the
+ * transcript when it starts. The tray derives the same set from the same props.
+ */
+export function resolveHeldQueuedSends(
+  messages: readonly unknown[],
+  props: ChatInputPlacementProps,
+): Set<string> {
+  const { queue, pendingInputs, queuedInputs } = selectChatInputDisplay(
+    messages,
+    (props.queue ?? []).toSorted(compareChatQueueOrder),
+    props.pendingInputs ?? [],
+  );
+  return resolveQueuedSendsAwaitingTurn(
+    props,
+    // Startup owns the placement turn's position.
+    queue.filter((item) => item.id !== props.initialTurnId),
+    new Set((props.queue ?? []).map((item) => item.id)),
+    props.runId,
+    // Includes a started input the client has not adopted as its run yet.
+    pendingInputHoldsTurn([...pendingInputs, ...queuedInputs]),
+  );
+}
+
 /** Canonical history, accepted custody, then local delivery are representations of one input. */
 export function placeChatInputs(
   items: ChatItem[],
@@ -44,6 +77,7 @@ export function placeChatInputs(
   props: ChatInputPlacementProps,
   orderState: ChatInputOrderState,
   currentRunId: string | null,
+  heldSends: ReadonlySet<string>,
 ): {
   pendingKeys: Set<string>;
   historicalKeys: Set<string>;
@@ -111,7 +145,7 @@ export function placeChatInputs(
   const acceptedKeys = new Map(blocks.map((block) => [block.items[0]!.key, block]));
   const historyKeys = new Set(items.map((item) => item.key));
   for (const queued of queue) {
-    if (!shouldRenderQueuedSendInThread(queued)) {
+    if (!shouldRenderQueuedSendInThread(queued) || heldSends.has(queued.id)) {
       continue;
     }
     const message = queuedSendThreadMessage(queued);

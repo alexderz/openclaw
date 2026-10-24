@@ -138,6 +138,31 @@ it("retains live running activity when history contains an unfinished call", () 
   expect(container.textContent).not.toContain("1 unknown");
 });
 
+it("does not count the active run's unfinished history call as unknown without live progress", () => {
+  const call = tool("active", "Hold the reply open");
+  const unfinished = (owner: string) => ({
+    ...call,
+    runId: owner,
+    __openclaw: { id: "tool-active", runId: owner },
+    activity: [
+      call.activity[0]!,
+      {
+        ...call.activity[1]!,
+        phase: "end",
+        status: undefined,
+        summary: "Outcome unknown",
+        unpairedCall: true,
+      },
+    ] satisfies AgentActivityItem[],
+  });
+  draw([user, unfinished(runId)]);
+  expect(container.querySelector(".chat-activity-group__summary")).not.toBeNull();
+  expect(container.textContent).not.toContain("1 unknown");
+  // Once its run is over, a call that never got a result keeps its unknown outcome.
+  draw([user, unfinished(runId)], { runActive: false, runId: null });
+  expect(container.textContent).toContain("1 unknown");
+});
+
 it("limits live copy to the newest activity group in the active run, not history or another run", () => {
   draw(
     [

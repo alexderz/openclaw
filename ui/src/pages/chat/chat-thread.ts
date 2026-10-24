@@ -14,7 +14,7 @@ import {
   messageRecoveryKey,
   type AssistantMessageExpansionState,
 } from "./chat-message-recovery.ts";
-import { resetWorkingProgress } from "./chat-progress.ts";
+import { resetPlacedQueuedSends, resetWorkingProgress } from "./chat-progress.ts";
 import { buildChatItems, type BuildChatItemsProps } from "./chat-thread-build.ts";
 import {
   createChatDisplayOrderState,
@@ -77,6 +77,7 @@ const expandedUserMessagesBySession = new Map<string, Map<string, boolean>>();
 const expansionMapVersions = new WeakMap<ReadonlyMap<string, unknown>, number>();
 
 export function resetChatThreadState(paneId?: string): void {
+  resetPlacedQueuedSends(paneId);
   if (paneId) {
     chatItemsByPane.delete(paneId);
     return;

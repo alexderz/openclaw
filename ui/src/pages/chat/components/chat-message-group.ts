@@ -203,7 +203,14 @@ export function renderActivityGroup(
   const activityDisclosureId = `activity:${firstGroup.key}`;
   const activityBodyId = `activity-body-${fnv1aUtf16(firstGroup.key).toString(16)}`;
   const activityExpanded = opts.isToolMessageExpanded?.(activityDisclosureId) ?? false;
-  const groupSummaryLabel = summarizeToolGroup(visibleActivity, {
+  // An unpaired history call of the active run has not ended yet: it has no
+  // outcome, so it must not count as "unknown" while that run continues.
+  const summarizedActivity = visibleActivity.map((item) =>
+    item.unpairedCall && !item.status && currentRunActivity.has(item)
+      ? { ...item, status: "running" as const }
+      : item,
+  );
+  const groupSummaryLabel = summarizeToolGroup(summarizedActivity, {
     includeInlineOutcomes: activityExpanded,
     ownSessionLaunches: ownSessionLaunchCalls(cards),
   });
@@ -312,7 +319,7 @@ export function renderActivityGroup(
           groupSummaryLabel,
           currentActivity,
           opts.pluginToolIcons,
-          describeToolGroup(visibleActivity)
+          describeToolGroup(summarizedActivity)
             .outcomes.filter(({ kind }) => kind !== "failed" && kind !== "skipped")
             .map(({ label }) => label),
         )}

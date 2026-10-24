@@ -172,6 +172,117 @@ export function shouldRenderQueuedSendInThread(item: ChatQueueItem): boolean {
   );
 }
 
+/** An accepted input the transcript has not committed yet still owns the next turn. */
+export function pendingInputHoldsTurn(
+  inputs: readonly { state: string; runId?: string }[],
+): boolean {
+  return inputs.some((input) => input.state === "queued" && Boolean(input.runId));
+}
+
+/**
+ * Sends the Gateway holds behind another turn, keyed by queue id. A shown input
+ * keeps its order, so each stays in the tray, in send order, until its own turn
+ * starts; only the next turn's send may enter the transcript. `queue` is in
+ * delivery order; accepted Gateway inputs ahead of it set `queuedAhead`.
+ */
+export function queuedSendsAwaitingTurn(
+  queue: readonly (ChatQueueItem & { serverQueued?: true })[],
+  activeRunId: string | null | undefined,
+  queuedAhead = false,
+): Set<string> {
+  const awaiting = new Set<string>();
+  let blocked = queuedAhead;
+  for (const item of queue) {
+    if (
+      item.queueMode === "steer" ||
+      item.queueMode === "interrupt" ||
+      item.sendState === "failed" ||
+      isQueuedSendInlineState(item) ||
+      // A row joined to an existing run is not a future turn.
+      (item.pendingRunId && !item.serverQueued)
+    ) {
+      continue;
+    }
+    const inFlight =
+      (item.sendState === "submitting" || item.sendState === "sending") &&
+      shouldRenderQueuedSendInThread(item);
+    if (inFlight && !(item.sendRunId && item.sendRunId === activeRunId)) {
+      // Another run owns the session, or an earlier input still waits for its turn.
+      if (blocked || activeRunId) {
+        awaiting.add(item.id);
+      }
+    }
+    blocked = true;
+  }
+  return awaiting;
+}
+
+// Sends a pane's transcript has shown, per pane and session. A shown input
+// keeps its place even if a later run is adopted before its row retires.
+const placedQueuedSends = new Map<string, Set<string>>();
+
+export function resetPlacedQueuedSends(paneId?: string): void {
+  if (!paneId) {
+    placedQueuedSends.clear();
+    return;
+  }
+  for (const key of placedQueuedSends.keys()) {
+    if (key.startsWith(`${paneId}\n`)) {
+      placedQueuedSends.delete(key);
+    }
+  }
+}
+
+/**
+ * queuedSendsAwaitingTurn for one pane's transcript and tray. Both call it with
+ * the same inputs in each render, so whichever runs first records the same
+ * sends: one the transcript already shows never returns to the tray. A row
+ * leaves the record when it leaves the outbox (`outboxIds`), not when custody
+ * merely hides it.
+ */
+export function resolveQueuedSendsAwaitingTurn(
+  scope: { paneId: string; sessionKey: string },
+  queue: readonly (ChatQueueItem & { serverQueued?: true })[],
+  outboxIds: ReadonlySet<string>,
+  activeRunId: string | null | undefined,
+  queuedAhead = false,
+): Set<string> {
+  const paneKey = `${scope.paneId}\n`;
+  const key = paneKey + scope.sessionKey;
+  // A pane shows one session; records for the sessions it left are spent.
+  for (const other of placedQueuedSends.keys()) {
+    if (other !== key && other.startsWith(paneKey)) {
+      placedQueuedSends.delete(other);
+    }
+  }
+  const placed = placedQueuedSends.get(key) ?? new Set<string>();
+  for (const id of placed) {
+    if (!outboxIds.has(id)) {
+      placed.delete(id);
+    }
+  }
+  const awaiting = queuedSendsAwaitingTurn(queue, activeRunId, queuedAhead);
+  for (const item of queue) {
+    if (awaiting.has(item.id)) {
+      if (placed.has(item.id)) {
+        awaiting.delete(item.id);
+      }
+    } else if (!item.serverQueued && shouldRenderQueuedSendInThread(item)) {
+      // Includes inline delivery states, so a retried bubble stays where it is.
+      placed.add(item.id);
+    } else {
+      // A row back in plain queued state is no longer shown; its turn rule applies again.
+      placed.delete(item.id);
+    }
+  }
+  if (placed.size > 0) {
+    placedQueuedSends.set(key, placed);
+  } else {
+    placedQueuedSends.delete(key);
+  }
+  return awaiting;
+}
+
 export function resolveWorkingProgress(
   sessionKey: string,
   runId: string | null,

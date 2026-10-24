@@ -303,7 +303,12 @@ describe("transcript input order", () => {
             : [earlier, later];
       const pendingInputs = state === "accepted" ? [acceptedInput("Earlier input", 10)] : [];
       const expected = ["Existing conversation", "Earlier input", "New input"];
-      expect(visibleRows({ queue, pendingInputs })).toEqual(expected);
+      // While an earlier send is in flight or accepted but not committed, it owns
+      // the next turn: the new submission waits in the tray, never above it.
+      const held = expected.slice(0, 2);
+      expect(visibleRows({ queue, pendingInputs })).toEqual(
+        state === "accepted" || reordered ? held : expected,
+      );
       if (state === "accepted" || reordered) {
         expect(
           visibleRows({
@@ -313,7 +318,7 @@ describe("transcript input order", () => {
               acceptedInput(reordered ? "Earlier input" : "New input", reordered ? 40 : 30),
             ],
           }),
-        ).toEqual(expected);
+        ).toEqual(reordered ? held : expected);
       }
     },
   );
