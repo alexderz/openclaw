@@ -22,6 +22,8 @@ export type AgentRunContext = {
   agentId?: string;
   /** Owning run's sessionId; stamped onto lifecycle events. */
   sessionId?: string;
+  /** Class the typed turn that started this run was admitted under; stamped onto chat events. */
+  authorityClass?: "ordinary" | "delegated";
   /** Gateway lifecycle generation captured when the run was registered. */
   lifecycleGeneration?: string;
   /** Producer-owned start captured from this run's accepted lifecycle event. */

@@ -30,6 +30,7 @@ import {
 } from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
+import { stampChatEventAuthorityClass } from "./chat-event-authority.js";
 import { projectInFlightRunSnapshot, type InFlightRunSnapshot } from "./chat-inflight-snapshot.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
@@ -447,7 +448,7 @@ function broadcastChatAborted(
       : undefined;
   const payloadAgentId =
     sessionKey === "global" ? (explicitAgentId ?? defaultGlobalAgentId) : explicitAgentId;
-  const payload = {
+  const payload = stampChatEventAuthorityClass({
     runId,
     sessionKey,
     ...(payloadAgentId ? { agentId: payloadAgentId } : {}),
@@ -456,7 +457,7 @@ function broadcastChatAborted(
     stopReason,
     ...(errorMessage ? { errorMessage } : {}),
     message: params.message ? { ...params.message, timestamp: Date.now() } : undefined,
-  };
+  });
   const deliverySessionKeys = resolveChatAbortDeliverySessionKeys(ops, sessionKey, payloadAgentId);
   ops.broadcast("chat", payload, {
     sessionKeys: deliverySessionKeys,

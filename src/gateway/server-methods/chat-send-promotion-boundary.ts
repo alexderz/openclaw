@@ -1,6 +1,13 @@
+import { isOrdinarySessionEffectiveAdmission } from "../../agents/session-effective-admission.js";
+import { isSubagentEnvelopeSession } from "../../agents/subagents/spawn/subagent-capabilities.js";
+import type { UserTurnAuthorityClass } from "../../sessions/user-turn-transcript.types.js";
 import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
+import {
+  readAdmittedChatTurnEnvelope,
+  type captureAdmittedChatSendSessionSettings,
+} from "./chat-send-session-settings.js";
 import { activateSessionPromotionBeforeAdmission } from "./sessions-promotion-activation.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
@@ -25,6 +32,47 @@ export function isDirectHumanChatTurn(request: NormalizedChatSendRequest): boole
     request.reconnectResumeRequested ||
     !isBrowserOperatorUiClient(request.clientInfo)
   );
+}
+
+/**
+ * Class a typed turn was admitted under, captured once for the run. Matches the class the
+ * run's tools use: ordinary only for an activated-ordinary handle; otherwise delegated when
+ * the key or ACP envelope is a sub-agent envelope; otherwise the admission class.
+ * System-provenance input, goal and review continuations and stop commands stay unstamped.
+ */
+export function typedTurnAuthorityClass(
+  request: Pick<
+    NormalizedChatSendRequest,
+    | "systemInputProvenance"
+    | "systemProvenanceReceipt"
+    | "goalOperation"
+    | "stopCommand"
+    | "providerReviewAcknowledgment"
+  >,
+  settings: ReturnType<typeof captureAdmittedChatSendSessionSettings>,
+): UserTurnAuthorityClass | undefined {
+  if (
+    request.systemInputProvenance ||
+    request.systemProvenanceReceipt ||
+    request.goalOperation ||
+    request.stopCommand ||
+    request.providerReviewAcknowledgment
+  ) {
+    return undefined;
+  }
+  const admission = settings?.effectiveAdmission;
+  if (!admission) {
+    return undefined;
+  }
+  // The tool resolver lifts delegation only for this exact handle, not for effectiveClass.
+  if (isOrdinarySessionEffectiveAdmission(admission, admission.sessionId)) {
+    return "ordinary";
+  }
+  const captured = readAdmittedChatTurnEnvelope(settings);
+  if (isSubagentEnvelopeSession(captured?.sessionKey, { entry: captured?.entry })) {
+    return "delegated";
+  }
+  return admission.effectiveClass;
 }
 
 export function isFreshHumanChatAdmission(

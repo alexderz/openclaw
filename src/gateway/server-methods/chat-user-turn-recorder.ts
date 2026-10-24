@@ -24,6 +24,7 @@ import { hasGatewayAdminScope } from "../operator-scopes.js";
 import { formatForLog } from "../ws-log.js";
 import { buildRestartSafeChatTranscriptState } from "./chat-restart-recovery.js";
 import type { AdmittedChatSend } from "./chat-send-admission.js";
+import { typedTurnAuthorityClass } from "./chat-send-promotion-boundary.js";
 import {
   resolveChatSendReplyContext,
   type ChatSendReplyContextFields,
@@ -74,6 +75,8 @@ export function createGatewayChatUserTurnController(params: {
     (!request.systemInputProvenance || request.systemInputProvenance.kind === "external_user")
       ? normalizeMessageClientSources([request.clientInfo])
       : [];
+  // Same classification claimAgentRunContext stored for this run's live chat events.
+  const authorityClass = typedTurnAuthorityClass(request, admission.admittedSessionSettings);
   const baseInput: UserTurnInput = {
     ...params.transcript,
     ...(request.goalOperation?.action === "resume" ? { display: false } : {}),
@@ -86,6 +89,7 @@ export function createGatewayChatUserTurnController(params: {
     ...(sender ? { sender } : {}),
     ...(sourceClients.length ? { transport: { clients: sourceClients } } : {}),
     ...(hasGatewayAdminScope(params.client) ? { senderIsOwner: true } : {}),
+    ...(authorityClass ? { authorityClass } : {}),
     ...(request.systemInputProvenance
       ? { provenance: request.systemInputProvenance }
       : admission.restartSafeAdmission && params.isDirectExternalUser

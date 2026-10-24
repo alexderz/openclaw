@@ -44,6 +44,7 @@ import {
   appendChatCanvasBlocksToMessage,
   extractChatToolResultCanvasPreview,
 } from "./chat-display-projection.canvas.js";
+import { stampChatEventAuthorityClass } from "./chat-event-authority.js";
 import {
   projectLiveAssistantBufferedText,
   shouldSuppressAssistantEventForLiveChat,
@@ -800,9 +801,11 @@ export function createAgentEventHandler({
   const sendLivePayload = (
     event: "agent" | "chat",
     sessionKey: string | undefined,
-    payload: ChatEvent | AgentEventPayload,
+    capturedPayload: ChatEvent | AgentEventPayload,
     opts?: LivePayloadOptions,
   ) => {
+    const payload =
+      event === "chat" ? stampChatEventAuthorityClass(capturedPayload) : capturedPayload;
     if (
       event === "chat" &&
       "state" in payload &&

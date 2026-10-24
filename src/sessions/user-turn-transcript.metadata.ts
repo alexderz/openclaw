@@ -8,6 +8,7 @@ import { readTranscriptSenderIdentity } from "../chat/sender-identity.js";
 import { normalizeInputProvenance } from "./input-provenance.js";
 import type {
   PersistedUserTurnMessage,
+  UserTurnAuthorityClass,
   UserTurnInput,
   UserTurnMessagePersistenceParams,
 } from "./user-turn-transcript.types.js";
@@ -15,6 +16,10 @@ import type {
 const REPLY_PREVIEW_TEXT_MAX_CHARS = 2000;
 const REPLY_PREVIEW_SENDER_MAX_CHARS = 200;
 const STEER_TARGET_RUN_ID_MAX_CHARS = 512;
+
+export function readUserTurnAuthorityClass(value: unknown): UserTurnAuthorityClass | undefined {
+  return value === "ordinary" || value === "delegated" ? value : undefined;
+}
 
 export function buildRunUserTurnIdempotencyKey(runId: string): string {
   return `${runId}:user`;
@@ -69,6 +74,7 @@ export function buildPersistedUserTurnMetadata(
           senderIsOwner:
             input.senderIsOwner && (!input.provenance || input.provenance.kind === "external_user"),
         }),
+    ...(input.authorityClass ? { authorityClass: input.authorityClass } : {}),
     ...(senderId ? { senderId } : {}),
     ...(senderName ? { senderName } : {}),
     ...(senderUsername ? { senderUsername } : {}),
@@ -165,6 +171,11 @@ export function restorePreparedUserTurnOperationalMetaForRuntime<
   if (typeof senderIsOwner === "boolean") {
     runtimeMeta.senderIsOwner = senderIsOwner;
   }
+  delete runtimeMeta.authorityClass;
+  const authorityClass = readUserTurnAuthorityClass(preparedMeta?.authorityClass);
+  if (authorityClass) {
+    runtimeMeta.authorityClass = authorityClass;
+  }
   const contentUnchanged = isDeepStrictEqual(
     params.runtimeMessage.content,
     params.preparedMessage.content,
@@ -234,6 +245,7 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
   const display = message.display;
   const intent = structuredClone(originalMeta?.intent);
   const senderIsOwner = originalMeta?.senderIsOwner;
+  const authorityClass = readUserTurnAuthorityClass(originalMeta?.authorityClass);
   const replyToId = normalizeOptionalString(originalMeta?.replyToId);
   const originalReplyPreview = asOptionalRecord(originalMeta?.replyToPreview);
   const replyPreviewText = normalizeOptionalString(originalReplyPreview?.text);
@@ -281,6 +293,11 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
   };
   if (intent === undefined) {
     delete protectedMeta.intent;
+  }
+  // Server-stamped admission fact: a hook can neither forge nor drop it.
+  delete protectedMeta.authorityClass;
+  if (authorityClass) {
+    protectedMeta.authorityClass = authorityClass;
   }
   // A redacting hook must not leave an alternate copy of the original text visible.
   const contentUnchanged = isDeepStrictEqual(nextUserMessage.content, originalContent);

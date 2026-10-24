@@ -156,6 +156,9 @@ export function registerAgentRunContext(
   if (context.verboseLevel && existing.verboseLevel !== context.verboseLevel) {
     existing.verboseLevel = context.verboseLevel;
   }
+  if (context.authorityClass) {
+    existing.authorityClass = context.authorityClass;
+  }
   existing.completionSource ??= context.completionSource;
   if (context.sessionEventDelivery === false) {
     existing.sessionEventDelivery = false;
