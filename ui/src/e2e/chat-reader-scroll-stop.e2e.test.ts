@@ -222,10 +222,13 @@ suite.define(() => {
           grown = await growPassedBubble(page);
         };
         // Drag the content up: the reader moves down into the answer.
-        await touchDrag(page, cdp, -520, variant.steps, variant.hold, {
+        const during: Record<number, () => Promise<void>> = {
           0.25: () => receiveFollowUp(gateway),
-          ...(variant.grow === "drag" ? { 0.75: grow } : {}),
-        });
+        };
+        if (variant.grow === "drag") {
+          during[0.75] = grow;
+        }
+        await touchDrag(page, cdp, -520, variant.steps, variant.hold, during);
         if (variant.grow === "fling") {
           await page.waitForTimeout(32);
           await grow();

@@ -458,7 +458,7 @@ describe("holdChatDisplayOrder with stored rows (DER-623)", () => {
 
   it("loads an older page above a notice that opens the view", () => {
     const state = createChatDisplayOrderState();
-    const notice: ChatItem = { kind: "notice", key: "notice", text: "delivery blocked" };
+    const notice: ChatItem = { kind: "notice", key: "notice", text: "delivery blocked", timestamp: 0 };
     const after = storedRow("after", "assistant", "after", 10);
     holdChatDisplayOrder([notice, after], state);
     const older = [storedRow("q", "user", "q", 1), storedRow("a", "assistant", "a", 2)];
@@ -474,7 +474,7 @@ describe("holdChatDisplayOrder with stored rows (DER-623)", () => {
     const state = createChatDisplayOrderState();
     const rows = [storedRow("a", "user", "a", 1), storedRow("b", "assistant", "b", 2)];
     holdChatDisplayOrder(rows, state);
-    const card: ChatItem = { kind: "notice", key: "card", text: "late card" };
+    const card: ChatItem = { kind: "notice", key: "card", text: "late card", timestamp: 0 };
     expect(keys(holdChatDisplayOrder([card, ...rows], state))).toEqual(["a", "b", "card"]);
   });
 
