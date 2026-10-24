@@ -26,6 +26,31 @@ Before a significant update, [create a verified backup](#before-updating-create-
 Automatic config copies and migration recovery originals are not a full-state
 backup.
 
+## Update implementation contract
+
+**Updates always work** (`openclaw update` finishes best effort everywhere). Changes to update, Doctor, service lifecycle, migrations, plugin loading: state their update behavior. Installed updater runs first, can't be patched; candidate fixes key on markers shipped drivers set; existing operator state = input. Recoverable hiccups → recorded warnings; back up before mutating, let rollback restore it; refuse only for named data risk with previous Gateway kept running. Timeouts and budgets: generous, derived from measured state, sized for slow hardware. Proof: published-driver × candidate cell.
+
+During update finalization, disposable plugin source copies and private SQLite
+inspection snapshots use the candidate helper's absolute `TMPDIR` (including
+when an older installed updater starts that helper). Normal Gateway cache
+placement is unchanged. Installed plugin projects, retained native admissions,
+and recovery or migration backups remain with their existing durable owners;
+`TMPDIR` does not relocate those writes or remove the need for free space on the
+installation and state filesystems.
+
+Post-activation schema verification preserves agent databases Doctor holds after
+deletion. These stores may keep an older schema without failing the update;
+Doctor's held-store warning remains visible. Active databases and pending
+deletions still require the candidate schema, and held stores remain part of
+rollback verification.
+
+OpenClaw.app runs plugin convergence through the selected runtime's Doctor while
+the app owns Gateway activation. This aligns managed official npm plugins with the new
+core before plugin migrations, repairs host peer links, and refreshes the plugin
+registry. Unavailable replacements remain nonblocking: the app's recovery
+diagnostics include the remaining version or peer-link warning and the exact
+repair command. Retry Gateway setup in the app to repeat this owned repair.
+
 ## Retired tenant-container management
 
 The experimental `openclaw fleet` command has been removed. Updating the host
@@ -71,7 +96,7 @@ schemas; follow [downgrade recovery](/reference/database-schemas/integrity-and-r
 before running either bridge release against that state.
 
 Back up the state first and use a [supported Node version](/install/node):
-Node 24.16+ on the 24.x line, or Node 26.1+. Keep the same owning account,
+Node 24.22.1+ on the 24.x line, or Node 26.12.1+. Keep the same owning account,
 installation prefix, profile, and state/configuration paths throughout.
 
 For an npm installation with an OpenClaw-managed Gateway service, run this
@@ -318,6 +343,9 @@ reported recovery command. Doctor does not clear those artifacts.
 pnpm updates use the installation's own pnpm home and bin directory, even when
 macOS service PATH excludes pnpm. The installed updater must contain this fix.
 
+pnpm updates use the installation's own pnpm home and bin directory, even when
+macOS service PATH excludes pnpm. The installed updater must contain this fix.
+
 Native pnpm updates also relocate pnpm 12 launcher paths before publishing them.
 After activation, unresolved launcher targets produce a warning with repair
 guidance without rolling back the updated package. These protections require
@@ -373,9 +401,14 @@ containing the managed-helper authority fix, subsequent updates started through
 **from** the fixed version; it does not repair the 2026.9.4 macOS handoff in place.
 </Note>
 
-Package updates that select Node inspect the exact candidate's Node requirement before activation.
-An incompatible runtime produces `node-runtime-preflight`, with the target
-version, required engine range, selected Node version, and an upgrade command.
+Registry package updates inspect the exact target's Node requirement before
+staging or running package lifecycle scripts. An incompatible Gateway runtime
+produces `preflight-node-runtime-incompatible`, with the target version, required
+engine range, selected Node version, and an upgrade command. If the Gateway
+service pins a Node executable, update that service definition too; changing
+the shell's Node alone does not change the service. The updater keeps the
+requested OpenClaw target and does not select another release automatically.
+Later runtime capability checks can still produce `node-runtime-preflight`.
 npm directory permission failures produce `global-install-permission-denied`,
 naming the directory, its owner when available, and the next action. Dry-run JSON
 includes these outcomes in `failures`; the update report and Doctor's update
@@ -480,6 +513,8 @@ This lets validation run while the serving Gateway keeps its configured ports.
 It preserves non-secret Gateway auth settings such as `gateway.auth.rateLimit`
 for policy checks, while using a temporary token and disabling Tailscale identity
 authentication.
+Doctor omits the onboarding URL warning derived from that temporary loopback
+binding during rehearsal; other findings remain visible.
 The activated Gateway retains your normal listener settings. Candidate startup
 progress is emitted only when the driving updater announces support, so older
 updaters, including 2026.9.5 and 2026.9.6, retain actual startup errors instead of
@@ -659,6 +694,10 @@ identities in the journal are not rewritten. Version or inode matches alone do
 not qualify; changed content, unsafe journal permissions or links, active update
 ownership, and unfinished rollback remain refusals.
 
+Symlink launchers may have different recorded permission modes (for example,
+`0755` and `0700`) if their targets and required identities still match. Regular-file
+launcher modes and package-tree integrity checks remain enforced.
+
 If a manual installation has replaced the candidate with a newer version, repair
 verifies that installation's manifest, dist inventories, entry targets, and launchers
 before archiving the old operation as `superseded-by-manual-install`. Old package
@@ -711,13 +750,22 @@ or rollback for it. Do not rewrite identities or delete recovery artifacts.
 
 ### Unfinished publication and rollback
 
-`openclaw update` automatically settles a `publication-complete` operation when
-the live candidate passes the same verification as repair, even when the update
-lease is unchanged. A dry run previews settlement without changing recovery
-artifacts. With an unchanged lease, other unfinished phases still require explicit
-repair.
+`openclaw update` automatically settles a `prepared`, `publishing`, or
+`publication-complete` operation when the live candidate passes the same
+verification as repair, even when the update lease is unchanged. It also retires
+an untouched preparation after verifying the original package and launchers.
+This does not republish files beneath a running Gateway. A dry run previews
+settlement without changing recovery artifacts. Unfinished publication that
+still needs file changes, pending rollback, and failed verification retain their
+recovery artifacts and report the repair command.
 
-For an external-helper operation stuck at `prepared`, `publishing`, or
+After a managed-service update fails before stopping the original Gateway,
+the handoff checks whether that original version is still serving and records
+the outcome. A stopped Gateway or unavailable health check is reported with
+its reason. This observation does not restart the service or mark the attempted
+update successful.
+
+To explicitly settle an external-helper operation stuck at `prepared`, `publishing`, or
 `publication-complete` whose live package already serves the candidate, run
 `openclaw update repair` from an independent terminal. Repair verifies the
 installed candidate's dist content inventory, manifest, launchers,
@@ -852,6 +900,9 @@ restarts the Gateway.
 
 Missing state metadata or unverified backup coverage can still produce
 `update-schema-bump-unfenced` with database versions and recovery instructions.
+If npm postinstall emits this typed refusal, the updater reports it without
+retrying the install with optional dependencies omitted. Other install failures
+retain their existing retry behavior.
 Before package commit, let the failed update finish restoring the previous
 package. OpenClaw 2026.9.2 leaves the Gateway service stopped after failed
 post-install verification. After package commit, the old package backup is gone:
@@ -1103,6 +1154,11 @@ openclaw doctor
 ```
 
 Migrates config, audits DM policies, and checks gateway health. Doctor also compares active official plugins with the OpenClaw package the managed service will load after restart. Resolve any plugin restart-readiness warning before continuing. Details: [Doctor](/gateway/doctor)
+
+On Windows, `openclaw doctor --fix` can also retry abandoned backup scratch
+cleanup after an older release reported `EPERM` while renaming to an
+`openclaw-backup-retired-*` directory. Active backup scratch and published
+archives remain protected. See [Backup scratch cleanup](/cli/backup).
 
 If you use the unpacked Chrome extension, also run `openclaw browser doctor --browser-profile chrome`.
 For a version-mismatch warning, reload the extension from `chrome://extensions`;

@@ -35,8 +35,22 @@ own 60-second cold-start limit, and each `schtasks` command has a 15-second limi
 a stalled operation names the check or command instead of using the update's full
 timeout.
 
+If Task Scheduler denies disabling autostart during update preparation, OpenClaw
+reports `windows-task-elevation-required` with the same elevated-terminal and
+manual-update guidance. A definite denial leaves the task unchanged, so no
+autostart restoration is attempted; the disable guard remains required before
+swapping the installation.
+
 Service-definition refresh recognizes Windows account aliases that resolve to the
 same SID. A different or unresolved account remains protected from automatic repair.
+
+If service inspection is unavailable, package updates refuse before replacement
+when a live Gateway lock identifies the same installation. On Windows, a live lock
+PID is enough when its command-line package identity cannot be read.
+The public reason is `gateway-stop-unverified`. Stop the Gateway through Task
+Scheduler, its original terminal, or `openclaw gateway stop`, then rerun
+`openclaw update`. Updates without a live lock still continue on all platforms.
+This admission check requires an updated installed updater.
 
 For a global npm installation, the manual recovery path is
 `npm i -g openclaw@<target> --allow-scripts=openclaw`, then
@@ -49,8 +63,10 @@ until replaced; use the elevated or manual path for that first upgrade.
 
 Installations owned by a system package manager skip OpenClaw-managed updates
 before npm staging or Gateway shutdown. If ownership inspection fails, the
-update continues with a warning; only a confirmed ownership match skips replacement. For pacman (including Arch-based
-distributions), update with `sudo pacman -Syu` or your AUR helper. For FreeBSD,
+update continues with a warning; only a confirmed ownership match skips replacement.
+A missing package-manager executable is reported as unavailable, without database
+recovery instructions. For pacman (including Arch-based distributions), update
+with `sudo pacman -Syu` or your AUR helper. For FreeBSD,
 use the owning pkg or Ports deployment. Then restart the Gateway through its
 service owner.
 Older updaters must receive this fix through that system package manager first;
@@ -547,6 +563,44 @@ This handoff works only when the installed updater already supports it. An older
 updater that refuses before staging cannot use a newer candidate's judgment;
 follow the recovery guidance for that installed release first.
 
+## Runtime retention failures
+
+**Fix now:** `host-owned-plugin-link` means a dependency symlink reaches
+OpenClaw-owned files that the updater cannot safely retain as an independent
+plugin dependency. Retention protects the running updater and recovery workers
+when package replacement removes the old files. Do not skip this check.
+
+Inspect the link and target in the local failure output. Keep the source files
+and recovery backups. For a current installation, ask the plugin maintainer to
+replace the private host-file dependency with `openclaw/plugin-sdk/*` imports or
+a separately packaged dependency. If the link is unexpected, run
+`openclaw triage` with the same profile, service account, state, and configuration
+to diagnose its owner before moving or removing anything.
+
+Older installed updaters may instead encounter the historical package-backup or
+retired-workspace cases described above. The installed updater performs
+retention before replacement: selecting a corrected candidate cannot repair
+that first step. Only move an identified inactive historical backup link; do not
+move an active or unresolved update's backup or delete its source checkout.
+
+After repairing the link, retry the update. Use the report's verification and
+recovery results to determine whether the previous Gateway is still serving;
+a retention refusal alone does not establish service health or restoration.
+
+## Gateway recovery verification failures
+
+**Fix now:** a stopped service or failed readiness check means the update did not
+verify a serving Gateway. Check `openclaw gateway status --deep` using the same
+profile and account. The report identifies observed service status, version
+mismatches, readiness failures, and plugin or channel errors when available.
+A readiness deadline without those facts does not identify the startup cause.
+
+Keep recovery backups and inspect the restart log printed by the updater.
+Follow its recovery instructions; if it says restarting is unsafe, keep the
+Gateway stopped and run `openclaw triage` to repair the installation. Do not
+restore code alone after state migration. If the report says the Gateway is
+still starting, check its progress instead of repeatedly restarting it.
+
 ## Automation and SSH
 
 For an authorized update on another host, use the target installation's owning
@@ -608,9 +662,10 @@ performs.
 
 ## Options
 
-Post-core repair Doctor and `openclaw update finalize` run without a separate
-per-Doctor deadline unless the operator supplies `--timeout`. A fresh post-core
-process receives the operator choice separately from its internal step allowance.
+Post-core repair Doctor uses the supplied step allowance when `--timeout` is
+omitted. An explicit `--timeout` takes precedence, and the overall update budget
+still bounds the Doctor process. On expiry, the updater stops the worker tree
+before continuing through its existing maintenance-warning or recovery path.
 Older targets retain their existing allowance and deadline behavior.
 
 When `--timeout` is omitted, current CLI and RPC finalization do not add an aggregate
@@ -651,7 +706,7 @@ Use `openclaw update status` and Doctor for recovery guidance.
 | `--dry-run`                                      | Preview planned actions (channel/tag/target/restart flow) without writing config, installing, syncing plugins, or restarting.                                                                                                                                                                                                                                     |
 | `--admission <auto\|installed>`                  | Choose candidate admission when supported (`auto`, the default), or force installed admission checks. This option has no environment-variable form. Dry runs always use installed checks.                                                                                                                                                                         |
 | `--json`                                         | Print machine-readable `UpdateRunResult` JSON. Includes `postUpdate.plugins.warnings` when a managed plugin needs repair, beta-channel plugin fallback details, and `postUpdate.plugins.integrityDrifts` when npm plugin artifact drift is detected during post-update sync.                                                                                      |
-| `--timeout <seconds>`                            | Optional per-step deadline in seconds. Omit to let package installation, deferred lifecycle scripts, and candidate Doctor finish without a work deadline. Checks and recovery retain their own bounds.                                                                                                                                                            |
+| `--timeout <seconds>`                            | Optional overall update budget in seconds, shared by activation, readiness, recovery, and native service commands. Without it, package installation and deferred lifecycle scripts have no work deadline; candidate Doctor, checks, and recovery retain their step bounds.                                                                                        |
 | `--drain-timeout <seconds>`                      | Immutable installations only: override the drain budget before interruption, independently of canary/readiness deadlines. Also accepted by `update recover`; healthy recovery never stops the process.                                                                                                                                                            |
 | `--yes`                                          | Skip confirmation prompts (for example downgrade confirmation).                                                                                                                                                                                                                                                                                                   |
 | `--reapply-local-overrides`                      | Replay trusted local packaged `dist` edits when the new package has the same baseline. Otherwise preserve them for manual recovery.                                                                                                                                                                                                                               |

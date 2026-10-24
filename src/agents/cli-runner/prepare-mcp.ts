@@ -68,7 +68,11 @@ export async function prepareCliMcpToolProjection(
     defaultMediatedToolNames?: readonly string[];
     scope: Pick<
       McpScope,
-      "cfg" | "skillLibraryAuthoring" | "authProfileStore" | "authProfileStoreAgentDir"
+      | "cfg"
+      | "skillLibraryAuthoring"
+      | "bundledTools"
+      | "authProfileStore"
+      | "authProfileStoreAgentDir"
     >;
     resolvePolicyTools: ResolveMcpTools;
     resolveScopedTools: ResolveMcpTools;

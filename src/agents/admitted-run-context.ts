@@ -52,7 +52,7 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   /** Immutable admission ceiling, never refreshed from the live session row. */
   sessionEffectiveAdmission?: import("../sessions/session-promotion-state.js").SessionEffectiveAdmission;
   profileId: string;
-  /** Host-captured original authenticated input, consumed only by restart-claim admission. */
+  /** Host-captured original input; claim/occurrence owners revalidate it for continuations. */
   recoverySnapshot?: import("../gateway/operator-run-recovery-source.js").OperatorRunRecoverySnapshot;
   scopes: readonly string[];
   /** Original access dependency; null is proven independent, undefined is unclassified. */

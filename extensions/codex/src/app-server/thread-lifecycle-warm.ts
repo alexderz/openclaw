@@ -14,6 +14,10 @@ import {
   isCodexAppServerLiveThreadProtected,
   releaseCodexAppServerLiveThread,
 } from "./client-runtime.js";
+import {
+  isCodexAppServerThreadTerminalNotification,
+  wasCodexAppServerThreadClosed,
+} from "./client-thread-closure.js";
 import type { CodexAppServerClient } from "./client.js";
 import {
   getCodexInferenceThread,
@@ -158,12 +162,38 @@ export async function releaseCodexBoundLiveThread(
 ): Promise<boolean> {
   const changedClient = options.ownerClientId && options.ownerClientId !== options.clientId;
   const previous = changedClient
-    ? await retainSharedCodexAppServerClientByInstanceId(options.ownerClientId!)
+    ? await retainSharedCodexAppServerClientByInstanceId(options.ownerClientId!, {
+        signal: options.signal,
+        createAbortError: codexThreadLifecycleAbortError,
+      })
     : undefined;
   if (changedClient && !previous) {
     return false;
   }
   const client = previous?.client ?? options.client;
+  let threadClosed: Promise<void> | undefined;
+  let stopWatching: (() => void) | undefined;
+  if (previous) {
+    threadClosed = new Promise<void>((resolve) => {
+      stopWatching = client.addNotificationHandler((notification) => {
+        const threadId =
+          notification.params && typeof notification.params === "object"
+            ? Reflect.get(notification.params, "threadId")
+            : undefined;
+        if (
+          isCodexAppServerThreadTerminalNotification(notification.method) &&
+          threadId === options.threadId
+        ) {
+          resolve();
+        }
+      });
+    });
+    // Runtime tracking closes the subscribe-after-notification race. A later
+    // retain clears this exact thread receipt before publishing new ownership.
+    if (wasCodexAppServerThreadClosed(client, options.threadId)) {
+      threadClosed = Promise.resolve();
+    }
+  }
   try {
     if (
       isCodexAppServerLiveThreadClaimed(client, options.threadId) ||
@@ -186,16 +216,23 @@ export async function releaseCodexBoundLiveThread(
         : undefined,
     });
   } finally {
-    // Rejection must free the lane so the claimed run can still be stopped.
-    const retiredExit = previous?.release(
-      !isCodexAppServerLiveThreadClaimed(client, options.threadId) &&
-        !isCodexAppServerLiveThreadProtected(client, options.threadId),
-    );
-    // Writer handoff waits for the retired owner to exit, but other leases can
-    // keep it alive indefinitely. This runs under the thread queue and binding
-    // lease, so cancellation must end the wait without proceeding to a write.
-    if (retiredExit) {
-      await racePromiseWithAbortSignal(retiredExit, options.signal, codexThreadLifecycleAbortError);
+    try {
+      // Rejection must free the lane so the claimed run can still be stopped.
+      const retiredExit = previous?.release(
+        !isCodexAppServerLiveThreadClaimed(client, options.threadId) &&
+          !isCodexAppServerLiveThreadProtected(client, options.threadId),
+      );
+      if (retiredExit) {
+        await options.lifecycleTiming.measure("retired-thread-runtime-release", () =>
+          racePromiseWithAbortSignal(
+            threadClosed ? Promise.race([retiredExit, threadClosed]) : retiredExit,
+            options.signal,
+            codexThreadLifecycleAbortError,
+          ),
+        );
+      }
+    } finally {
+      stopWatching?.();
     }
   }
 }

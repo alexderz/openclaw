@@ -1,15 +1,15 @@
 // Owns the paced cron next-check proposal carried on a live run context.
-import { getAgentRunContext } from "./agent-run-registry.js";
+import { getAgentRunContext, hasAgentRunContextExecutionOwner } from "./agent-run-registry.js";
 
-/** Records the latest next-check proposal on the matching paced cron run. */
+/** Records the latest next-check proposal on the matching live cron run. */
 export function recordCronNextCheckProposal(runId: string, jobId: string, delayMs: number): void {
   const context = getAgentRunContext(runId);
   const cronRun = context?.cronRunsByJobId?.get(jobId);
-  if (!cronRun) {
+  if (!cronRun || !hasAgentRunContextExecutionOwner(runId)) {
     throw new Error("cron next_check is only available to the currently running job");
   }
-  if (!cronRun.pacingEnabled) {
-    throw new Error("cron next_check requires pacing on the current job");
+  if (!cronRun.nextCheckEnabled) {
+    throw new Error("cron next_check requires pacing or a one-shot session continuation");
   }
   cronRun.nextCheckMs = delayMs;
 }

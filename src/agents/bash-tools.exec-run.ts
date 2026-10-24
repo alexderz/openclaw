@@ -178,7 +178,6 @@ export function createExecTool(defaults?: ExecToolDefaults) {
     notifyDeliveryContext,
     notifyFromConversationTurn,
   } = resolveExecNotificationDefaults(defaults);
-
   const approvalRunningNoticeMs = resolveApprovalRunningNoticeMs(defaults?.approvalRunningNoticeMs);
   // Derive agentId only when sessionKey is an agent session key.
   const parsedAgentSession = parseAgentSessionKey(defaults?.sessionKey);
@@ -573,8 +572,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           });
         }
 
-        subagentSession =
-          notifyOnExit && allowBackground ? await resolveSubagentSession() : false;
+        subagentSession = notifyOnExit && allowBackground ? await resolveSubagentSession() : false;
         assertSourceActive();
         run = await runExecProcess({
           command: params.command,
@@ -620,6 +618,12 @@ export function createExecTool(defaults?: ExecToolDefaults) {
         return attachExecApprovalReview(ExecProcessPreflightError.unwrap(error), approvalReview);
       }
 
+      // A failed wake-target capture clears the session's notifyOnExit (#169645).
+      const backgroundFollowUp = execBackgroundFollowUp({
+        notifyOnExit: run.session.notifyOnExit === true,
+        notifyOnExitEmptySuccess,
+        subagentSession,
+      });
       let yielded = false;
       let yieldTimer: NodeJS.Timeout | null = null;
       let registeredAbortSignal: AbortSignal | null = null;
@@ -716,11 +720,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
                     type: "text",
                     text: `${getWarningText()}Command still running (session ${run.session.id}, pid ${
                       run.session.pid ?? "n/a"
-                    }). ${execBackgroundFollowUp({
-                      notifyOnExit,
-                      notifyOnExitEmptySuccess,
-                      subagentSession,
-                    })}`,
+                    }). ${backgroundFollowUp}`,
                   },
                 ],
                 details: {
@@ -731,11 +731,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
                   cwd: run.session.cwd,
                   tail: run.session.tail,
                   // Structured callers receive details without the visible content.
-                  followUp: execBackgroundFollowUp({
-                    notifyOnExit,
-                    notifyOnExitEmptySuccess,
-                    subagentSession,
-                  }),
+                  followUp: backgroundFollowUp,
                 },
               },
           approvalReview,

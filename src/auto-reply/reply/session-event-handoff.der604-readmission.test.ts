@@ -25,8 +25,10 @@ import {
   enqueueSessionEventForHost,
 } from "./session-event-handoff.js";
 
-// Upstream #169529: an accepted completion refused because a config publication landed
-// before it started is re-admitted under the current policy instead of being dropped.
+// DER-604 on top of upstream #169529 (2026.10.7): a policy re-admission never repeats a turn
+// whose runner already reported activity, and a re-admitted wake refused by a transient
+// generation window stays retryable. The port-only cases (suffixed MessageSid, pre-adoption
+// queue refusal, single producer adoption) were dropped with the port; upstream owns them.
 const dispatch = vi.hoisted(() => vi.fn());
 // mock-isolation: The turn body is scripted; admission, target and lease stay real.
 vi.mock("../dispatch.js", () => ({
@@ -95,16 +97,6 @@ function deferToActiveRun(lifecycles: TurnAdoptionLifecycle[]) {
 }
 
 /** The queue drains the deferred run: execution re-checks its source, then the lifecycle ends. */
-function drainRefused(lifecycle: TurnAdoptionLifecycle, execution: SessionEventExecution) {
-  try {
-    execution.assertCurrent?.();
-  } catch {
-    // The run is dropped before adoption, so the queue reports abandonment.
-  }
-  lifecycle.onAbandoned?.();
-  lifecycle.onSettled?.();
-}
-
 function completeTurn(runId: string) {
   dispatch.mockImplementationOnce(async ({ replyOptions }: DispatchInput) => {
     const execution = replyOptions.internalEventExecution;
@@ -124,44 +116,6 @@ beforeEach(() => {
 
 afterAll(() => {
   continuation.mockRestore();
-});
-
-it("re-admits a deferred completion refused by a policy published before it started", async () => {
-  await withSession(async ({ env }) => {
-    const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
-    const lifecycles: TurnAdoptionLifecycle[] = [];
-    let execution: SessionEventExecution | undefined;
-    dispatch.mockImplementationOnce(async (input: DispatchInput) => {
-      execution = input.replyOptions.internalEventExecution;
-      input.replyOptions.turnAdoptionLifecycle.onDeferred?.();
-      lifecycles.push(input.replyOptions.turnAdoptionLifecycle);
-      return { deferredToActiveRun: true };
-    });
-    completeTurn("readmitted-run");
-    const receipt = enqueueSessionEventForHost("Exec completed (calm-daisy, code 0)", {
-      agentId: "main",
-      sessionKey,
-      source: "exec",
-      expectedTarget: target,
-    });
-    await expect(receipt.accepted).resolves.toEqual({ ok: true });
-
-    publishPolicy();
-    drainRefused(lifecycles[0]!, execution!);
-
-    await expect(receipt.settled).resolves.toMatchObject({
-      status: "completed",
-      executionStarted: true,
-    });
-    expect(dispatch).toHaveBeenCalledTimes(2);
-    const [first, second] = dispatch.mock.calls.map(([input]) => input as DispatchInput);
-    // A fresh dispatch binds the newly published policy under its own inbound id.
-    expect(first?.cfg.tools?.deny).toBeUndefined();
-    expect(second?.cfg.tools?.deny).toEqual(["publication-" + publications]);
-    expect(second?.ctx.MessageSid).toBe(`${receipt.id}:readmission-1`);
-    expect(receipt.cancel()).toBe(false);
-    expect(peekSystemEventEntries(sessionKey)).toEqual([]);
-  });
 });
 
 it("re-admits an undeferred wake refused at execution start by a policy publication", async () => {
@@ -245,40 +199,6 @@ it("keeps queue abandonment without a policy refusal terminal", async () => {
   });
 });
 
-it("bounds re-admission under a publication storm", async () => {
-  await withSession(async ({ env }) => {
-    const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
-    dispatch.mockImplementation(async ({ replyOptions }: DispatchInput) => {
-      const execution = replyOptions.internalEventExecution;
-      publishPolicy();
-      await execution.beforeStart?.().catch(() => undefined);
-      await execution.onTerminal("storm-run", "failed");
-      return { deferredToActiveRun: false };
-    });
-    const receipt = enqueueSessionEventForHost("Exec completed", {
-      agentId: "main",
-      sessionKey,
-      source: "exec",
-      expectedTarget: target,
-    });
-
-    await expect(receipt.settled).resolves.toMatchObject({
-      status: "failed",
-      executionStarted: false,
-      error: expect.stringContaining("configuration changed"),
-    });
-    // The original attempt plus two re-admissions, then a terminal failure.
-    expect(dispatch).toHaveBeenCalledTimes(3);
-    expect(dispatch.mock.calls.map(([input]) => (input as DispatchInput).ctx.MessageSid)).toEqual([
-      receipt.id,
-      `${receipt.id}:readmission-1`,
-      `${receipt.id}:readmission-2`,
-    ]);
-    expect(receipt.cancel()).toBe(false);
-    expect(peekSystemEventEntries(sessionKey)).toEqual([]);
-  });
-});
-
 it("forwards producer cancellation to the live re-admitted attempt", async () => {
   await withSession(async ({ env }) => {
     const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
@@ -351,59 +271,5 @@ it("keeps a re-admitted wake refused by a transient generation window retryable 
     expect(outcome.retryable).toBe(true);
     expect(refusal).toMatchObject({ code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE" });
     expect(dispatch).toHaveBeenCalledTimes(2);
-  });
-});
-
-it("commits the producer's adoption once when a publication refuses it after adoption", async () => {
-  await withSession(async ({ env }) => {
-    const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
-    // The normal reply owner that adopts the deferred run.
-    const owner = { sessionId: "original-session", abortSignal: new AbortController().signal };
-    const registryGet = vi
-      .spyOn(replyRunRegistry, "get")
-      .mockReturnValue(owner as unknown as ReplyOperation);
-    try {
-      const lifecycles: TurnAdoptionLifecycle[] = [];
-      const executions: SessionEventExecution[] = [];
-      dispatch.mockImplementation(async ({ replyOptions }: DispatchInput) => {
-        replyOptions.turnAdoptionLifecycle.onDeferred?.();
-        lifecycles.push(replyOptions.turnAdoptionLifecycle);
-        executions.push(replyOptions.internalEventExecution);
-        return { deferredToActiveRun: true };
-      });
-      let adoptions = 0;
-      const receipt = enqueueSessionEventForHost("Exec completed", {
-        agentId: "main",
-        sessionKey,
-        source: "exec",
-        expectedTarget: target,
-        onAdopted: () => {
-          // The durable producer commits, then a publication lands before execution.
-          if (++adoptions === 1) {
-            publishPolicy();
-          }
-        },
-      });
-      await expect(receipt.accepted).resolves.toEqual({ ok: true });
-      await expect(lifecycles[0]!.onAdopted()).rejects.toThrow("configuration changed");
-      lifecycles[0]!.onAbandoned?.();
-      lifecycles[0]!.onSettled?.();
-      await vi.waitFor(() => expect(lifecycles).toHaveLength(2));
-
-      await lifecycles[1]!.onAdopted();
-      const execution = executions[1]!;
-      await execution.beforeStart?.();
-      execution.onStarted("readmitted-run");
-      await execution.onTerminal("readmitted-run", "completed");
-      lifecycles[1]!.onSettled?.();
-
-      await expect(receipt.settled).resolves.toMatchObject({
-        status: "completed",
-        executionStarted: true,
-      });
-      expect(adoptions).toBe(1);
-    } finally {
-      registryGet.mockRestore();
-    }
   });
 });
