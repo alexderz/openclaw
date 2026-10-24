@@ -127,6 +127,11 @@ export const SessionPromotionProjectionSchema = closedObject({
   pendingBlockers: Type.Array(Type.String()),
   activationBoundary: Type.Literal("next-fresh-human-run-after-quiescence"),
   policyEvaluatedAt: Type.Number({ minimum: 0 }),
+  /**
+   * Restriction origins (`ToolRestrictionOrigin`) that limit this session compared with an
+   * ordinary session of the same agent; empty when none or not evaluated (see `toolLimits`).
+   * Older Gateways sent one generic caveat string here.
+   */
   effectiveRestrictions: Type.Array(Type.String()),
   capabilities: closedObject({
     sessionsSend: Type.Union([
@@ -135,6 +140,13 @@ export const SessionPromotionProjectionSchema = closedObject({
       Type.Literal("unknown"),
     ]),
   }),
+  /** Present only when the restriction fields come from a matching `tools.effective` read. */
+  toolLimits: Type.Optional(
+    closedObject({
+      count: Type.Integer({ minimum: 0 }),
+      evaluatedAt: Type.Number({ minimum: 0 }),
+    }),
+  ),
   /** History of a promotion that detached this session from its spawner; display only. */
   promotedFrom: Type.Optional(
     closedObject({

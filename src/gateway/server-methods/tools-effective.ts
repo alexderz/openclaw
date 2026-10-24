@@ -50,6 +50,7 @@ import {
 import { getConnectedNodePluginToolsVersion } from "../node-plugin-tool-snapshot.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { loadGatewaySessionEntryReadOnly, resolveSessionModelRef } from "../session-utils.js";
+import { recordToolsEffectiveRestrictions } from "../tools-effective-restrictions.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { defineValidatedGatewayHandler } from "./validation.js";
 
@@ -295,6 +296,13 @@ async function resolveReadOnlyToolsEffectiveInventory(
   context: TrustedToolsEffectiveContext,
 ): Promise<EffectiveToolInventoryResult> {
   const base = await resolveCachedBaseToolsEffective(context);
+  recordToolsEffectiveRestrictions({
+    sessionKey: context.canonicalKey,
+    sessionId: context.sessionId,
+    lifecycleRevision: context.lifecycleRevision,
+    configKey: context.runtimeConfigCacheKey,
+    summary: base.restrictions,
+  });
   const harness = context.agentHarnessId
     ? getRegisteredAgentHarness(context.agentHarnessId)?.harness
     : undefined;
@@ -474,7 +482,9 @@ function resolveTrustedToolsEffectiveContext(params: {
     cfg: loaded.cfg,
     agentId: sessionAgentId,
     sessionKey: params.sessionKey,
+    canonicalKey,
     sessionId: loaded.entry.sessionId,
+    lifecycleRevision: loaded.entry.lifecycleRevision,
     workspaceDir,
     runtimeConfigCacheKey: resolveRuntimeConfigCacheKey(loaded.cfg),
     pluginRegistryVersion: getActivePluginRegistryVersion(),

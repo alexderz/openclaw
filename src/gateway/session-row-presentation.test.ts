@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
+import { resolveRuntimeConfigCacheKey } from "../config/config.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import {
   addSessionMember,
@@ -31,8 +32,15 @@ import { createSessionRowProjection } from "./session-row-projection.js";
 import { canReceiveSessionEvent } from "./session-sharing.js";
 import { rolePolicyConfig, roleClient, sharingPolicyClient } from "./session-sharing.test-utils.js";
 import { listProjectedSessions } from "./session-utils-list.js";
+import {
+  recordToolsEffectiveRestrictions,
+  testing as restrictionTesting,
+} from "./tools-effective-restrictions.js";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  restrictionTesting.resetToolsEffectiveRestrictionsForTest();
+});
 
 it("projects send policy and recipient restrictions, clearing them when the current role permits sending", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -661,6 +669,27 @@ it("keeps promotion capability per viewer for the same durable delegated row", a
       });
       expect(denied).toMatchObject({ canPromote: false, effectiveClass: "delegated" });
       expect(allowed).not.toBe(denied);
+      // A tools.effective read for this exact revision makes the row's permissions real.
+      recordToolsEffectiveRestrictions({
+        sessionKey: key,
+        sessionId: "promotion",
+        lifecycleRevision: "before",
+        configKey: resolveRuntimeConfigCacheKey(projection.state.cfg),
+        summary: {
+          evaluatedClass: "delegated",
+          limitedTools: [{ id: "sessions_send", origins: ["subagent-layer"] }],
+          sessionsSend: "denied",
+          evaluatedAt: 2,
+        },
+      });
+      expect(
+        prepareProjectedSessionPresentation(projection, writer).snapshot({ agentId: "main", key })
+          .row?.promotion,
+      ).toMatchObject({
+        effectiveRestrictions: ["subagent-layer"],
+        capabilities: { sessionsSend: "denied" },
+        toolLimits: { count: 1, evaluatedAt: 2 },
+      });
       const list = await listProjectedSessions({ projection, opts: {}, client: reader });
       expect(list.sessions.find((row) => row.key === key)?.promotion?.canPromote).toBe(false);
     } finally {
