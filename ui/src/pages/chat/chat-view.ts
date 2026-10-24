@@ -43,6 +43,7 @@ import {
   getChatPendingInputs,
   loadChatPendingInputs,
 } from "./chat-pending-inputs.ts";
+import { pendingInputHoldsTurn } from "./chat-progress.ts";
 import { chatStartupStatusLabel, type ChatRunStartupStatus } from "./chat-run-startup.ts";
 import { forwardChatWheelToTranscript } from "./chat-scroll-input.ts";
 import type { ChatState } from "./chat-state-contract.ts";
@@ -446,11 +447,16 @@ export function renderChat(props: ChatProps) {
     ...buildPendingInputQueueItems(inputDisplay.queuedInputs),
     ...inputDisplay.queue,
   ];
-  const composerProps = { ...props, displayQueue };
+  const pendingTurnAhead = pendingInputHoldsTurn([
+    ...inputDisplay.pendingInputs,
+    ...inputDisplay.queuedInputs,
+  ]);
+  const composerProps = { ...props, displayQueue, pendingTurnAhead };
   const defaultComposer = renderChatComposer({
     ...props,
     asyncQuestions,
     displayQueue,
+    pendingTurnAhead,
     footerContent,
     notices,
     onRequestUpdate: requestUpdate,

@@ -6,6 +6,7 @@ import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
 import { buildPendingInputItems } from "./chat-pending-inputs.ts";
 import {
   isQueuedSendInlineState,
+  pendingInputHoldsTurn,
   queuedSendsAwaitingTurn,
   shouldRenderQueuedSendInThread,
 } from "./chat-progress.ts";
@@ -67,7 +68,8 @@ export function placeChatInputs(
     // Startup owns the placement turn's position.
     queue.filter((item) => item.id !== props.initialTurnId),
     props.runId,
-    queuedInputs.some((input) => input.state === "queued" && input.runId),
+    // Includes a started input the client has not adopted as its run yet.
+    pendingInputHoldsTurn([...pendingInputs, ...queuedInputs]),
   );
   const historicalKeys = new Set<string>();
   const pendingKeys = new Set<string>();

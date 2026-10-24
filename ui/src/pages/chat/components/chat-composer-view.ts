@@ -96,6 +96,7 @@ export function renderChatComposerQueue(props: ChatComposerProps, showAbortableU
     queue: props.queue,
     displayQueue: props.displayQueue,
     activeRunId: props.runId,
+    pendingTurnAhead: props.pendingTurnAhead,
     offline: props.offline,
     canAbort: showAbortableUi,
     canRemoveServerQueued: canAct,

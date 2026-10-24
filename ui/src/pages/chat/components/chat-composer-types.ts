@@ -174,6 +174,8 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   onQueueSteer?: (id: string) => void;
   onQueueMove?: (id: string, targetId: string) => void;
   displayQueue?: ChatQueueDisplayItem[];
+  /** An accepted Gateway input, queued or started, is ahead of the local queue. */
+  pendingTurnAhead?: boolean;
   queuedEdit?: ChatQueuedEditProps;
   onClearReply?: () => void;
   goalRecovery?: ChatGoalRecovery;

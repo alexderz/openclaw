@@ -62,6 +62,28 @@ function transcriptUserTexts(container: Element): string[] {
   ).flatMap((text) => ["Message 1", "Message 2", "Message 3"].filter((m) => text.includes(m)));
 }
 
+function transcriptOrder(container: Element): string[] {
+  // Message rows only; the running indicator is not an input.
+  return Array.from(container.querySelectorAll(".chat-thread .chat-group"), (node) => {
+    const text = (node.textContent ?? "").replace(/\s+/g, " ");
+    const label = ["Got Message 1", "Message 1", "Message 2", "Message 3"].find((m) =>
+      text.includes(m),
+    );
+    return label ? `${node.classList.contains("user") ? "user" : "assistant"}:${label}` : "";
+  }).filter(Boolean);
+}
+
+function startedInput(id: string, text: string, acceptedAt: number) {
+  // Accepted and started by the Gateway, not yet committed to the transcript.
+  return {
+    id: `input-${id}`,
+    runId: `run-${id}`,
+    acceptedAt,
+    state: "queued" as const,
+    message: { role: "user", content: text },
+  };
+}
+
 function serverQueued(id: string, text: string, acceptedAt: number) {
   return {
     id: `input-${id}`,
@@ -110,6 +132,27 @@ describe("follow-ups queued during a run (DER-621)", () => {
       runId: "run-message-2",
       runActive: true,
       queue: [sent("message-2", "Message 2", 10), sent("message-3", "Message 3", 20)],
+    });
+    expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2"]);
+    expect(trayTexts(container)).toEqual(["Message 3"]);
+    expect(transcriptOrder(container)).toEqual([
+      "user:Message 1",
+      "assistant:Got Message 1",
+      "user:Message 2",
+    ]);
+  });
+
+  it("holds a later send while the Gateway has started an earlier one the client has not adopted", () => {
+    const historyState = makeChatHost({ currentSessionId: "gap-session" });
+    applyChatPendingInputs(historyState, {
+      total: 1,
+      items: [startedInput("message-2", "Message 2", 10)],
+    });
+    const container = renderChatView({
+      historyState,
+      messages: history,
+      runId: null,
+      queue: [sent("message-3", "Message 3", 20)],
     });
     expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2"]);
     expect(trayTexts(container)).toEqual(["Message 3"]);

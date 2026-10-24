@@ -28,6 +28,7 @@ type ChatQueueProps = {
   displayQueue?: ChatQueueDisplayItem[];
   /** The session's current run; sends queued behind it stay here until their turn. */
   activeRunId?: string | null;
+  pendingTurnAhead?: boolean;
   offline?: boolean;
   canAbort?: boolean;
   canRemoveServerQueued?: boolean;
@@ -172,7 +173,7 @@ export function renderChatQueue(props: ChatQueueProps) {
   const awaitingTurn = queuedSendsAwaitingTurn(
     displayQueue.filter((item) => !item.serverQueued).toSorted(compareChatQueueOrder),
     props.activeRunId,
-    displayQueue.some((item) => item.serverQueued),
+    props.pendingTurnAhead === true || displayQueue.some((item) => item.serverQueued),
   );
   const visibleQueue = displayQueue.filter(
     (item) =>

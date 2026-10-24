@@ -172,11 +172,18 @@ export function shouldRenderQueuedSendInThread(item: ChatQueueItem): boolean {
   );
 }
 
+/** An accepted input the transcript has not committed yet still owns the next turn. */
+export function pendingInputHoldsTurn(
+  inputs: readonly { state: string; runId?: string }[],
+): boolean {
+  return inputs.some((input) => input.state === "queued" && Boolean(input.runId));
+}
+
 /**
  * Sends the Gateway holds behind another turn, keyed by queue id. A shown input
  * keeps its order, so each stays in the tray, in send order, until its own turn
  * starts; only the next turn's send may enter the transcript. `queue` is in
- * delivery order; Gateway-queued tray rows ahead of it set `queuedAhead`.
+ * delivery order; accepted Gateway inputs ahead of it set `queuedAhead`.
  */
 export function queuedSendsAwaitingTurn(
   queue: readonly (ChatQueueItem & { serverQueued?: true })[],
