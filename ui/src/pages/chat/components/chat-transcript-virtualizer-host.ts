@@ -40,6 +40,7 @@ import {
   isTranscriptMaintenanceScroll,
   isTranscriptProgrammaticScroll,
   observeTranscriptOffset,
+  retargetTranscriptEnd,
   scrollTranscriptOffset,
   scrollTranscriptToEnd,
   TranscriptOffsetState,
@@ -384,6 +385,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       this.offsetState.syncNativeOffset?.();
       this.host.requestUpdate();
     }
+    retargetTranscriptEnd(this.offsetState, this.virtualizer);
     applyPendingScrollOffset(this.scrollRestoreHost);
     // Disclosure measurement owns this commit; its sizer lands on the next update.
     if (interactionResizePending) {
