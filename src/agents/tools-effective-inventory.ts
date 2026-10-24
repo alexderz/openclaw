@@ -25,7 +25,10 @@ import { resolveModelAsync } from "./embedded-agent-runner/model.js";
 import { resolveBundledStaticCatalogModel } from "./embedded-agent-runner/model.static-catalog.js";
 import { normalizeStaticProviderModelId } from "./model-ref-shared.js";
 import { acquireReadOnlyPreparedModelRuntime } from "./prepared-model-runtime.js";
-import { createToolAccessDiagnostics } from "./tool-access-diagnostics.js";
+import {
+  createToolAccessDiagnostics,
+  summarizeToolRestrictions,
+} from "./tool-access-diagnostics.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
 import { buildRuntimeCompatibleToolInventory } from "./tools-effective-inventory-build.js";
 import { buildEffectiveToolInventoryGroups } from "./tools-effective-inventory-groups.js";
@@ -383,12 +386,24 @@ export async function resolveEffectiveToolInventory(
     ...(buildToolInventoryNotices({ cfg: params.cfg, profile, entries, effectivePolicy }) ?? []),
   ];
   const groups = buildEffectiveToolInventoryGroups(entries);
+  const toolAccess = diagnostics.finish(entries.map((entry) => entry.id));
 
   return {
     agentId,
     profile,
     groups,
-    toolAccess: diagnostics.finish(entries.map((entry) => entry.id)),
+    toolAccess,
+    restrictions: summarizeToolRestrictions({
+      toolAccess,
+      constructedToolIds: diagnostics.constructedToolIds(),
+      evaluatedClass:
+        effectivePolicy.delegated ||
+        effectivePolicy.subagentPolicy !== undefined ||
+        effectivePolicy.inheritedToolPolicy !== undefined
+          ? "delegated"
+          : "ordinary",
+      evaluatedAt: Date.now(),
+    }),
     ...(notices.length > 0 ? { notices } : {}),
   };
 }

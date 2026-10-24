@@ -92,6 +92,7 @@ export function createEmbeddedMessageInvocationPolicy(params: {
           {
             policy: params.ownerOnlyCoreToolPolicy,
             source: { kind: "session" },
+            origin: "role",
             label: "gateway sender owner-only tools",
             unavailableCoreToolReason,
           },

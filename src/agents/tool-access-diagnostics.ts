@@ -1,4 +1,8 @@
-import type { ToolAccessDiagnostics } from "../../packages/gateway-protocol/src/schema/tools-catalog.js";
+import type {
+  ToolAccessDiagnostics,
+  ToolRestrictionOrigin,
+  ToolsEffectiveRestrictionSummary,
+} from "../../packages/gateway-protocol/src/schema/tools-catalog.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveEffectiveToolPolicy } from "./agent-tools.policy.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
@@ -19,6 +23,56 @@ import {
 export type { ToolAccessDiagnostics };
 type ToolAccess = ToolAccessDiagnostics["tools"][number];
 type Reason = ToolAccess["reasons"][number];
+
+/** Layers an ordinary session of the same agent does not have. */
+const DELEGATION_ORIGINS: ReadonlySet<ToolRestrictionOrigin> = new Set([
+  "inherited-limit",
+  "subagent-layer",
+]);
+
+/**
+ * Summary-first view of what delegation removes. A tool counts only when every restriction on it
+ * is a delegation layer: anything also blocked by agent policy, sandbox or role would be missing
+ * from an ordinary session of the same agent as well.
+ */
+export function summarizeToolRestrictions(params: {
+  toolAccess: ToolAccessDiagnostics;
+  /** Tools the session actually built; a policy cannot take away a tool that never existed. */
+  constructedToolIds?: ReadonlySet<string>;
+  evaluatedClass: ToolsEffectiveRestrictionSummary["evaluatedClass"];
+  evaluatedAt: number;
+}): ToolsEffectiveRestrictionSummary {
+  const limitedTools = params.toolAccess.tools
+    .flatMap((tool) => {
+      if (
+        tool.status !== "excluded" ||
+        tool.reasons.length === 0 ||
+        (params.constructedToolIds && !params.constructedToolIds.has(tool.id))
+      ) {
+        return [];
+      }
+      const origins = [...new Set(tool.reasons.map((reason) => reason.origin ?? "other"))];
+      return origins.every((origin) => DELEGATION_ORIGINS.has(origin))
+        ? [{ id: tool.id, origins: origins.toSorted() }]
+        : [];
+    })
+    .toSorted((left, right) => left.id.localeCompare(right.id));
+  const send =
+    params.toolAccess.checked === "live-session"
+      ? params.toolAccess.tools.find((tool) => tool.id === "sessions_send")
+      : undefined;
+  return {
+    evaluatedClass: params.evaluatedClass,
+    limitedTools,
+    sessionsSend:
+      send?.status === "available"
+        ? "allowed"
+        : send?.status === "excluded" || send?.status === "unavailable"
+          ? "denied"
+          : "unknown",
+    evaluatedAt: params.evaluatedAt,
+  };
+}
 
 /** Observe the same expanded policies that filter tools, including later blockers. */
 export function createToolAccessDiagnostics(params: {
@@ -69,6 +123,9 @@ export function createToolAccessDiagnostics(params: {
             : `${denied ? "Denied by" : "Not included in"} ${path ?? event.step.label}`,
         ...(path ? { source: path } : {}),
         ...(source?.profile ? { profile: source.profile } : {}),
+        origin:
+          event.step.origin ??
+          (source?.kind === "profile" || source?.kind === "config" ? "agent-policy" : "other"),
       });
       candidate.alsoAllowPath =
         candidate.reasons.length === 1 && kind === "profile" ? source?.alsoAllowPath : undefined;
@@ -76,6 +133,8 @@ export function createToolAccessDiagnostics(params: {
   };
   return {
     onFilter,
+    /** Tools that entered at least one observed policy layer. */
+    constructedToolIds: (): ReadonlySet<string> => new Set(constructed),
     finish(availableToolNames?: readonly string[]): ToolAccessDiagnostics {
       const available =
         availableToolNames && new Set(availableToolNames.map(normalizeToolPolicyName));
@@ -103,7 +162,7 @@ export function createToolAccessDiagnostics(params: {
             id,
             status: available ? "unavailable" : "allowed",
             reasons: available
-              ? [{ kind: "runtime", label: "Not included in the session preview" }]
+              ? [{ kind: "runtime", label: "Not included in the session preview", origin: "other" }]
               : [],
           };
         }),

@@ -1,3 +1,4 @@
+import type { ToolRestrictionOrigin } from "../../packages/gateway-protocol/src/schema/tools-catalog.js";
 import { isFrozenClawToolAllowPolicy } from "../claws/tool-policy-runtime.js";
 import type { ResolvedConversationCapabilityProfile } from "./conversation-capability-profile.js";
 import {
@@ -73,11 +74,13 @@ export function buildConversationToolPolicyPipelineSteps(params: {
   const step = (
     policy: ToolPolicyLike | undefined,
     label: string,
+    origin: ToolRestrictionOrigin,
     kind: "session" | "runtime" = "session",
   ): ToolPolicyPipelineStep => ({
     policy,
     source: { kind },
     label,
+    origin,
     unavailableCoreToolReason: params.unavailableCoreToolReason,
   });
   return [
@@ -98,13 +101,13 @@ export function buildConversationToolPolicyPipelineSteps(params: {
       sources: profile.sources,
       unavailableCoreToolReason: params.unavailableCoreToolReason,
     }),
-    step(params.policies.sandboxPolicy, "sandbox tools.allow"),
+    step(params.policies.sandboxPolicy, "sandbox tools.allow", "sandbox"),
     ...(params.additionalStepsAfterSandbox ?? []),
-    step(params.policies.subagentPolicy, "subagent tools.allow"),
+    step(params.policies.subagentPolicy, "subagent tools.allow", "subagent-layer"),
     ...(params.includeRuntimeToolPolicy
-      ? [step(params.policies.runtimeToolPolicy, "runtime tools.allow", "runtime")]
+      ? [step(params.policies.runtimeToolPolicy, "runtime tools.allow", "other", "runtime")]
       : []),
-    step(params.policies.inheritedToolPolicy, "inherited tools"),
+    step(params.policies.inheritedToolPolicy, "inherited tools", "inherited-limit"),
   ];
 }
 
