@@ -25,6 +25,11 @@ export type SessionEventOutcome = {
   deliveryAmbiguous?: boolean;
   deliverySuppressionReason?: NormalizeReplySkipReason;
   admissionDeferred?: boolean;
+  /**
+   * A transient delivery-generation refusal was observed and the turn failed before the runner
+   * reported any model or CLI activity or delivered anything; a producer may enqueue it again.
+   */
+  retryable?: boolean;
 };
 export type SessionEventReceipt = {
   id: string;

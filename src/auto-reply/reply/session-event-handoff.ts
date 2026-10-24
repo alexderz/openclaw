@@ -4,6 +4,10 @@ import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
 import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+import {
+  isSessionDeliveryGenerationRevokedError,
+  isSessionDeliveryGenerationUnavailableError,
+} from "../../config/sessions/session-delivery-generation-errors.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import {
   assertAgentRunLifecycleGenerationCurrent,
@@ -25,7 +29,10 @@ import {
 } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { channelRouteTargetsMatchExact } from "../../plugin-sdk/channel-route.js";
-import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
+import {
+  GatewayDrainingError,
+  runWithGatewayDetachedWorkContinuation,
+} from "../../process/gateway-work-admission.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { ReplyPayload } from "../../shared/reply-payload.types.js";
@@ -189,6 +196,7 @@ export function enqueueSessionEventForHost(
   const acceptance = createDeferredCore<Awaited<SessionEventReceipt["accepted"]>>();
   let accepted = false;
   let started = false;
+  let activityBegun = false;
   let admissionStarted = false;
   let deferred = false;
   let adopted = false;
@@ -233,11 +241,26 @@ export function enqueueSessionEventForHost(
       throw new Error("Session event admission no longer owns its destination");
     }
   };
+  // A transient generation window refuses this attempt; a revocation, drain or abort is final
+  // and keeps a later transient observation from making the occurrence retryable.
+  let failureClass: "transient" | "final" | undefined;
+  const observeFailure = (error: unknown) => {
+    if (isSessionDeliveryGenerationRevokedError(error) || error instanceof GatewayDrainingError) {
+      failureClass = "final";
+    } else if (isSessionDeliveryGenerationUnavailableError(error)) {
+      failureClass ??= "transient";
+    }
+  };
   const assertCurrent = () => {
-    assertOwnerCurrent();
-    generationLease?.assertCurrent();
-    if (settingsAdmitted && generationLease) {
-      assertSessionEventSettingsCurrent(settings, generationLease.readSessionSettings());
+    try {
+      assertOwnerCurrent();
+      generationLease?.assertCurrent();
+      if (settingsAdmitted && generationLease) {
+        assertSessionEventSettingsCurrent(settings, generationLease.readSessionSettings());
+      }
+    } catch (error) {
+      observeFailure(error);
+      throw error;
     }
   };
   const accept = () => {
@@ -270,8 +293,13 @@ export function enqueueSessionEventForHost(
       generationLease = replacementLease;
       preparedBinding = replacement;
     }
-    for (let read = generationLease?.prepareRead(); read; read = generationLease?.prepareRead()) {
-      await read;
+    try {
+      for (let read = generationLease?.prepareRead(); read; read = generationLease?.prepareRead()) {
+        await read;
+      }
+    } catch (error) {
+      observeFailure(error);
+      throw error;
     }
     assertCurrent();
   };
@@ -319,6 +347,15 @@ export function enqueueSessionEventForHost(
           operation.result.code === "aborted_for_supersession",
         summary,
         ...(failure ? { error: failure } : {}),
+        // Opt-in only: no model or CLI activity started, so another attempt cannot repeat a turn.
+        ...(status === "failed" &&
+        !activityBegun &&
+        !delivered &&
+        !deliveryAttempted &&
+        failureClass === "transient" &&
+        operation?.abortSignal.aborted !== true
+          ? { retryable: true }
+          : {}),
       });
     };
     if (operation?.ownerSettlement) {
@@ -440,6 +477,7 @@ export function enqueueSessionEventForHost(
         dispatcherOptions: {
           deliver: (payload, info) => deliver(payload, info.kind),
           onError: (error) => {
+            observeFailure(error);
             failure = String(error);
           },
           onSkip: (_payload, info) => {
@@ -488,16 +526,20 @@ export function enqueueSessionEventForHost(
                 }
               : {}),
             onFailed: (error) => {
+              observeFailure(error);
               failure ??= String(error);
             },
             onSuppressed: (reason) => {
               deliverySuppressionReason = reason === "silent" ? "silent" : undefined;
               if (reason === "aborted") {
+                failureClass = "final";
                 failure ??= "Session event execution was aborted";
               }
             },
             beforeStart: prepareCurrent,
             onStarted: () => {
+              // The runner reported visible activity even if this check refuses it.
+              activityBegun = true;
               assertCurrent();
               ownership.start();
               started = true;
@@ -565,6 +607,7 @@ export function enqueueSessionEventForHost(
               accept();
             },
             onAbandoned: () => {
+              failureClass = "final";
               failure ??= "Session event was abandoned before execution";
             },
             onSettled: () => {
@@ -589,6 +632,7 @@ export function enqueueSessionEventForHost(
   )
     .catch((error: unknown) => {
       // Admission can reject before invoking the callback (for example on restart).
+      observeFailure(error);
       failure = String(error);
       finish();
       return settled.then(() => undefined);
