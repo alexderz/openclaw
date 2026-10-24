@@ -190,12 +190,21 @@ type CaretDocument = Document & {
 };
 
 /** The text (or element) on the reader's top line, finer than its paragraph. */
-function readerLineAt(document: CaretDocument, x: number, y: number): (() => number | null) | null {
+function readerLineAt(
+  document: CaretDocument,
+  row: HTMLElement,
+  x: number,
+  y: number,
+): (() => number | null) | null {
   const caret = document.caretPositionFromPoint?.(x, y);
   const range = caret ? null : document.caretRangeFromPoint?.(x, y);
   const node = caret?.offsetNode ?? range?.startContainer;
   const offset = caret?.offset ?? range?.startOffset ?? 0;
-  if (node?.nodeType === Node.TEXT_NODE && (node.textContent?.length ?? 0) > 0) {
+  if (
+    node?.nodeType === Node.TEXT_NODE &&
+    row.contains(node) &&
+    (node.textContent?.length ?? 0) > 0
+  ) {
     const start = Math.min(offset, node.textContent!.length - 1);
     return () => {
       if (!node.isConnected || start >= (node.textContent?.length ?? 0)) {
@@ -209,7 +218,9 @@ function readerLineAt(document: CaretDocument, x: number, y: number): (() => num
     };
   }
   const element = document.elementFromPoint?.(x, y);
-  return element ? () => (element.isConnected ? element.getBoundingClientRect().top : null) : null;
+  return element && row.contains(element)
+    ? () => (element.isConnected ? element.getBoundingClientRect().top : null)
+    : null;
 }
 
 /** The line on the reader's top edge while they hold a position. */
@@ -232,7 +243,7 @@ export function captureTranscriptReaderMark(
     target && scrollElement.contains(target)
       ? target.closest<HTMLElement>(".chat-virtual-row")
       : null;
-  const measure = row ? readerLineAt(document, x, y) : null;
+  const measure = row ? readerLineAt(document, row, x, y) : null;
   const top = measure?.();
   return row && measure && top != null ? { row, top, measure } : null;
 }
@@ -335,7 +346,14 @@ export class TranscriptReaderLine {
       const mark = this.mark;
       const element = this.host.scrollElement;
       const top = mark?.row.isConnected ? mark.measure() : null;
-      if (!mark || !element || top === null || this.following() || Math.abs(top - mark.top) <= 1) {
+      if (
+        !mark ||
+        !element ||
+        top === null ||
+        this.following() ||
+        this.touching() ||
+        Math.abs(top - mark.top) <= 1
+      ) {
         return;
       }
       this.virtualizer().scrollToOffset(element.scrollTop + top - mark.top, {
