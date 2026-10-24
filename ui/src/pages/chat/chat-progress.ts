@@ -234,21 +234,30 @@ export function resetPlacedQueuedSends(paneId?: string): void {
 }
 
 /**
- * queuedSendsAwaitingTurn for one pane's transcript and tray, which must call it
- * with the same inputs: a send the transcript already shows never returns to
- * the tray. Retired rows leave the record.
+ * queuedSendsAwaitingTurn for one pane's transcript and tray. Both call it with
+ * the same inputs in each render, so whichever runs first records the same
+ * sends: one the transcript already shows never returns to the tray. A row
+ * leaves the record when it leaves the outbox (`outboxIds`), not when custody
+ * merely hides it.
  */
 export function resolveQueuedSendsAwaitingTurn(
   scope: { paneId: string; sessionKey: string },
   queue: readonly (ChatQueueItem & { serverQueued?: true })[],
+  outboxIds: ReadonlySet<string>,
   activeRunId: string | null | undefined,
   queuedAhead = false,
 ): Set<string> {
-  const key = `${scope.paneId}\n${scope.sessionKey}`;
+  const paneKey = `${scope.paneId}\n`;
+  const key = paneKey + scope.sessionKey;
+  // A pane shows one session; records for the sessions it left are spent.
+  for (const other of placedQueuedSends.keys()) {
+    if (other !== key && other.startsWith(paneKey)) {
+      placedQueuedSends.delete(other);
+    }
+  }
   const placed = placedQueuedSends.get(key) ?? new Set<string>();
-  const current = new Set(queue.map((item) => item.id));
   for (const id of placed) {
-    if (!current.has(id)) {
+    if (!outboxIds.has(id)) {
       placed.delete(id);
     }
   }
@@ -258,11 +267,8 @@ export function resolveQueuedSendsAwaitingTurn(
       if (placed.has(item.id)) {
         awaiting.delete(item.id);
       }
-    } else if (
-      !item.serverQueued &&
-      (item.sendState === "submitting" || item.sendState === "sending") &&
-      shouldRenderQueuedSendInThread(item)
-    ) {
+    } else if (!item.serverQueued && shouldRenderQueuedSendInThread(item)) {
+      // Includes inline delivery states, so a retried bubble stays where it is.
       placed.add(item.id);
     }
   }

@@ -177,13 +177,20 @@ export function renderChatQueue(props: ChatQueueProps) {
   const displayQueue: ChatQueueDisplayItem[] = props.displayQueue ?? props.queue;
   // The transcript applies the same rule, so an input is in exactly one place.
   const awaitingArgs = [
-    displayQueue.filter((item) => !item.serverQueued).toSorted(compareChatQueueOrder),
     props.activeRunId,
     props.pendingTurnAhead === true || displayQueue.some((item) => item.serverQueued),
   ] as const;
+  const localQueue = displayQueue
+    .filter((item) => !item.serverQueued)
+    .toSorted(compareChatQueueOrder);
   const awaitingTurn = props.placement
-    ? resolveQueuedSendsAwaitingTurn(props.placement, ...awaitingArgs)
-    : queuedSendsAwaitingTurn(...awaitingArgs);
+    ? resolveQueuedSendsAwaitingTurn(
+        props.placement,
+        localQueue,
+        new Set(props.queue.map((item) => item.id)),
+        ...awaitingArgs,
+      )
+    : queuedSendsAwaitingTurn(localQueue, ...awaitingArgs);
   const visibleQueue = displayQueue.filter(
     (item) =>
       awaitingTurn.has(item.id) ||

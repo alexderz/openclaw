@@ -198,6 +198,36 @@ describe("follow-ups queued during a run (DER-621)", () => {
     expect(trayTexts(container)).toEqual([]);
   });
 
+  it("keeps a shown bubble in place when its delivery is retried during another run", () => {
+    const container = document.createElement("div");
+    const interrupted: ChatQueueItem = {
+      ...sent("message-2", "Message 2", 10),
+      sendState: "waiting-reconnect",
+    };
+    renderChatInto(container, {
+      messages: history,
+      runId: activeRun,
+      runActive: true,
+      queue: [interrupted],
+    });
+    expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2"]);
+    // Reconnect resends it under a fresh run id while the first run continues.
+    const retried: ChatQueueItem = {
+      ...interrupted,
+      sendState: "sending",
+      sendAttempts: 2,
+      sendRunId: "run-message-2-retry",
+    };
+    renderChatInto(container, {
+      messages: history,
+      runId: activeRun,
+      runActive: true,
+      queue: [retried],
+    });
+    expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2"]);
+    expect(trayTexts(container)).toEqual([]);
+  });
+
   it("lets only the next turn enter the transcript between runs", () => {
     const container = renderChatView({
       messages: history,

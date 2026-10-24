@@ -63,6 +63,7 @@ export function resolveHeldQueuedSends(
     props,
     // Startup owns the placement turn's position.
     queue.filter((item) => item.id !== props.initialTurnId),
+    new Set((props.queue ?? []).map((item) => item.id)),
     props.runId,
     // Includes a started input the client has not adopted as its run yet.
     pendingInputHoldsTurn([...pendingInputs, ...queuedInputs]),
