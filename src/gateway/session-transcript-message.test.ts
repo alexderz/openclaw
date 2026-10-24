@@ -126,3 +126,20 @@ describe("trusted transcript display metadata", () => {
     },
   );
 });
+
+describe("typed turn authority class", () => {
+  it("reaches the live session.message payload from the transcript stamp", () => {
+    const projected = projectSessionMessagePayload({
+      sessionKey: "agent:main:subagent:child",
+      message: {
+        role: "user",
+        content: "continue",
+        timestamp: 1,
+        __openclaw: { authorityClass: "delegated", idempotencyKey: "run-1:user" },
+      },
+      messageSeq: 3,
+    });
+    const payloadMessage = asOptionalRecord(projected.payload?.message);
+    expect(asOptionalRecord(payloadMessage?.["__openclaw"])?.authorityClass).toBe("delegated");
+  });
+});

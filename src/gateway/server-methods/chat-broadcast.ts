@@ -5,6 +5,7 @@ import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-ke
 import { markChatAbortTerminalOutcome } from "../chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
 import { projectChatDisplayMessage } from "../chat-display-projection.js";
+import { stampChatEventAuthorityClass } from "../chat-event-authority.js";
 import { capLiveAssistantText } from "../live-chat-projector.js";
 import type { GatewayBroadcastOpts } from "../server-broadcast-types.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
@@ -97,9 +98,11 @@ type ChatBroadcastParams = {
 function broadcastChatPayload(
   params: Omit<ChatBroadcastParams, "runId">,
   event: string,
-  payload: unknown,
+  capturedPayload: unknown,
   opts?: GatewayBroadcastOpts,
 ): void {
+  const payload =
+    event === "chat" ? stampChatEventAuthorityClass(capturedPayload) : capturedPayload;
   params.context.broadcast(event, payload, opts ?? { sessionKeys: resolveChatSessionKeys(params) });
   sendGlobalAwareNodeChatPayload({ ...params, event, payload, opts });
 }

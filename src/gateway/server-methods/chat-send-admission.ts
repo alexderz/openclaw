@@ -52,7 +52,7 @@ import {
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
 import type { ChatSendAdmissionParams } from "./chat-send-pre-admission.types.js";
-import { isDirectHumanChatTurn } from "./chat-send-promotion-boundary.js";
+import { isDirectHumanChatTurn, typedTurnAuthorityClass } from "./chat-send-promotion-boundary.js";
 import {
   createPendingChatSendReservationAccess,
   inspectGoalChatSendRetry,
@@ -666,6 +666,8 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     sessionKey,
     sessionId: admittedSessionId,
     lifecycleGeneration,
+    // Same classification the user-turn recorder persists for this admitted settings object.
+    authorityClass: typedTurnAuthorityClass(request, admittedSessionSettings),
     ...progressCardRefreshRunProjection(request.systemInputProvenance),
   });
 

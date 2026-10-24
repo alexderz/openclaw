@@ -395,6 +395,11 @@ const ChatEventBaseSchema = {
   agentId: Type.Optional(NonEmptyString),
   spawnedBy: Type.Optional(NonEmptyString),
   seq: Type.Integer({ minimum: 0 }),
+  /**
+   * Class the typed user turn that started this run was admitted under (display only). Absent
+   * for runs without a typed turn and from older Gateways; clients never infer it.
+   */
+  authorityClass: Type.Optional(Type.Union([Type.Literal("ordinary"), Type.Literal("delegated")])),
 };
 
 /** Stable error categories exposed over the chat stream. */

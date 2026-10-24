@@ -4282,6 +4282,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         timestamp: expect.any(Number),
         idempotencyKey: "idem-user-transcript-acp-images:user",
         __openclaw: {
+          // A typed turn carries the class its run was admitted under.
+          authorityClass: "ordinary",
           transport: { clients: [{ id: "cli", mode: "cli", displayName: "ACP" }] },
         },
       });

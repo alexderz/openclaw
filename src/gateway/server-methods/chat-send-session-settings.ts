@@ -1,3 +1,4 @@
+import type { SessionCapabilityEntry } from "../../agents/subagents/spawn/subagent-session-store.js";
 import {
   normalizeSessionToolOverrides,
   sessionToolOverridesEqual,
@@ -17,6 +18,42 @@ type AdmittedChatSendSessionSettings =
       }
     >
   | undefined;
+
+/**
+ * Envelope facts from the admitted row. Keyed by the settings object both the run context and
+ * the user-turn recorder classify, so a later edit of the live row cannot split the stamps.
+ */
+const admittedChatTurnEnvelopes = new WeakMap<
+  object,
+  { sessionKey: string; entry?: SessionCapabilityEntry }
+>();
+
+function rememberAdmittedChatTurnEnvelope(
+  settings: object,
+  sessionKey: string,
+  entry: SessionEntry | undefined,
+): void {
+  admittedChatTurnEnvelopes.set(settings, {
+    sessionKey,
+    ...(entry
+      ? {
+          entry: {
+            spawnDepth: entry.spawnDepth,
+            subagentRole: entry.subagentRole,
+            subagentControlScope: entry.subagentControlScope,
+            spawnedBy: entry.spawnedBy,
+          },
+        }
+      : {}),
+  });
+}
+
+/** Key and sub-agent envelope captured with this admitted settings object, if it has one. */
+export function readAdmittedChatTurnEnvelope(
+  settings: object | null | undefined,
+): { sessionKey: string; entry?: SessionCapabilityEntry } | undefined {
+  return settings ? admittedChatTurnEnvelopes.get(settings) : undefined;
+}
 
 export function captureAdmittedChatSendSessionSettings(params: {
   commit: boolean;
@@ -41,7 +78,7 @@ export function captureAdmittedChatSendSessionSettings(params: {
   if (!params.commit) {
     return undefined;
   }
-  return Object.freeze({
+  const settings = Object.freeze({
     ...(entry && params.sessionKey
       ? {
           effectiveAdmission: captureSessionEffectiveAdmission({
@@ -57,4 +94,8 @@ export function captureAdmittedChatSendSessionSettings(params: {
     permissionMode: entry?.permissionMode,
     toolOverrides: normalizeSessionToolOverrides(entry?.toolOverrides),
   });
+  if (params.sessionKey) {
+    rememberAdmittedChatTurnEnvelope(settings, params.sessionKey, entry);
+  }
+  return settings;
 }

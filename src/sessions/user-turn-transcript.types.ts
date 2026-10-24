@@ -38,6 +38,8 @@ export type PersistedUserTurnMediaInput = Pick<
   workspaceDir?: string | null;
 };
 
+export type UserTurnAuthorityClass = "ordinary" | "delegated";
+
 export type PersistedUserTurnMessage = Extract<AgentMessage, { role: "user" }> & {
   display?: false;
   excludeFromContext?: true;
@@ -69,6 +71,11 @@ export type UserTurnInput = Pick<PersistedUserTurnMessage, "display" | "excludeF
   /** Bounded display fallback for replies whose target is outside loaded history. */
   replyToPreview?: { text: string; senderLabel?: string | null } | null;
   senderIsOwner?: boolean;
+  /**
+   * Authority class this typed turn was admitted under, from the run's captured session
+   * admission. Display only: it never grants or limits anything. Older turns carry none.
+   */
+  authorityClass?: UserTurnAuthorityClass;
   provenance?: InputProvenance;
   /** Identity is producer-owned attribution; labels remain editable display metadata. */
   sender?: {

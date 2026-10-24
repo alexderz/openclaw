@@ -32,7 +32,10 @@ import {
   persistUserTurnTranscript,
   readTranscriptMessages,
 } from "./user-turn-transcript.test-support.js";
-import type { UserTurnOriginalInputCommit } from "./user-turn-transcript.types.js";
+import type {
+  PersistedUserTurnMessage,
+  UserTurnOriginalInputCommit,
+} from "./user-turn-transcript.types.js";
 
 describe("persistUserTurnTranscript", () => {
   const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-user-turn-append-");
@@ -252,6 +255,51 @@ describe("persistUserTurnTranscript", () => {
       },
     });
   });
+
+  it.each([
+    ["delegated", "forge"],
+    ["delegated", "drop"],
+    [undefined, "forge"],
+  ] as const)(
+    "keeps the server-stamped authority class %s when a hook tries to %s it",
+    async (authorityClass, mode) => {
+      const target = createSqliteTranscriptTarget({ dir: sessionDirs.make() });
+      const recorder = createUserTurnTranscriptRecorder({
+        input: {
+          text: "continue",
+          idempotencyKey: `authority-${mode}:user`,
+          ...(authorityClass ? { authorityClass } : {}),
+        },
+        target,
+        beforeMessageWrite: ({ message }) => {
+          const metadata = { ...message["__openclaw"] };
+          if (mode === "forge") {
+            metadata.authorityClass = "ordinary";
+          } else {
+            delete metadata.authorityClass;
+          }
+          return { ...message, __openclaw: metadata };
+        },
+      });
+      await recorder.persistApproved();
+      const [message] = await readTranscriptMessages(target);
+      const expectStamp = (value: unknown) =>
+        authorityClass
+          ? expect(value).toHaveProperty("__openclaw.authorityClass", authorityClass)
+          : expect(value).not.toHaveProperty("__openclaw.authorityClass");
+      expectStamp(message);
+      // The runtime copy of the turn restores the same stamped fact.
+      const runtime = restorePreparedUserTurnOperationalMetaForRuntime({
+        runtimeMessage: castAgentMessage({
+          role: "user",
+          content: "continue",
+          __openclaw: { authorityClass: "ordinary" },
+        }),
+        preparedMessage: message as unknown as PersistedUserTurnMessage,
+      });
+      expectStamp(runtime);
+    },
+  );
 
   it.each(["retain", "in-place", "raw-redact", "forge"] as const)(
     "sender provenance hook %s respects original producer evidence",

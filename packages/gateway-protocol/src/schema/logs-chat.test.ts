@@ -131,6 +131,22 @@ describe("ChatStatusEventSchema", () => {
     expect(Value.Check(ChatEventSchema, statusEvent)).toBe(true);
   });
 
+  it("carries the run's admitted turn class only as a closed value", () => {
+    expect(Value.Check(ChatEventSchema, { ...statusEvent, authorityClass: "delegated" })).toBe(
+      true,
+    );
+    expect(
+      Value.Check(ChatEventSchema, {
+        runId: "run-1",
+        sessionKey: "session-1",
+        seq: 3,
+        state: "final",
+        authorityClass: "ordinary",
+      }),
+    ).toBe(true);
+    expect(Value.Check(ChatEventSchema, { ...statusEvent, authorityClass: "owner" })).toBe(false);
+  });
+
   it("rejects unknown phases and extra fields", () => {
     expect(Value.Check(ChatStatusEventSchema, { ...statusEvent, phase: "thinking" })).toBe(false);
     expect(Value.Check(ChatStatusEventSchema, { ...statusEvent, detail: "Loading" })).toBe(false);
