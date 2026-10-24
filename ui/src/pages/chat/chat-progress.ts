@@ -217,6 +217,63 @@ export function queuedSendsAwaitingTurn(
   return awaiting;
 }
 
+// Sends a pane's transcript has shown, per pane and session. A shown input
+// keeps its place even if a later run is adopted before its row retires.
+const placedQueuedSends = new Map<string, Set<string>>();
+
+export function resetPlacedQueuedSends(paneId?: string): void {
+  if (!paneId) {
+    placedQueuedSends.clear();
+    return;
+  }
+  for (const key of placedQueuedSends.keys()) {
+    if (key.startsWith(`${paneId}\n`)) {
+      placedQueuedSends.delete(key);
+    }
+  }
+}
+
+/**
+ * queuedSendsAwaitingTurn for one pane's transcript and tray, which must call it
+ * with the same inputs: a send the transcript already shows never returns to
+ * the tray. Retired rows leave the record.
+ */
+export function resolveQueuedSendsAwaitingTurn(
+  scope: { paneId: string; sessionKey: string },
+  queue: readonly (ChatQueueItem & { serverQueued?: true })[],
+  activeRunId: string | null | undefined,
+  queuedAhead = false,
+): Set<string> {
+  const key = `${scope.paneId}\n${scope.sessionKey}`;
+  const placed = placedQueuedSends.get(key) ?? new Set<string>();
+  const current = new Set(queue.map((item) => item.id));
+  for (const id of placed) {
+    if (!current.has(id)) {
+      placed.delete(id);
+    }
+  }
+  const awaiting = queuedSendsAwaitingTurn(queue, activeRunId, queuedAhead);
+  for (const item of queue) {
+    if (awaiting.has(item.id)) {
+      if (placed.has(item.id)) {
+        awaiting.delete(item.id);
+      }
+    } else if (
+      !item.serverQueued &&
+      (item.sendState === "submitting" || item.sendState === "sending") &&
+      shouldRenderQueuedSendInThread(item)
+    ) {
+      placed.add(item.id);
+    }
+  }
+  if (placed.size > 0) {
+    placedQueuedSends.set(key, placed);
+  } else {
+    placedQueuedSends.delete(key);
+  }
+  return awaiting;
+}
+
 export function resolveWorkingProgress(
   sessionKey: string,
   runId: string | null,

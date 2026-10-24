@@ -93,6 +93,7 @@ type ChatComposerViewContext = {
 export function renderChatComposerQueue(props: ChatComposerProps, showAbortableUi: boolean) {
   const canAct = props.connected && props.canSend && !props.submitDisabledReason;
   return renderChatQueue({
+    placement: { paneId: props.paneId, sessionKey: props.sessionKey },
     queue: props.queue,
     displayQueue: props.displayQueue,
     activeRunId: props.runId,

@@ -5,7 +5,7 @@ import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { applyChatPendingInputs } from "./chat-pending-inputs.ts";
 import { resetChatViewState } from "./chat-view-state.ts";
-import { renderChatView } from "./chat-view.test-helpers.ts";
+import { renderChatInto, renderChatView } from "./chat-view.test-helpers.ts";
 import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,
@@ -156,6 +156,46 @@ describe("follow-ups queued during a run (DER-621)", () => {
     });
     expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2"]);
     expect(trayTexts(container)).toEqual(["Message 3"]);
+  });
+
+  it("moves a held send from the tray to the bottom of the transcript when its run is adopted", () => {
+    const container = document.createElement("div");
+    const queue = [sent("message-2", "Message 2", 10), sent("message-3", "Message 3", 20)];
+    renderChatInto(container, { messages: history, runId: activeRun, runActive: true, queue });
+    expect(trayTexts(container)).toEqual(["Message 2", "Message 3"]);
+    renderChatInto(container, {
+      messages: history,
+      runId: "run-message-2",
+      runActive: true,
+      queue,
+    });
+    expect(transcriptOrder(container)).toEqual([
+      "user:Message 1",
+      "assistant:Got Message 1",
+      "user:Message 2",
+    ]);
+    expect(trayTexts(container)).toEqual(["Message 3"]);
+  });
+
+  it("never pulls a shown send back to the tray when a later run is adopted first", () => {
+    const container = document.createElement("div");
+    const queue = [sent("message-2", "Message 2", 10), sent("message-3", "Message 3", 20)];
+    renderChatInto(container, {
+      messages: history,
+      runId: "run-message-2",
+      runActive: true,
+      queue,
+    });
+    expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2"]);
+    // Run 3 is adopted before Message 2's row has been retired by history.
+    renderChatInto(container, {
+      messages: history,
+      runId: "run-message-3",
+      runActive: true,
+      queue,
+    });
+    expect(transcriptUserTexts(container)).toEqual(["Message 1", "Message 2", "Message 3"]);
+    expect(trayTexts(container)).toEqual([]);
   });
 
   it("lets only the next turn enter the transcript between runs", () => {

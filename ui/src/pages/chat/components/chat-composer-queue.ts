@@ -18,12 +18,18 @@ import {
   recordCompositionEnd,
 } from "../../../lib/ime.ts";
 import { getChatAttachmentPreviewUrl } from "../attachment-payload-store.ts";
-import { isQueuedSendInlineState, queuedSendsAwaitingTurn } from "../chat-progress.ts";
+import {
+  isQueuedSendInlineState,
+  queuedSendsAwaitingTurn,
+  resolveQueuedSendsAwaitingTurn,
+} from "../chat-progress.ts";
 import { isSteerableQueuedMessage } from "../chat-queue.ts";
 import { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
 import type { ChatComposerProps } from "./chat-composer-types.ts";
 
 type ChatQueueProps = {
+  /** The transcript this tray belongs to; both apply one placement record. */
+  placement?: { paneId: string; sessionKey: string };
   queue: ChatQueueItem[];
   displayQueue?: ChatQueueDisplayItem[];
   /** The session's current run; sends queued behind it stay here until their turn. */
@@ -170,11 +176,14 @@ export function renderChatQueue(props: ChatQueueProps) {
   const edit = props.queuedEdit;
   const displayQueue: ChatQueueDisplayItem[] = props.displayQueue ?? props.queue;
   // The transcript applies the same rule, so an input is in exactly one place.
-  const awaitingTurn = queuedSendsAwaitingTurn(
+  const awaitingArgs = [
     displayQueue.filter((item) => !item.serverQueued).toSorted(compareChatQueueOrder),
     props.activeRunId,
     props.pendingTurnAhead === true || displayQueue.some((item) => item.serverQueued),
-  );
+  ] as const;
+  const awaitingTurn = props.placement
+    ? resolveQueuedSendsAwaitingTurn(props.placement, ...awaitingArgs)
+    : queuedSendsAwaitingTurn(...awaitingArgs);
   const visibleQueue = displayQueue.filter(
     (item) =>
       awaitingTurn.has(item.id) ||
