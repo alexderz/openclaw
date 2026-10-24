@@ -196,7 +196,9 @@ it("moves the transcript only with the fling after the finger lifts", async () =
 
 /**
  * Chromium ends every scripted scroll with its own scrollend, which would end
- * the simulated momentum at once. Hold those back until the fling stops.
+ * the simulated momentum at once. Hold those back until the fling stops. The
+ * virtualizer's idle fallback can still end it early if a frame stalls; that
+ * only weakens the without-the-fix failure, never the passing check.
  */
 function holdNativeScrollEnd(thread: HTMLElement) {
   const swallow = (event: Event) => event.stopImmediatePropagation();

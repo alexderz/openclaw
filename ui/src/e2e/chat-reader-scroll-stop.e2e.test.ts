@@ -232,7 +232,7 @@ suite.define(() => {
         }
         await page.waitForTimeout(2_000);
         // Growth that lands under the moving finger can still shift the text
-        // mid-drag, on the base too (DER-622 follow-up); this guards release.
+        // mid-drag, on the base too (DER-626); this guards release.
         const { release, rest, jumps, marks } = jumpsAgainstReader(await stopRecorder(page), {
           fromRelease: true,
         });

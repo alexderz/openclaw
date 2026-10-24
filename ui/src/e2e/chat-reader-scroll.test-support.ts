@@ -72,9 +72,9 @@ export function jumpsAgainstReader(frames: Frame[], { fromRelease = false } = {}
   const release = frames.findIndex((frame) => frame.events?.includes("touchend"));
   const STILL_FRAMES = 6;
   let rest = -1;
-  for (let index = Math.max(release, 1); index + STILL_FRAMES < frames.length; index++) {
+  for (let index = Math.max(release, 1); index + STILL_FRAMES <= frames.length; index++) {
     const still = frames
-      .slice(index, index + STILL_FRAMES + 1)
+      .slice(index, index + STILL_FRAMES)
       .every((frame) => frame.scrollTop === frames[index]!.scrollTop);
     if (still) {
       rest = index;

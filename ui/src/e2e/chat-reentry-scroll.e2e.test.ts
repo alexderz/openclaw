@@ -261,7 +261,7 @@ suite.define(() => {
       });
       await browserPage.waitForTimeout(1_500);
       // A re-read that commits under the moving finger can still shift the text
-      // mid-drag (DER-622 follow-up); this guards that release adds no jump.
+      // mid-drag (DER-626); this guards that release adds no jump.
       const { release, rest, jumps } = jumpsAgainstReader(await stopRecorder(browserPage), {
         fromRelease: true,
       });
