@@ -1,5 +1,8 @@
 // @vitest-environment node
-import { reduceSessionProjection } from "@openclaw/gateway-client/browser";
+import {
+  readSessionMessageIdentity,
+  reduceSessionProjection,
+} from "@openclaw/gateway-client/browser";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { missingScopeErrorShape } from "../../../../packages/gateway-protocol/src/schema/error-codes.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -7,6 +10,7 @@ import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsRewindResult } from "../../api/types.ts";
 import { handleChatGatewayEvent } from "./chat-gateway.ts";
 import { rewindChatHistory, switchChatHistoryBranch } from "./chat-history-actions.ts";
+import { reconcileChatOnReentry } from "./chat-history-reentry.ts";
 import { loadOlderChatHistoryPage, requestChatSessionSnapshot } from "./chat-history-request.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
@@ -25,6 +29,7 @@ import { reconcileChatRunFromSessionRow, reconcileChatRunLifecycle } from "./run
 import {
   cacheChatSessionSnapshot,
   readChatMessagesFromCache,
+  setChatHistoryCursor,
   type ChatMessageCache,
 } from "./session-message-cache.ts";
 import { buildToolStreamIdentity } from "./tool-stream-identity.ts";
@@ -490,6 +495,222 @@ describe("full tail refresh after the leaf advances", () => {
     });
     await loadChatHistory(state);
     expect(state.chatMessages).toEqual(branch);
+  });
+
+  it("never repeats a row when pagination ordinals run ahead of row sequences", async () => {
+    // CLI-backed history pages by merged-index ordinal: two imported rows before
+    // local seq 1 put every local row two ordinals ahead of its own seq.
+    const ids = () => state.chatMessages.map((entry) => readSessionMessageIdentity(entry)?.id);
+    const state = createState({ messages: [] });
+    state.currentSessionId = "session";
+    state.chatDisplayedLeafEntryId = "m10";
+    state.chatHistoryPagination = { hasMore: false, totalMessages: 12 };
+    state.chatMessages = Array.from({ length: 10 }, (_, index) => row(index + 1));
+    const request = vi.spyOn(state.client!, "request");
+    for (const last of [12, 13, 14]) {
+      // A background run finishes: its rows arrive live, then the run's cursor
+      // reset forces a full read of the newest six rows.
+      for (let seq = last - (last === 12 ? 1 : 0); seq <= last; seq += 1) {
+        publishLive(state, row(seq));
+      }
+      const window = Array.from({ length: 6 }, (_, index) => row(last - 5 + index));
+      const totalMessages = last + 2;
+      request.mockResolvedValue({
+        messages: window,
+        hasMore: true,
+        nextOffset: totalMessages - (last - 5 + 2) + 1,
+        totalMessages,
+        sessionInfo: {
+          key: "main",
+          kind: "direct",
+          updatedAt: last,
+          sessionId: "session",
+          activeLeafEntryId: `m${last}`,
+        },
+      });
+      await loadChatHistory(state);
+      expect(ids()).toEqual(Array.from({ length: last }, (_, index) => `m${index + 1}`));
+    }
+  });
+
+  it("collapses copies an earlier merge already retained", async () => {
+    const { state, tail } = readerWithOlderPages();
+    // Each earlier refresh re-appended the window's old edge after newer rows;
+    // seq 2 holds two identical display siblings.
+    const repeats = [row(2), row(2), row(3)];
+    state.chatMessages = [
+      row(1),
+      ...repeats,
+      ...repeats,
+      ...repeats,
+      ...state.chatMessages.slice(3),
+    ];
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([
+      row(1),
+      row(2),
+      ...Array.from({ length: 7 }, (_, index) => row(index + 2)),
+      ...tail,
+    ]);
+  });
+
+  it("keeps identical siblings of one transcript row", async () => {
+    const { state, tail } = readerWithOlderPages();
+    state.chatMessages = [row(1), row(2), row(2), ...state.chatMessages.slice(2)];
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([
+      row(1),
+      row(2),
+      ...Array.from({ length: 7 }, (_, index) => row(index + 2)),
+      ...tail,
+    ]);
+  });
+
+  it("keeps imported rows that sit between retained rows", async () => {
+    const { state, tail } = readerWithOlderPages();
+    const imported = message("assistant", "imported reply", {
+      id: "i1",
+      importedFrom: "claude-cli",
+      cliSessionId: "cli",
+      externalId: "e1",
+    });
+    state.chatMessages = [row(1), imported, ...state.chatMessages.slice(1)];
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual([
+      row(1),
+      imported,
+      ...Array.from({ length: 7 }, (_, index) => row(index + 2)),
+      ...tail,
+    ]);
+  });
+
+  it("keeps older rows when pagination ordinals trail row sequences", async () => {
+    // Two local rows the CLI index omits put every later row two ordinals
+    // behind its own seq; the raw start alone would cut seq 5 and 6.
+    const state = createState({ messages: [] });
+    state.currentSessionId = "session";
+    state.chatDisplayedLeafEntryId = "m10";
+    state.chatHistoryPagination = { hasMore: false, totalMessages: 8 };
+    state.chatMessages = Array.from({ length: 10 }, (_, index) => row(index + 1));
+    vi.spyOn(state.client!, "request").mockResolvedValue({
+      messages: Array.from({ length: 6 }, (_, index) => row(index + 7)),
+      hasMore: true,
+      nextOffset: 6,
+      totalMessages: 10,
+      sessionInfo: {
+        key: "main",
+        kind: "direct",
+        updatedAt: 2,
+        sessionId: "session",
+        activeLeafEntryId: "m12",
+      },
+    });
+    await loadChatHistory(state);
+    expect(state.chatMessages).toEqual(Array.from({ length: 12 }, (_, index) => row(index + 1)));
+  });
+});
+
+describe("re-entering a chat", () => {
+  const row = (seq: number, id = `r${seq}`) =>
+    message(seq % 2 ? "user" : "assistant", `message ${seq}`, { id, seq });
+  const server = [row(1), row(2), row(3), row(4)];
+  const sessionInfo = (key: string) => ({
+    key,
+    kind: "direct" as const,
+    updatedAt: 1,
+    sessionId: "session",
+  });
+  function drifted(sessionKey: string) {
+    const state = createState({ messages: [] });
+    // A cursor read answers with an empty delta, as the server would when
+    // nothing changed: drift survives unless the cursor is skipped.
+    const request = vi
+      .spyOn(state.client!, "request")
+      .mockImplementation(async (_method, params) =>
+        (params as { cursor?: string } | undefined)?.cursor
+          ? {
+              kind: "delta",
+              messages: [],
+              deltaCursor: "cursor-2",
+              sessionInfo: sessionInfo(sessionKey),
+            }
+          : {
+              messages: server,
+              hasMore: false,
+              totalMessages: 4,
+              deltaCursor: "cursor-2",
+              sessionInfo: sessionInfo(sessionKey),
+            },
+      );
+    // Test clients never open a socket; this one is live.
+    const wake = (value: boolean) =>
+      Object.defineProperty(state.client!, "needsWakeReconnect", { value, configurable: true });
+    wake(false);
+    state.sessionKey = sessionKey;
+    state.currentSessionId = "session";
+    state.chatHistoryPagination = { hasMore: false, totalMessages: 4 };
+    // Client drift: one reply repeated while the cursor still claims it is current.
+    state.chatMessages = [row(1), row(2), row(3), row(2), row(3), row(4)];
+    setChatHistoryCursor(state, "cursor-1");
+    return { state, request, wake };
+  }
+
+  it("keeps drift on a cursor read but replaces it on re-entry", async () => {
+    const { state, request } = drifted("agent:main:reentry-a");
+    await loadChatHistory(state);
+    expect(state.chatMessages).toHaveLength(6);
+    setChatHistoryCursor(state, "cursor-1");
+    await reconcileChatOnReentry(state, 1_000);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[1]![1]).not.toHaveProperty("cursor");
+    expect(state.chatMessages).toEqual(server);
+  });
+
+  it("drops a settled live copy the server window does not list", async () => {
+    const { state } = drifted("agent:main:reentry-live");
+    state.chatMessages = [...server];
+    publishLive(state, row(3, "stale-live-copy"));
+    expect(state.chatMessages).toHaveLength(5);
+    await reconcileChatOnReentry(state, 1_000);
+    expect(state.chatMessages).toEqual(server);
+  });
+
+  it("refetches at most once every ten seconds per chat", async () => {
+    const { state, request } = drifted("agent:main:reentry-b");
+    await reconcileChatOnReentry(state, 50_000);
+    expect(reconcileChatOnReentry(state, 59_999)).toBeUndefined();
+    await reconcileChatOnReentry(state, 60_000);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins a full read already in flight instead of adding one", async () => {
+    const { state, request } = drifted("agent:main:reentry-c");
+    setChatHistoryCursor(state, undefined);
+    const pending = loadChatHistory(state);
+    expect(reconcileChatOnReentry(state, 1_000)).toBeUndefined();
+    await pending;
+    expect(request).toHaveBeenCalledOnce();
+    // The skipped entry left its budget: the next one reads.
+    const next = reconcileChatOnReentry(state, 1_001);
+    expect(next).toBeDefined();
+    await next;
+  });
+
+  it("hands the full read to the reconnect when the socket is dead", async () => {
+    const { state, request, wake } = drifted("agent:main:reentry-d");
+    wake(true);
+    expect(reconcileChatOnReentry(state, 1_000)).toBe("deferred");
+    expect(request).not.toHaveBeenCalled();
+    // A read that still runs on the doomed socket does not take the handoff.
+    await loadChatHistory(state);
+    expect(request.mock.calls[0]![1]).toHaveProperty("cursor", "cursor-1");
+    expect(state.chatMessages).toHaveLength(6);
+    setChatHistoryCursor(state, "cursor-1");
+    wake(false);
+    // The reconnect's ordinary history read skips the stored cursor once.
+    await loadChatHistory(state);
+    expect(request.mock.calls[1]![1]).not.toHaveProperty("cursor");
+    expect(state.chatMessages).toEqual(server);
   });
 });
 

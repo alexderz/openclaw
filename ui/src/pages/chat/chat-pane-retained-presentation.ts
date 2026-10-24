@@ -18,6 +18,7 @@ import {
 import { showToast } from "../../lib/toast.ts";
 import { storeChatComposerMemoryFallback } from "./chat-composer-memory-fallback.ts";
 import { loadChatBranches, retireChatBranchRequests } from "./chat-history-branches.ts";
+import { reconcileChatOnReentry } from "./chat-history-reentry.ts";
 import {
   chatHistoryRequests,
   getAcceptedChatHistorySession,
@@ -466,7 +467,10 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
       const deferredHydrationActive = this.resumeDeferredSessionHydration();
       if (state && !deferredHydrationActive) {
         this.markSessionRead(selectedChatSessionRow(state));
+        // Switching back shows the cached chat at once; one full read heals drift.
+        const reconciled = this.resolveChatReadTarget() && reconcileChatOnReentry(state);
         if (
+          !reconciled &&
           state.connected &&
           this.resolveChatReadTarget() &&
           (state.chatRunId || selectedChatSessionRow(state)?.hasActiveRun)

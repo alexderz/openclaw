@@ -28,6 +28,7 @@ export function projectChatPositions(
 ): ChatPositionIndex {
   const markers = new Map<string, ChatPositionMarker>();
   const markerIdsByMessageId = new Map<string, string>();
+  const positionedMessageIds = new Set<string>();
   const add = (
     id: string,
     role: ChatPositionMarker["role"],
@@ -42,7 +43,11 @@ export function projectChatPositions(
       markers.set(id, { id, role, anchorId: messageId, message });
     }
     markerIdsByMessageId.set(messageId, id);
-    messageRowKeysById.set(messageId, rowKey);
+    // A reply jumps to the original: a repeated entry keeps its first row.
+    if (!positionedMessageIds.has(messageId)) {
+      positionedMessageIds.add(messageId);
+      messageRowKeysById.set(messageId, rowKey);
+    }
   };
   const group = (item: MessageGroup, rowKey: string) => {
     if (

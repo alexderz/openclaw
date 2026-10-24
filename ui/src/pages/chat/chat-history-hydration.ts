@@ -1,3 +1,4 @@
+import { readSessionMessageIdentity } from "@openclaw/gateway-client/browser";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import {
   isHiddenAssistantStreamText,
@@ -70,6 +71,19 @@ import {
 import { reconcileAuthoritativeTerminalHistory } from "./terminal-message-identity.ts";
 import { persistedCurrentToolStreamIds } from "./tool-stream-identity.ts";
 
+function nativeSequenceRange(messages: readonly unknown[]) {
+  let from: number | undefined;
+  let to: number | undefined;
+  for (const message of messages) {
+    const identity = readSessionMessageIdentity(message);
+    if (identity?.sequence != null && !identity.isImported) {
+      from = Math.min(from ?? identity.sequence, identity.sequence);
+      to = Math.max(to ?? identity.sequence, identity.sequence);
+    }
+  }
+  return from === undefined || to === undefined ? {} : { authoritativeSequences: { from, to } };
+}
+
 export async function hydrateChatHistory(
   state: ChatHistoryHost,
   client: NonNullable<ChatState["client"]>,
@@ -81,6 +95,7 @@ export async function hydrateChatHistory(
   deltaCursor: string | undefined,
   inputRunIds: string[],
   requestKeyPrefix: string,
+  reconcile = false,
 ): Promise<ObservedChatHistoryResult | undefined> {
   const ownership = beginHistoryRequest(state, client, connectionEpoch, sessionKey, requestAgentId);
   const isCurrent = () => state.sessions === sessions && acceptsHistoryResult(state, ownership);
@@ -310,7 +325,11 @@ export async function hydrateChatHistory(
       {
         type: "snapshotLoaded",
         messages: authoritativeMessages,
-        options: { shouldIncludeMessage: isVisibleChatHistoryMessage },
+        options: {
+          shouldIncludeMessage: isVisibleChatHistoryMessage,
+          // A re-entry read is authoritative for its window: settled live copies there are drift.
+          ...(reconcile ? nativeSequenceRange(visibleMessages) : {}),
+        },
       },
       {
         scope,

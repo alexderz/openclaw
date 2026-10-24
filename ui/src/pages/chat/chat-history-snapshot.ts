@@ -13,6 +13,7 @@ import type {
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { GatewaySessionRow, GatewaySessionsDefaults } from "../../api/types.ts";
 import type { ChatMetadataResult } from "../../lib/chat/chat-metadata-cache.ts";
+import { nativeHistoryMessageIdentity } from "../../lib/chat/history-message-identity.ts";
 import {
   isUiSelectedGlobalSessionKey,
   resolveUiSelectedSessionAgentId,
@@ -189,9 +190,62 @@ export function reconcileHistoryTail(options: {
   ) {
     return null;
   }
-  const prefix = options.previousMessages.filter((message) => {
+  // Pagination offsets and row sequences can live in different number spaces:
+  // CLI-backed history pages by merged-index ordinal while rows keep their
+  // local transcript seq. Cut at the new window's oldest native row, in the
+  // rows' own space; the raw start only serves a window without one.
+  let oldestSeq: number | null = null;
+  const nextSources = new Set<string>();
+  for (const message of options.nextMessages) {
+    const identity = readSessionMessageIdentity(message);
+    for (const source of [identity?.id, identity?.externalSource]) {
+      if (source) {
+        nextSources.add(source);
+      }
+    }
+    if (identity && identity.sequence !== null && !identity.isImported) {
+      oldestSeq = Math.min(oldestSeq ?? identity.sequence, identity.sequence);
+    }
+  }
+  const cut = oldestSeq ?? nextStart;
+  const inNextWindow = (identity: ReturnType<typeof readSessionMessageIdentity>) =>
+    Boolean(
+      (identity?.id && nextSources.has(identity.id)) ||
+      (identity?.externalSource && nextSources.has(identity.externalSource)),
+    );
+  // The new window is authoritative for every entry it holds. A copy that
+  // reappears after another row is an earlier merge's repeat; contiguous
+  // identical siblings of one transcript row stay.
+  const seen = new Set<string>();
+  let lastKept: string | null = null;
+  const retained = options.previousMessages.map((message) => {
+    const identity = nativeHistoryMessageIdentity(message);
+    const keptBefore = lastKept;
+    lastKept = null;
     const seq = readSessionMessageSequence(message);
-    return seq !== null && seq < nextStart;
+    if (seq === null || seq >= cut || inNextWindow(readSessionMessageIdentity(message))) {
+      return false;
+    }
+    if (identity && seen.has(identity) && identity !== keptBefore) {
+      return false;
+    }
+    if (identity) {
+      seen.add(identity);
+    }
+    lastKept = identity;
+    return true;
+  });
+  // Imported CLI rows carry no seq; keep those that sit between retained rows.
+  const lastRetained = retained.lastIndexOf(true);
+  const prefix = options.previousMessages.filter((message, index) => {
+    if (retained[index]) {
+      return true;
+    }
+    if (index > lastRetained || readSessionMessageSequence(message) !== null) {
+      return false;
+    }
+    const identity = readSessionMessageIdentity(message);
+    return Boolean(identity?.isImported && !inNextWindow(identity));
   });
   if (prefix.length === 0) {
     return null;

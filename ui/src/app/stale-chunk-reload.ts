@@ -248,6 +248,13 @@ async function waitForReachableControlUiDocument(
   }
 }
 
+/** One bounded probe: an unreachable Gateway must not replace the app with an error page. */
+export function isControlUiDocumentReachable(
+  timeoutMs = DOCUMENT_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  return raceWithTimeout(probeControlUiDocument, timeoutMs, () => false);
+}
+
 /** User-initiated retry may bypass the automatic build guard, but never live ownership. */
 export async function retryStaleChunkReloadWhenReachable(
   deps: ReachableReloadDeps = {},

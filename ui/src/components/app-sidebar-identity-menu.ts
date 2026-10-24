@@ -2,6 +2,7 @@ import { html, nothing } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { titleForRoute, type NavigationRouteId } from "../app-navigation.ts";
 import type { ApplicationNavigationOptions } from "../app/context.ts";
+import { reloadControlUiManually } from "../app/manual-reload.ts";
 import { nativeGatewaysCapability } from "../app/native-gateways.runtime.ts";
 import type { ThemeMode } from "../app/theme.ts";
 import { t } from "../i18n/index.ts";
@@ -181,6 +182,9 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
           case `${COMMAND_VALUE_PREFIX}debug-overlay`:
             requestDebugOverlayToggle();
             break;
+          case `${COMMAND_VALUE_PREFIX}reload`:
+            void reloadControlUiManually();
+            break;
           case `${COMMAND_VALUE_PREFIX}retry-connect`:
             params.onRetryConnect?.();
             break;
@@ -239,6 +243,9 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
           className: "session-menu__shortcut",
           ariaHidden: true,
         }),
+      })}
+      ${renderSidebarMenuAction("command:reload", t("connection.reloadApp"), "refresh", {
+        className: "sidebar-identity-menu__reload",
       })}
 
       <div class="sidebar-customize-menu__separator" role="separator"></div>

@@ -395,7 +395,10 @@ function buildTranscriptIndex(
           transcriptMessageKeys.set(source.key, rowKey);
           const sourceMessageId = persistedMessageEntryId(source.message);
           if (sourceMessageId) {
-            messageRowKeysById.set(sourceMessageId, rowKey);
+            // A reply jumps to the original: a repeated entry never retargets its first row.
+            if (!messageRowKeysById.has(sourceMessageId)) {
+              messageRowKeysById.set(sourceMessageId, rowKey);
+            }
             loadedReplySources.set(sourceMessageId, {
               message: source.message,
               messageId: source.key,
