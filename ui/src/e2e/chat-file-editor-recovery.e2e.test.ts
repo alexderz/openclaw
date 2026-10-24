@@ -2,6 +2,7 @@ import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import { controlUiE2eBuiltModuleRequest } from "./control-ui-built-module.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -20,7 +21,9 @@ async function openFilePreview(page: Page) {
     historyMessages: [
       {
         role: "assistant",
-        content: [{ type: "text", text: "Review `notes.txt` and `other.txt`." }],
+        content: [
+          { type: "text", text: "Review [notes.txt](notes.txt) and [other.txt](other.txt)." },
+        ],
         timestamp: 1,
       },
     ],
@@ -47,6 +50,7 @@ async function openFilePreview(page: Page) {
   });
   await page.goto(`${suite.server.baseUrl}chat`);
   await page.locator('a.markdown-file-link[data-file-path="notes.txt"]').click();
+  await chooseChatFileLinkOpen(page);
 }
 
 suite.define(() => {
@@ -172,6 +176,7 @@ suite.define(() => {
         await failure.getByRole("button", { name: "Reload", exact: true }).click();
         await navigation;
         await page.locator('a.markdown-file-link[data-file-path="notes.txt"]').click();
+        await chooseChatFileLinkOpen(page);
         await page.locator(".cm-content").waitFor();
         expect(await page.locator(".cm-content").textContent()).toContain(
           "Synthetic notes.txt content",
@@ -230,6 +235,7 @@ suite.define(() => {
             await page.getByRole("button", { name: /raw text/iu, exact: true }).click();
           } else if (selection === "file") {
             await page.locator('a.markdown-file-link[data-file-path="other.txt"]').click();
+            await chooseChatFileLinkOpen(page);
             await page.locator(".cm-content").waitFor();
           } else {
             await page.getByRole("button", { name: "Close tab: notes.txt", exact: true }).click();

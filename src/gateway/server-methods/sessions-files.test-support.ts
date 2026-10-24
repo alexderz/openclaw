@@ -9,6 +9,7 @@ type SessionFilesMethod =
   | "sessions.files.list"
   | "sessions.files.get"
   | "sessions.files.assets"
+  | "sessions.files.stat"
   | "sessions.files.set"
   | "sessions.files.reveal";
 

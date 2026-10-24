@@ -723,4 +723,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["skills.workshop.changes", "skills", "operator.read", "2026.9"],
   ["skills.workshop.archive", "skills", "operator.admin", "2026.9"],
   ["skills.workshop.restore", "skills", "operator.admin", "2026.9"],
+  // Chat file links ask once per message which cited paths sessions.files.get would open.
+  ["sessions.files.stat", "sessions-files", "operator.read", "2026.10"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

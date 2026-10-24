@@ -59,6 +59,7 @@ export {
   SESSIONS_FILES_ASSETS_MAX_REFS,
   SESSIONS_FILES_ASSET_MAX_BYTES,
   SESSIONS_FILES_ASSETS_MAX_TOTAL_BYTES,
+  SESSIONS_FILES_STAT_MAX_PATHS,
 } from "./schema/sessions.js";
 export * from "./schema/sessions-provider-review.js";
 export {

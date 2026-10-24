@@ -1466,6 +1466,42 @@ openclaw-chat-video-player {
   text-align: left;
 }
 
+/* File link tap menu: the full path heads the actions and stays selectable, so a phone
+   can still copy part of it with the browser's own selection. */
+.chat-file-link-menu {
+  max-width: min(420px, calc(100vw - 16px));
+}
+
+.chat-file-link-menu__path {
+  padding: 6px 12px 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* "Copied" note after a tap on inline code: a short-lived pill above the code. */
+.chat-inline-code-copied {
+  position: fixed;
+  z-index: 9999;
+  padding: 3px 10px;
+  border: 1px solid var(--overlay-border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  box-shadow: var(--overlay-shadow);
+  color: var(--text);
+  font-size: 0.8rem;
+  pointer-events: none;
+  white-space: nowrap;
+  animation: fade-in 0.12s var(--ease-out);
+}
+
+.chat-inline-code-copied[data-copy-state="error"] {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--overlay-border));
+}
+
 .chat-reply-context-menu button:hover,
 .chat-reply-context-menu button:focus-visible,
 .chat-selection-popup button:hover,

@@ -411,11 +411,16 @@ export async function listSessionWorkspaceFiles(
 }
 
 export async function getSessionWorkspaceFile(
-  params: LoadedSessionFiles & { path: string; assertCurrent?: () => void },
+  params: LoadedSessionFiles & {
+    path: string;
+    assertCurrent?: () => void;
+    /** Existence checks stop after stat and never read file bytes. */
+    includeContent?: boolean;
+  },
 ): Promise<{ root?: string; file?: SessionFileEntry; reason?: "outside_session_boundary" }> {
   let outsideBoundary = false;
   const options = {
-    includeContent: true,
+    includeContent: params.includeContent ?? true,
     assertCurrent: params.assertCurrent,
     authorizeHostRead: params.authorizeHostRead,
     onOutsideBoundary: () => {

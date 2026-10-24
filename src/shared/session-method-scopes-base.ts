@@ -31,6 +31,7 @@ const SESSION_READ_METHODS: ReadonlySet<string> = new Set([
   "sessions.files.list",
   "sessions.files.get",
   "sessions.files.assets",
+  "sessions.files.stat",
   "sessions.setInvolvement",
   "chat.history",
   "chat.startup",

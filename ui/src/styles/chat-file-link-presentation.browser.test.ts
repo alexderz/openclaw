@@ -58,6 +58,22 @@ function fixtureDocument(themeMode: "dark" | "light"): string {
           data-file-path="ui/app.ts"><code>app.ts</code></a>
         <code id="plain-code">npm run dev</code>
       </p>
+      <p id="ref-paragraph">
+        <span id="ref-from-text" class="markdown-file-ref" data-file-kind="markdown"
+          data-file-ref-path="docs/plan.md">docs/plan.md</span>
+        <span id="ref-from-code" class="markdown-file-ref" data-file-kind="data"
+          data-file-ref-path="MOLTING-FOLLOWUP.json"><code>MOLTING-FOLLOWUP.json</code></span>
+      </p>
+    </div>
+    <div class="chat-bubble streaming">
+      <div class="chat-text">
+        <p id="stream-paragraph">
+          <a id="stream-from-text" class="markdown-file-link" data-file-kind="markdown"
+            data-file-path="docs/plan.md">plan.md</a>
+          <a id="stream-from-code" class="markdown-file-link" data-file-kind="data"
+            data-file-path="MOLTING-FOLLOWUP.json"><code>MOLTING-FOLLOWUP.json</code></a>
+        </p>
+      </div>
     </div>
     <article class="sidebar-markdown">
       <p>
@@ -263,6 +279,16 @@ type PresentationProbe = {
   readonly panelFromText: StyleSnapshot;
   readonly panelGlyph: GlyphSnapshot;
   readonly plainCode: StyleSnapshot;
+  readonly refFromCode: StyleSnapshot;
+  readonly refFromText: StyleSnapshot;
+  readonly refParagraph: StyleSnapshot;
+  readonly refDecoration: string;
+  readonly refGlyph: string;
+  readonly streamFromCodeColor: string;
+  readonly streamFromText: StyleSnapshot;
+  readonly streamGlyph: string;
+  readonly streamParagraph: StyleSnapshot;
+  readonly streamPointerEvents: string;
 };
 
 let browser: Browser;
@@ -328,6 +354,16 @@ async function probe(themeMode: "dark" | "light"): Promise<PresentationProbe> {
         panelFromText: read("#panel-from-text"),
         panelGlyph: glyph("#panel-from-text"),
         plainCode: read("#plain-code"),
+        refFromCode: read("#ref-from-code > code"),
+        refFromText: read("#ref-from-text"),
+        refParagraph: read("#ref-paragraph"),
+        refDecoration: getComputedStyle(resolve("#ref-from-text")).textDecorationLine,
+        refGlyph: getComputedStyle(resolve("#ref-from-text"), "::before").content,
+        streamFromCodeColor: getComputedStyle(resolve("#stream-from-code > code")).color,
+        streamFromText: read("#stream-from-text"),
+        streamGlyph: getComputedStyle(resolve("#stream-from-text"), "::before").content,
+        streamParagraph: read("#stream-paragraph"),
+        streamPointerEvents: getComputedStyle(resolve("#stream-from-text")).pointerEvents,
       };
     }, CHIP_PROPERTIES);
     return probed as PresentationProbe;
@@ -356,6 +392,31 @@ describeFileLinkPresentation("chat file link presentation", () => {
       expect(plainCode.borderTopWidth).not.toBe("0px");
       expect(fromText.borderTopWidth).toBe("0px");
       expect(fromText.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    },
+  );
+
+  it.each(["light", "dark"] as const)(
+    "renders a path that does not open as the text or code it was written as in %s",
+    async (themeMode) => {
+      const probed = await probe(themeMode);
+      // An unresolved code span keeps the ordinary chip; unresolved prose keeps message text.
+      expect(probed.refFromCode).toEqual(probed.plainCode);
+      expect(probed.refFromText.color).toBe(probed.refParagraph.color);
+      expect(probed.refFromText.paddingLeft).toBe("0px");
+      expect(probed.refDecoration).toBe("none");
+      expect(probed.refGlyph).toBe("none");
+    },
+  );
+
+  it.each(["light", "dark"] as const)(
+    "shows a streaming reply's unchecked paths as message text that cannot be tapped in %s",
+    async (themeMode) => {
+      const probed = await probe(themeMode);
+      expect(probed.streamFromText.color).toBe(probed.streamParagraph.color);
+      expect(probed.streamFromCodeColor).toBe(probed.streamParagraph.color);
+      expect(probed.streamFromText.paddingLeft).toBe("0px");
+      expect(probed.streamGlyph).toBe("none");
+      expect(probed.streamPointerEvents).toBe("none");
     },
   );
 

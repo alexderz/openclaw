@@ -32,6 +32,12 @@ async function mountThread(props: Parameters<typeof renderChatThread>[0]) {
   return { container, transcript };
 }
 
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
 describe("chat transcript rendering", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
@@ -602,7 +608,7 @@ describe("chat transcript rendering", () => {
       "qa241-unicode/100% ready.txt",
       "qa241-unicode/日本語.txt",
     ].flatMap((path) => ["click", "Enter", " "].map((key) => ({ path, key }))),
-  )("opens focused transcript file $path with $key", async ({ path, key }) => {
+  )("offers Open for focused transcript file $path with $key", async ({ path, key }) => {
     const onOpenWorkspaceFile = vi.fn();
     const onOpenSessionLink = vi.fn();
     const onHistoryIntent = vi.fn();
@@ -631,10 +637,268 @@ describe("chat transcript rendering", () => {
       link?.dispatchEvent(event);
       expect(event.defaultPrevented).toBe(true);
     }
+    // A tap asks first; it never opens the file directly.
+    expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+    const menu = requireElement(document.body, ".chat-file-link-menu");
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.querySelector(".chat-file-link-menu__path")?.textContent).toBe(path);
+    const [open, copy] = menu.querySelectorAll<HTMLButtonElement>("button[role=menuitem]");
+    expect(open?.textContent).toBe("Open");
+    expect(copy?.textContent).toBe("Copy path");
+    await nextFrame();
+    if (key === "click") {
+      expect(document.activeElement).toBe(open);
+    } else {
+      // The opening key must not also choose "Open": focus waits for its release.
+      expect(document.activeElement).not.toBe(open);
+      link?.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+      expect(document.activeElement).toBe(open);
+    }
+    open?.click();
     expect(onOpenWorkspaceFile).toHaveBeenCalledExactlyOnceWith({ path, line: 17 });
+    expect(document.querySelector(".chat-file-link-menu")).toBeNull();
     expect(onOpenSessionLink).not.toHaveBeenCalled();
     expect(onHistoryIntent).not.toHaveBeenCalled();
     transcript.hostDisconnected();
+  });
+
+  it("ignores a held key repeating on a transcript file link", async () => {
+    const onOpenWorkspaceFile = vi.fn();
+    const props = {
+      ...threadProps("pane-file-repeat", "agent:main:main", [
+        { role: "assistant", content: "See src/app.ts", timestamp: 1_000 },
+      ]),
+      onOpenWorkspaceFile,
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      const link = requireElement(container, "a.markdown-file-link");
+      link.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          repeat: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+    } finally {
+      transcript.hostDisconnected();
+    }
+  });
+
+  it("offers no file link menu while the reply is still streaming", async () => {
+    const props = threadProps("pane-file-streaming", "agent:main:main", [
+      { role: "assistant", content: "See src/app.ts", timestamp: 1_000 },
+    ]);
+    const { container, transcript } = await mountThread(props);
+    try {
+      const link = requireElement(container, "a.markdown-file-link");
+      link.closest(".chat-bubble")?.classList.add("streaming");
+      link.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+      link.click();
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+    } finally {
+      transcript.hostDisconnected();
+    }
+  });
+
+  it("keeps file link menu focus with its link and closes once the link is gone", async () => {
+    const props = threadProps("pane-file-focus", "agent:main:main", [
+      { role: "assistant", content: "See src/app.ts", timestamp: 1_000 },
+    ]);
+    const { container, transcript } = await mountThread(props);
+    try {
+      const link = requireElement(container, "a.markdown-file-link");
+      link.focus();
+      // A quick press releases the key before the next frame; the menu still takes focus.
+      link.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+      link.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+      const menu = requireElement(document.body, ".chat-file-link-menu");
+      const [open] = menu.querySelectorAll<HTMLButtonElement>("button[role=menuitem]");
+      expect(document.activeElement).toBe(open);
+      // Tab closes the menu and continues from the link.
+      open?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(document.activeElement).toBe(link);
+
+      link.click();
+      requireElement(document.body, ".chat-file-link-menu");
+      await nextFrame();
+      link.remove();
+      container.querySelector(".chat-thread")?.dispatchEvent(new Event("scroll"));
+      await nextFrame();
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+    } finally {
+      transcript.hostDisconnected();
+    }
+  });
+
+  it("copies the exact file path from the file link menu", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const onOpenWorkspaceFile = vi.fn();
+    const path = "/var/lib/openclaw/.openclaw/workspace/scratch/run/MOLTING-FOLLOWUP.json";
+    const props = {
+      ...threadProps("pane-file-copy", "agent:main:main", [
+        { role: "assistant", content: `Wrote ${path}`, timestamp: 1_000 },
+      ]),
+      onOpenWorkspaceFile,
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      container.querySelector<HTMLAnchorElement>("a.markdown-file-link")?.click();
+      const copy = requireElement(
+        document.body,
+        ".chat-file-link-menu",
+      ).querySelectorAll<HTMLButtonElement>("button[role=menuitem]")[1];
+      copy?.click();
+      await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(path));
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+      // Transcript scrolling (streaming output) keeps the menu; an outside tap dismisses it.
+      await nextFrame();
+      container.querySelector(".chat-thread")?.dispatchEvent(new Event("scroll"));
+      await nextFrame();
+      expect(document.querySelector(".chat-file-link-menu")).not.toBeNull();
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      transcript.hostDisconnected();
+    }
+  });
+
+  it("copies tapped inline code exactly and never links it, even when it names a file", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const onOpenWorkspaceFile = vi.fn();
+    const statPaths = vi.fn(async () => new Map<string, boolean>());
+    const props = {
+      ...threadProps("pane-inline-code", "agent:main:main", [
+        {
+          role: "assistant",
+          content: "Run `pnpm test -- --run` and read `src/app.ts` or `MOLTING-FOLLOWUP.json`.",
+          timestamp: 1_000,
+        },
+      ]),
+      onOpenWorkspaceFile,
+      fileLinkResolver: {
+        sessionKey: "agent:main:main",
+        connection: {},
+        knownPaths: () => new Set(["src/app.ts"]),
+        statPaths,
+      },
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      expect(container.querySelector("[data-file-path], [data-file-ref-path]")).toBeNull();
+      const codes = [...container.querySelectorAll<HTMLElement>(".chat-text code")];
+      expect(codes.map((code) => code.textContent)).toEqual([
+        "pnpm test -- --run",
+        "src/app.ts",
+        "MOLTING-FOLLOWUP.json",
+      ]);
+      codes[1]?.click();
+      await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("src/app.ts"));
+      const note = await vi.waitFor(() =>
+        requireElement(document.body, ".chat-inline-code-copied"),
+      );
+      expect(note.getAttribute("role")).toBe("status");
+      expect(note.textContent).toBe("Copied!");
+      codes[0]?.click();
+      await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith("pnpm test -- --run"));
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll(".chat-inline-code-copied")).toHaveLength(1),
+      );
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+      expect(statPaths).not.toHaveBeenCalled();
+
+      // Selecting text inside the code is not a tap: nothing is copied.
+      const range = document.createRange();
+      range.selectNodeContents(codes[2]!);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      codes[2]?.click();
+      expect(writeText).toHaveBeenCalledTimes(2);
+      window.getSelection()?.removeAllRanges();
+      // The second click of a double-click selects a word instead of copying.
+      codes[2]?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      // A cross-origin session URL in backticks stays a session link.
+      codes[2]?.setAttribute("data-session-href", "https://gateway.example/chat/main");
+      codes[2]?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      expect(writeText).toHaveBeenCalledTimes(2);
+    } finally {
+      document.querySelector(".chat-inline-code-copied")?.remove();
+      vi.unstubAllGlobals();
+      transcript.hostDisconnected();
+    }
+  });
+
+  it("links only transcript paths that open, with one batched check", async () => {
+    const onOpenWorkspaceFile = vi.fn();
+    const statPaths = vi.fn(
+      async (_sessionKey: string, paths: readonly string[]) =>
+        new Map(paths.map((path) => [path, path === "/srv/checkout/dist/build-info.json"])),
+    );
+    const props = {
+      ...threadProps("pane-file-resolution", "agent:main:main", [
+        {
+          role: "assistant",
+          content:
+            "Wrote scratch/MOLTING-FOLLOWUP.json, notes/today.md and /srv/checkout/dist/build-info.json.",
+          timestamp: 1_000,
+        },
+      ]),
+      onOpenWorkspaceFile,
+      fileLinkResolver: {
+        sessionKey: "agent:main:main",
+        connection: {},
+        knownPaths: () => new Set(["notes/today.md"]),
+        statPaths,
+      },
+    };
+    const { container, transcript } = await mountThread(props);
+    try {
+      await vi.waitFor(() => expect(statPaths).toHaveBeenCalledOnce());
+      expect(statPaths).toHaveBeenCalledWith("agent:main:main", [
+        "scratch/MOLTING-FOLLOWUP.json",
+        "/srv/checkout/dist/build-info.json",
+      ]);
+      await vi.waitFor(() =>
+        expect(
+          [...container.querySelectorAll<HTMLAnchorElement>("a[data-file-path]")].map(
+            (link) => link.dataset.filePath,
+          ),
+        ).toEqual(["notes/today.md", "/srv/checkout/dist/build-info.json"]),
+      );
+      const missing = requireElement(
+        container,
+        'span[data-file-ref-path="scratch/MOLTING-FOLLOWUP.json"]',
+      );
+      expect(missing.classList.contains("markdown-file-link")).toBe(false);
+      missing.click();
+      expect(document.querySelector(".chat-file-link-menu")).toBeNull();
+      expect(onOpenWorkspaceFile).not.toHaveBeenCalled();
+
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+      await flushDeferredRowPrune();
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 60);
+      });
+      expect(statPaths).toHaveBeenCalledOnce();
+    } finally {
+      transcript.hostDisconnected();
+    }
   });
 
   it.each(["click", "Ctrl+click", "Enter", " "])(

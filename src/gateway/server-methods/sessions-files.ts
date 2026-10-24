@@ -9,11 +9,14 @@ import {
   type SessionsFilesGetParams,
   type SessionsFilesListParams,
   type SessionsFilesAssetsParams,
+  type SessionsFilesStatParams,
+  type SessionsFilesStatResult,
   validateSessionsFilesAssetsParams,
   validateSessionsFilesRevealParams,
   validateSessionsFilesGetParams,
   validateSessionsFilesListParams,
   validateSessionsFilesSetParams,
+  validateSessionsFilesStatParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { withSessionTranscriptDeltaReader } from "../../config/sessions/session-transcript-delta-read.js";
@@ -371,12 +374,47 @@ function requireSessionFilesAgentId(params: {
   return requestedAgent.agentId;
 }
 
+/** Mirrors the sessions.files.get lookup for one path, stopping at stat for local files. */
+async function sessionFileExists(
+  loaded: Awaited<ReturnType<typeof loadSessionFiles>>,
+  filePath: string,
+  read: { assertCurrent: () => void } | undefined,
+  authorizeHostRead: () => Promise<boolean>,
+): Promise<boolean> {
+  const repository = loaded.repository;
+  try {
+    const { file } =
+      repository?.kind === "stored"
+        ? resolveRepositoryArtifactPath(filePath) === undefined
+          ? { file: undefined }
+          : await getRepositoryArtifact(repository, filePath)
+        : repository
+          ? await repository.inspect("get", { files: loaded.files, path: filePath })
+          : await getSessionWorkspaceFile({
+              ...loaded,
+              files: loaded.files,
+              path: filePath,
+              includeContent: false,
+              assertCurrent: () => read?.assertCurrent(),
+              authorizeHostRead,
+            });
+    return Boolean(file && !file.missing);
+  } catch (error) {
+    if (error instanceof SessionMutationAuthorizationChangedError) {
+      throw error;
+    }
+    // One unreadable path answers "no" without failing the rest of the batch.
+    return false;
+  }
+}
+
 async function handleSessionFilesRead(
   options: GatewayRequestHandlerOptions,
   request:
     | { kind: "list"; params: SessionsFilesListParams }
     | { kind: "get"; params: SessionsFilesGetParams }
-    | { kind: "assets"; params: SessionsFilesAssetsParams },
+    | { kind: "assets"; params: SessionsFilesAssetsParams }
+    | { kind: "stat"; params: SessionsFilesStatParams },
 ): Promise<void> {
   const { respond, context } = options;
   const { params } = request;
@@ -398,7 +436,7 @@ async function handleSessionFilesRead(
     const loaded = await loadSessionFiles(source, context);
     read?.assertCurrent();
     if (
-      request.kind !== "list" &&
+      (request.kind === "get" || request.kind === "assets") &&
       loaded.repository?.kind === "stored" &&
       resolveRepositoryArtifactPath(request.params.path) === undefined
     ) {
@@ -408,7 +446,8 @@ async function handleSessionFilesRead(
     let result:
       | Awaited<ReturnType<typeof listSessionWorkspaceFiles>>
       | Awaited<ReturnType<typeof getSessionWorkspaceFile>>
-      | Awaited<ReturnType<typeof getSessionWorkspaceAssets>>;
+      | Awaited<ReturnType<typeof getSessionWorkspaceAssets>>
+      | Pick<SessionsFilesStatResult, "files">;
     let failure: (() => void) | undefined;
     if (request.kind === "list") {
       const query = {
@@ -428,6 +467,18 @@ async function handleSessionFilesRead(
                 authorizeHostRead: hostRead.authorizeHostRead,
               });
       read?.assertCurrent();
+    } else if (request.kind === "stat") {
+      const files: SessionsFilesStatResult["files"] = [];
+      // Sequential and capped by the schema: one request never fans out unbounded filesystem work.
+      for (const filePath of request.params.paths) {
+        read?.assertCurrent();
+        files.push({
+          path: filePath,
+          exists: await sessionFileExists(loaded, filePath, read, hostRead.authorizeHostRead),
+        });
+      }
+      read?.assertCurrent();
+      result = { files };
     } else if (request.kind === "assets") {
       const repository = loaded.repository;
       result = await getSessionWorkspaceAssets({
@@ -485,11 +536,13 @@ async function handleSessionFilesRead(
           true,
           request.kind === "assets"
             ? result
-            : {
-                sessionKey: params.sessionKey,
-                ...result,
-                ...(loaded.repository ? { root: undefined } : {}),
-              },
+            : request.kind === "stat"
+              ? { sessionKey: params.sessionKey, ...result }
+              : {
+                  sessionKey: params.sessionKey,
+                  ...result,
+                  ...(loaded.repository ? { root: undefined } : {}),
+                },
         ));
     if (hostRead.hasHostRead()) {
       await hostRead.withCurrent(publish);
@@ -521,6 +574,11 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     "sessions.files.list",
     validateSessionsFilesListParams,
     (options) => handleSessionFilesRead(options, { kind: "list", params: options.params }),
+  ),
+  "sessions.files.stat": defineValidatedGatewayHandler(
+    "sessions.files.stat",
+    validateSessionsFilesStatParams,
+    (options) => handleSessionFilesRead(options, { kind: "stat", params: options.params }),
   ),
   "sessions.files.get": defineValidatedGatewayHandler(
     "sessions.files.get",

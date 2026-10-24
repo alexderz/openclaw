@@ -44,7 +44,9 @@ import type { RealtimeTalkConversationEntry } from "../talk/conversation.ts";
 import type { CompactionStatus, RunOutputUsage } from "../tool-stream-contract.ts";
 import type { AsyncQuestionDraft, AsyncQuestionPresentation } from "./chat-async-question.types.ts";
 import { resolveChatContextCopy, usesNativeContextMenu } from "./chat-context-copy.ts";
+import type { ChatFileLinkResolver } from "./chat-file-link-resolution.ts";
 import type { ChatHistoryBoundaryProps } from "./chat-history-boundary.ts";
+import { inlineCodeFromTarget } from "./chat-inline-code-copy.ts";
 import {
   dismissConfirmedActionPopovers,
   isConfirmedActionPopoverFocused,
@@ -185,6 +187,8 @@ export type ChatThreadProps = ChatSendStatusActions &
     typingOverflow?: ChatTypingOverflow;
     onOpenSidebar?: (content: SidebarContent) => void;
     onOpenWorkspaceFile?: (target: MarkdownFileLinkTarget) => void;
+    /** Keeps transcript file links only for paths that open; see chat-file-link-resolution.ts. */
+    fileLinkResolver?: ChatFileLinkResolver;
     onOpenSessionLink?: (target: SessionLinkTarget) => void;
     onNavigate?: (routeId: "cron", options: { search: string }) => void;
     onRequestOpenImage?: () => number;
@@ -432,6 +436,22 @@ function removeReplyContextMenu(paneId?: string) {
   owner?.listeners.abort();
 }
 
+/** Lets another transcript menu share the single-menu owner and its dismissal. */
+export function claimReplyContextMenu(element: HTMLElement, paneId: string) {
+  removeReplyContextMenu();
+  const owner = { element, paneId, listeners: new AbortController() };
+  activeReplyContextMenu = owner;
+  return {
+    signal: owner.listeners.signal,
+    isCurrent: () => activeReplyContextMenu === owner && element.isConnected,
+    release: () => {
+      if (activeReplyContextMenu === owner) {
+        removeReplyContextMenu();
+      }
+    },
+  };
+}
+
 function toggleTouchMessageMeta(event: PointerEvent): void {
   const transcript = event.currentTarget;
   const target = event.target;
@@ -446,7 +466,9 @@ function toggleTouchMessageMeta(event: PointerEvent): void {
   if (
     !(group instanceof HTMLElement) ||
     !transcript.contains(group) ||
-    target.closest("a, button, details, input, label, select, textarea, [contenteditable]")
+    target.closest("a, button, details, input, label, select, textarea, [contenteditable]") ||
+    // A tap on inline code copies it (chat-inline-code-copy.ts) instead.
+    inlineCodeFromTarget(target)
   ) {
     return;
   }

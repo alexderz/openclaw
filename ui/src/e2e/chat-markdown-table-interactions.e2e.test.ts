@@ -12,6 +12,7 @@ import {
   startControlUiE2eServer,
   type ControlUiE2eServer,
 } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import {
   auditMarkdownTable,
   expectReadableAuditTable,
@@ -768,7 +769,7 @@ ${overflowTable}`,
       const targetKey = "agent:main:dashboard:table-target";
       const table = `| File | Task |
 | --- | --- |
-| \`src/ready.ts:2\` | ${targetKey} |`;
+| src/ready.ts:2 | ${targetKey} |`;
       const context = await browser.newContext({
         colorScheme: "dark",
         locale: "en-US",
@@ -852,6 +853,18 @@ ${overflowTable}`,
           await anchor.click();
         } else {
           await anchor.press(activation);
+        }
+        if (link === "file") {
+          // The modal closed with the link inside it; a transcript scroll keeps the menu.
+          await page.locator(".chat-file-link-menu").waitFor();
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) => {
+                document.dispatchEvent(new Event("scroll"));
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              }),
+          );
+          await chooseChatFileLinkOpen(page);
         }
       };
       const expectDestination = async (fileRequestCount: number) => {

@@ -8,6 +8,7 @@ import {
   waitForControlUiSettingsTakeover,
 } from "../test-helpers/control-ui-e2e.ts";
 import { openPicker, selectPickerValue } from "../test-helpers/select-picker-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import {
   captureUiProof,
@@ -310,7 +311,9 @@ suite.define(() => {
       featureMethods: [...defaultControlUiFeatureMethods, "sessions.files.set"],
       historyMessages: [
         {
-          content: [{ text: `Review \`notes.txt\`: ${COMPOSER_LIGATURE_SEQUENCE}`, type: "text" }],
+          content: [
+            { text: `Review [notes.txt](notes.txt): ${COMPOSER_LIGATURE_SEQUENCE}`, type: "text" },
+          ],
           role: "assistant",
           timestamp: 1,
         },
@@ -347,6 +350,7 @@ suite.define(() => {
     // Open the file first: fetching it needs the gateway, and queuing below
     // deliberately takes the connection offline.
     await page.locator('a.markdown-file-link[data-file-path="notes.txt"]').click();
+    await chooseChatFileLinkOpen(page);
     await page.locator(".cm-content").waitFor({ state: "visible" });
     await page.getByRole("button", { name: "Edit file" }).first().click();
     // contenteditable flips on only once the editor is actually editable.

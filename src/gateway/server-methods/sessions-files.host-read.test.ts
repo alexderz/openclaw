@@ -258,6 +258,40 @@ describe("sessions.files host read boundary", () => {
     expect(hardlinked.file).toMatchObject({ content: "outside\n", missing: false });
   });
 
+  it("reports outside touched files only under host file scope, without reading them", async () => {
+    const outsidePath = outsideFile();
+    fs.writeFileSync(outsidePath, "outside\n", "utf8");
+    mockVisibleMessages([assistantToolCall("read", { path: outsidePath })]);
+    const paths = [outsidePath, `${outsidePath}.missing`, "src/readme.md"];
+    const read = vi.spyOn(workspaceFs, "readWorkspaceFile");
+
+    const full = prepareHostFileRead({ permissionMode: "full" });
+    const allowed = expectOkPayload(
+      await invoke("sessions.files.stat", { sessionKey, paths }, full.context, full.options),
+    );
+    expect(allowed.files).toEqual([
+      { path: outsidePath, exists: true },
+      { path: `${outsidePath}.missing`, exists: false },
+      { path: "src/readme.md", exists: true },
+    ]);
+    expect(read).not.toHaveBeenCalled();
+
+    const contained = prepareHostFileRead({ permissionMode: "workspace" });
+    const denied = expectOkPayload(
+      await invoke(
+        "sessions.files.stat",
+        { sessionKey, paths },
+        contained.context,
+        contained.options,
+      ),
+    );
+    expect(denied.files).toEqual([
+      { path: outsidePath, exists: false },
+      { path: `${outsidePath}.missing`, exists: false },
+      { path: "src/readme.md", exists: true },
+    ]);
+  });
+
   it("rechecks the file policy after reading before publishing host content", async () => {
     const outsidePath = outsideFile();
     fs.writeFileSync(outsidePath, "outside\n", "utf8");

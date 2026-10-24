@@ -14,6 +14,7 @@ import {
   defaultControlUiFeatureMethods,
   installMockGateway,
 } from "../test-helpers/control-ui-e2e.ts";
+import { chooseChatFileLinkOpen } from "./chat-file-link-menu.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -119,6 +120,7 @@ suite.define(() => {
             await page.goto(`${suite.server.baseUrl}chat`);
             await gateway.waitForRequest("chat.startup");
             await page.locator('a.markdown-file-link[data-file-path="page.html"]').click();
+            await chooseChatFileLinkOpen(page);
             const panel = page.locator("openclaw-chat-detail-panel:visible");
             const outer = panel.locator(".chat-html-preview__frame");
             await outer.waitFor();
@@ -259,6 +261,7 @@ suite.define(() => {
                 .locator('a.markdown-file-link[data-file-path="page.html"]')
                 .filter({ hasText: /^page$/ })
                 .click();
+              await chooseChatFileLinkOpen(page);
               const panel = page.locator("openclaw-chat-detail-panel:visible");
               const outer = panel.locator(".chat-html-preview__frame");
               await outer.waitFor();
@@ -416,6 +419,7 @@ suite.define(() => {
               ).toBe(true);
               await panel.getByRole("button", { name: "Preview", exact: true }).click();
               await page.locator("a.markdown-file-link").filter({ hasText: "line two" }).click();
+              await chooseChatFileLinkOpen(page);
               await panel.locator(".cm-editor:visible").waitFor();
               expect(
                 await panel.locator(".file-view__line--target").getAttribute("data-line"),

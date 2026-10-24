@@ -6,6 +6,8 @@ const catalog = {
     detailPanel: {
       close: "Close sidebar",
       copyPath: "Copy path",
+      openFile: "Open",
+      fileActions: "File actions",
       discard: "Discard",
       editFile: "Edit file",
       searchInFile: "Search in file",

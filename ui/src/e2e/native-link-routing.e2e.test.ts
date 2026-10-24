@@ -110,7 +110,7 @@ describeControlUiE2e("native link routing", () => {
               type: "text",
               text: [
                 "Read the [report](https://example.com/report),",
-                "open [Usage](/usage), or inspect `README.md:1`.",
+                "open [Usage](/usage), or inspect [README.md:1](README.md:1).",
               ].join(" "),
             },
           ],
