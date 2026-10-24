@@ -4,7 +4,11 @@ import { compareChatQueueOrder } from "../../lib/chat/chat-queue-order.ts";
 import type { ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
 import { buildPendingInputItems } from "./chat-pending-inputs.ts";
-import { isQueuedSendInlineState, shouldRenderQueuedSendInThread } from "./chat-progress.ts";
+import {
+  isQueuedSendInlineState,
+  queuedSendsAwaitingTurn,
+  shouldRenderQueuedSendInThread,
+} from "./chat-progress.ts";
 import {
   buildMessageItems,
   hasRenderableNormalizedMessage,
@@ -28,6 +32,8 @@ export type ChatInputOrderState = { keys: string[] };
 
 export type ChatInputPlacementProps = {
   queue?: ChatQueueItem[];
+  /** The session's current run; sends queued behind it stay in the composer tray. */
+  runId?: string | null;
   initialTurnId?: string;
   pendingInputs?: ChatPendingInputsPage["items"];
   workspaceSyncPendingRunIds?: readonly string[];
@@ -51,10 +57,17 @@ export function placeChatInputs(
   activeInputKey?: string;
 } {
   const orderedQueue = (props.queue ?? []).toSorted(compareChatQueueOrder);
-  const { queue, pendingInputs } = selectChatInputDisplay(
+  const { queue, pendingInputs, queuedInputs } = selectChatInputDisplay(
     history,
     orderedQueue,
     props.pendingInputs ?? [],
+  );
+  // The composer tray shows these; they enter the transcript when their turn starts.
+  const awaitingTurn = queuedSendsAwaitingTurn(
+    // Startup owns the placement turn's position.
+    queue.filter((item) => item.id !== props.initialTurnId),
+    props.runId,
+    queuedInputs.some((input) => input.state === "queued" && input.runId),
   );
   const historicalKeys = new Set<string>();
   const pendingKeys = new Set<string>();
@@ -111,7 +124,7 @@ export function placeChatInputs(
   const acceptedKeys = new Map(blocks.map((block) => [block.items[0]!.key, block]));
   const historyKeys = new Set(items.map((item) => item.key));
   for (const queued of queue) {
-    if (!shouldRenderQueuedSendInThread(queued)) {
+    if (!shouldRenderQueuedSendInThread(queued) || awaitingTurn.has(queued.id)) {
       continue;
     }
     const message = queuedSendThreadMessage(queued);

@@ -172,6 +172,44 @@ export function shouldRenderQueuedSendInThread(item: ChatQueueItem): boolean {
   );
 }
 
+/**
+ * Sends the Gateway holds behind another turn, keyed by queue id. A shown input
+ * keeps its order, so each stays in the tray, in send order, until its own turn
+ * starts; only the next turn's send may enter the transcript. `queue` is in
+ * delivery order; Gateway-queued tray rows ahead of it set `queuedAhead`.
+ */
+export function queuedSendsAwaitingTurn(
+  queue: readonly (ChatQueueItem & { serverQueued?: true })[],
+  activeRunId: string | null | undefined,
+  queuedAhead = false,
+): Set<string> {
+  const awaiting = new Set<string>();
+  let blocked = queuedAhead;
+  for (const item of queue) {
+    if (
+      item.queueMode === "steer" ||
+      item.queueMode === "interrupt" ||
+      item.sendState === "failed" ||
+      isQueuedSendInlineState(item) ||
+      // A row joined to an existing run is not a future turn.
+      (item.pendingRunId && !item.serverQueued)
+    ) {
+      continue;
+    }
+    const inFlight =
+      (item.sendState === "submitting" || item.sendState === "sending") &&
+      shouldRenderQueuedSendInThread(item);
+    if (inFlight && !(item.sendRunId && item.sendRunId === activeRunId)) {
+      // Another run owns the session, or an earlier input still waits for its turn.
+      if (blocked || activeRunId) {
+        awaiting.add(item.id);
+      }
+    }
+    blocked = true;
+  }
+  return awaiting;
+}
+
 export function resolveWorkingProgress(
   sessionKey: string,
   runId: string | null,

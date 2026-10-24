@@ -303,7 +303,10 @@ describe("transcript input order", () => {
             : [earlier, later];
       const pendingInputs = state === "accepted" ? [acceptedInput("Earlier input", 10)] : [];
       const expected = ["Existing conversation", "Earlier input", "New input"];
-      expect(visibleRows({ queue, pendingInputs })).toEqual(expected);
+      // Two sends in flight at once: the later one waits in the tray for its turn.
+      expect(visibleRows({ queue, pendingInputs })).toEqual(
+        reordered ? expected.slice(0, 2) : expected,
+      );
       if (state === "accepted" || reordered) {
         expect(
           visibleRows({
