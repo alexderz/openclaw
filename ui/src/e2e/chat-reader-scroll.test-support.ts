@@ -29,7 +29,10 @@ export async function startRecorder(page: Page) {
         { passive: true },
       );
     }
-    const tick = () => {
+    // Read each frame as painted: after its layout and resize-observer
+    // compensation, not in requestAnimationFrame before them.
+    const afterPaint = () => setTimeout(record, 0);
+    const record = () => {
       if (recorder.stopped) {
         return;
       }
@@ -45,9 +48,9 @@ export async function startRecorder(page: Page) {
         .filter(([, y]) => y > -3000 && y < 3000);
       recorder.frames.push({ scrollTop: element.scrollTop, bubbles, events });
       events = undefined;
-      requestAnimationFrame(tick);
+      requestAnimationFrame(afterPaint);
     };
-    requestAnimationFrame(tick);
+    requestAnimationFrame(afterPaint);
   });
 }
 
@@ -60,27 +63,29 @@ export async function stopRecorder(page: Page): Promise<Frame[]> {
 }
 
 /**
- * Frames from the finger lifting onward where the text moved against the
- * drag (back toward older messages), or moved at all once scrolling settled.
+ * Frames where the text moved against a drag toward the latest messages
+ * (back toward older ones), during the gesture or after it; moved at all
+ * once scrolling settled; or was replaced so its movement cannot be read.
  */
-export function jumpsAfterRelease(frames: Frame[]) {
+export function jumpsAgainstReader(frames: Frame[]) {
   const release = frames.findIndex((frame) => frame.events?.includes("touchend"));
   let settle = release;
-  for (let index = release; index < frames.length; index++) {
+  for (let index = Math.max(release, 0); index < frames.length; index++) {
     if (frames[index]!.events?.includes("scrollend")) {
       settle = index;
     }
   }
   const jumps: string[] = [];
-  for (let index = Math.max(release, 1); index < frames.length; index++) {
+  for (let index = 1; index < frames.length; index++) {
     const previous = new Map(frames[index - 1]!.bubbles);
     const shared = frames[index]!.bubbles.filter(([id]) => previous.has(id));
     const [id, y] = shared.toSorted((a, b) => Math.abs(a[1]) - Math.abs(b[1]))[0] ?? [];
     if (id === undefined || y === undefined) {
+      jumps.push(`frame ${index}: no bubble shared with the previous frame`);
       continue;
     }
     const shift = y - previous.get(id)!;
-    if (shift > 1 || (index > settle && Math.abs(shift) > 1)) {
+    if (shift > 1 || (release >= 0 && index > settle && Math.abs(shift) > 1)) {
       jumps.push(
         `frame ${index}: ${id} moved ${Math.round(shift)}px, scrollTop ${Math.round(frames[index - 1]!.scrollTop)} -> ${Math.round(frames[index]!.scrollTop)}`,
       );
@@ -122,15 +127,23 @@ export async function touchDrag(
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
-/** Late layout in a message the reader already passed: an image, a table, highlighted code. */
-export async function growPassedBubble(page: Page) {
-  await thread(page).evaluate((element) => {
+/**
+ * Late layout in a message the reader already passed, whose whole row is
+ * above the screen: an image, a table, highlighted code. Returns whether
+ * such a message was on hand to grow.
+ */
+export async function growPassedBubble(page: Page): Promise<boolean> {
+  return thread(page).evaluate((element) => {
     const top = element.getBoundingClientRect().top;
     const passed = [...element.querySelectorAll<HTMLElement>(".chat-bubble[data-message-id]")]
       .toReversed()
-      .find((bubble) => bubble.getBoundingClientRect().bottom < top - 20);
+      .find(
+        (bubble) =>
+          (bubble.closest(".chat-virtual-row") ?? bubble).getBoundingClientRect().bottom < top - 20,
+      );
     if (passed) {
       passed.style.paddingBottom = "260px";
     }
+    return passed !== undefined;
   });
 }

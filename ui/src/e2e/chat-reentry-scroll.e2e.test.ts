@@ -10,7 +10,7 @@ import {
 } from "./chat-flow.test-support.ts";
 import {
   growPassedBubble,
-  jumpsAfterRelease,
+  jumpsAgainstReader,
   startRecorder,
   stopRecorder,
   touchDrag,
@@ -251,13 +251,17 @@ suite.define(() => {
     try {
       const cdp = await returnWhileReadIsHeld(browserPage, gateway, all);
       await startRecorder(browserPage);
+      let grown = false;
       // The stored rows replace the live ones, then one the reader passed finishes its layout.
       await touchDrag(browserPage, cdp, -500, 8, 0, {
         0.25: () => gateway.resolveDeferred("chat.history"),
-        0.75: () => growPassedBubble(browserPage),
+        0.75: async () => {
+          grown = await growPassedBubble(browserPage);
+        },
       });
       await browserPage.waitForTimeout(1_500);
-      const { release, jumps } = jumpsAfterRelease(await stopRecorder(browserPage));
+      const { release, jumps } = jumpsAgainstReader(await stopRecorder(browserPage));
+      expect(grown).toBe(true);
       expect(release).toBeGreaterThan(0);
       expect(jumps).toEqual([]);
     } finally {

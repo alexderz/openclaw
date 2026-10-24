@@ -8,7 +8,7 @@ import {
 } from "./chat-flow.test-support.ts";
 import {
   growPassedBubble,
-  jumpsAfterRelease,
+  jumpsAgainstReader,
   startRecorder,
   stopRecorder,
   thread,
@@ -106,17 +106,18 @@ function history() {
         steerTargetRunId: runId,
       },
     },
-    {
+    // The answer arrives as several messages, as a working run reports.
+    ...Array.from({ length: 8 }, (_, part) => ({
       role: "assistant",
       content: [
         {
           type: "text",
-          text: `Flint answer: ${"Flint held its prefill rate and decode stayed flat. ".repeat(90)}`,
+          text: `Flint answer ${part + 1}: ${"Flint held its prefill rate and decode stayed flat. ".repeat(12)}`,
         },
       ],
-      timestamp: at + 4_000,
-      __openclaw: { id: "a-steer", seq: ++seq },
-    },
+      timestamp: at + 4_000 + part,
+      __openclaw: { id: `a-steer-${part}`, seq: ++seq },
+    })),
     {
       role: "assistant",
       content: [
@@ -202,22 +203,36 @@ async function receiveFollowUp(gateway: Awaited<ReturnType<typeof installMockGat
 
 suite.define(() => {
   for (const variant of [
-    { name: "slow drag, finger rests, then release", steps: 40, hold: 300 },
-    { name: "drag released with momentum", steps: 8, hold: 0 },
-  ]) {
-    it(`holds the reader's line after a ${variant.name} (Report 2)`, async () => {
+    { name: "slow drag, finger rests, then release", steps: 40, hold: 300, grow: "drag" },
+    { name: "drag released with momentum", steps: 8, hold: 0, grow: "drag" },
+    {
+      name: "fling, a passed message finishing its layout in the momentum",
+      steps: 8,
+      hold: 0,
+      grow: "fling",
+    },
+  ] as const) {
+    it(`holds the reader's line through a ${variant.name} (Report 2)`, async () => {
       const { context, page, gateway, cdp } = await openRunningChat();
       try {
         await readFromQuestion(page, cdp);
         await startRecorder(page);
+        let grown = false;
+        const grow = async () => {
+          grown = await growPassedBubble(page);
+        };
         // Drag the content up: the reader moves down into the answer.
         await touchDrag(page, cdp, -520, variant.steps, variant.hold, {
           0.25: () => receiveFollowUp(gateway),
-          0.75: () => growPassedBubble(page),
+          ...(variant.grow === "drag" ? { 0.75: grow } : {}),
         });
+        if (variant.grow === "fling") {
+          await page.waitForTimeout(32);
+          await grow();
+        }
         await page.waitForTimeout(2_000);
-        const frames = await stopRecorder(page);
-        const { release, jumps } = jumpsAfterRelease(frames);
+        const { release, jumps } = jumpsAgainstReader(await stopRecorder(page));
+        expect(grown).toBe(true);
         expect(release).toBeGreaterThan(0);
         expect(jumps).toEqual([]);
       } finally {

@@ -259,9 +259,8 @@ export function observeTranscriptOffset(
     }
   };
   owner.state.syncNativeOffset = syncOffset;
-  // Corrections deferred while the finger moved the transcript must not land
-  // when it lifts or the fling stops: what the reader sees then stays put.
-  // Attribute undelivered native movement first so it is not counted twice.
+  // The finger owns the view until it lifts and its fling stops. Attribute
+  // undelivered native movement first so it is not counted twice.
   const releaseReader = () => {
     syncOffset();
     owner.prependAnchor.rebaseOnReader(element);
