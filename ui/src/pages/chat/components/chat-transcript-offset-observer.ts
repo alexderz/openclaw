@@ -26,6 +26,8 @@ export class TranscriptOffsetState {
   renderedScrollState = { atEnd: false, touchActive: false };
   maintenanceScrollOffset: number | null = null;
   pendingInteractionAnchor: ChatTranscriptInteractionAnchor | null = null;
+  /** Rows the current end command targets; virtual-core travels to their last index. */
+  endRowCount = 0;
   syncNativeOffset: (() => void) | null = null;
   recordProgrammaticScroll: ((before: number, after: number, maintenance: boolean) => void) | null =
     null;
@@ -85,12 +87,30 @@ export function scrollTranscriptToEnd(
     target: "end",
   };
   instance.scrollToEnd({ behavior });
+  state.endRowCount = instance.options.count;
   // Instant commands and smooth no-ops can reach their target before any
   // native offset event. Do not let delayed idle reclaim a departed reader.
   const element = instance.scrollElement;
   const max = maxTranscriptScrollOffset(element);
   if (element && max !== null && Math.abs(max - element.scrollTop) <= 1) {
     cancelScroll();
+  }
+}
+
+/**
+ * Keep an end command aimed at the last row. virtual-core retargets by the
+ * row index current when the command started, so rows committed on the way
+ * (an older page held back during a fling) turn it into history (DER-622).
+ * Only a count change retargets; a smooth journey restarts from where it is.
+ */
+export function retargetTranscriptEnd(
+  state: TranscriptOffsetState,
+  instance: Virtualizer<HTMLDivElement, HTMLElement>,
+): void {
+  const command = state.scrollCommand;
+  if (command?.target === "end" && state.endRowCount !== instance.options.count) {
+    state.endRowCount = instance.options.count;
+    instance.scrollToEnd({ behavior: command.behavior });
   }
 }
 
