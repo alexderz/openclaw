@@ -312,6 +312,8 @@ export function buildChatItems(
 
     items.push(...projectChatSystemNotice(item, normalized));
   }
+  // Rows projected from loaded history; only these can be an older page.
+  const historyKeys = new Set(items.map((item) => item.key));
   const currentRunId =
     props.runId ??
     (props.stream !== null || queuedSends.some(shouldRenderQueuedSendInThread)
@@ -620,7 +622,7 @@ export function buildChatItems(
       }
       floating.add(item.key);
     }
-    items = holdChatDisplayOrder(items, displayOrder, floating);
+    items = holdChatDisplayOrder(items, displayOrder, { floating, historyKeys });
   }
   // Place output against the complete transcript before search hides any rows.
   // Pending/local inputs contribute people and turn boundaries just like history;

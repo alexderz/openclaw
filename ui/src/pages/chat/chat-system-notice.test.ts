@@ -117,6 +117,8 @@ describe("system notices through pending-to-history promotion", () => {
           ]);
         }
       }
+      // The lone-notice renders above are a separate view of their own.
+      resetChatThreadState();
       const inputs = pending(message);
       const before = { role: "user", content: "before", timestamp: 999 };
       const after = {

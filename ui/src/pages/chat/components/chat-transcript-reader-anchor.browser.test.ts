@@ -148,6 +148,27 @@ it("holds the bubble being read when its row's content above it collapses", asyn
   expect(Math.abs(target.offset() - target.start)).toBeLessThanOrEqual(1);
 });
 
+it("holds the text being read when media above it loads inside the row spanning the viewport top", async () => {
+  const { host, thread } = await mountReader(80);
+  host.rows = host.rows.map((row) => ({ ...row, bubbleHeight: 700 }));
+  host.requestUpdate();
+  await settleFrames(8);
+  // Read from the middle of one long bubble: its row starts above the viewport.
+  const bubble = readerTarget(thread);
+  const element = thread.querySelector<HTMLElement>(
+    `.chat-bubble[data-message-id="${bubble.id}"]`,
+  )!;
+  thread.scrollTop +=
+    element.getBoundingClientRect().top - thread.getBoundingClientRect().top + 200;
+  await settleFrames(8);
+  const start = element.getBoundingClientRect().top - thread.getBoundingClientRect().top;
+  // An image above the paragraph, in the same row, finishes loading.
+  element.previousElementSibling!.setAttribute("style", "height: 380px");
+  await settleFrames(8);
+  const after = element.getBoundingClientRect().top - thread.getBoundingClientRect().top;
+  expect(Math.abs(after - start)).toBeLessThanOrEqual(1);
+});
+
 it("holds the text being read when new rows land after it", async () => {
   const { host, thread } = await mountReader();
   const target = readerTarget(thread);

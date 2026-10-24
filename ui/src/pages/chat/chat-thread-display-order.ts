@@ -1,8 +1,9 @@
+import { readSessionMessageIdentity } from "@openclaw/gateway-client/browser";
 import { asNullableRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ChatItem } from "../../lib/chat/chat-types.ts";
-import { fnv1aUtf16 } from "../../lib/fnv1a.ts";
 import { extractTextCached } from "../../lib/chat/message-extract.ts";
 import { normalizeRoleForGrouping } from "../../lib/chat/message-normalizer.ts";
+import { fnv1aUtf16 } from "../../lib/fnv1a.ts";
 
 /**
  * On-screen order of one chat view. A row the reader has seen keeps its place
@@ -12,8 +13,10 @@ export type ChatDisplayOrderState = {
   /** Every key shown since the view began, in display order. Absent keys keep their slot. */
   ledger: string[];
   /** Keys of the previous display with the facts that let a replacement take their slot. */
-  shown: Map<string, readonly string[]>;
+  shown: Map<string, ShownRow>;
 };
+
+type ShownRow = { signatures: readonly string[]; gapKey: string | null };
 
 export function createChatDisplayOrderState(): ChatDisplayOrderState {
   return { ledger: [], shown: new Map() };
@@ -82,19 +85,48 @@ function replacementSignatures(item: ChatItem): readonly string[] {
 }
 
 /**
+ * What lets a new row take a removed row's place between the same neighbors:
+ * the same run, or, for rows without any stored identity (keyed by content),
+ * the same role.
+ */
+function rowGapKey(item: ChatItem): string | null {
+  if (item.kind !== "message") {
+    return "runId" in item && typeof item.runId === "string" ? `run:${item.runId}` : null;
+  }
+  const identity = readSessionMessageIdentity(item.message);
+  if (identity?.runId) {
+    return `run:${identity.runId}`;
+  }
+  const record = asRecord(item.message);
+  return identity?.id || identity?.sendId || identity?.sequence != null
+    ? null
+    : `anonymous:${typeof record?.role === "string" ? normalizeRoleForGrouping(record.role) : ""}`;
+}
+
+function rowSequence(item: ChatItem): number | null {
+  return item.kind === "message"
+    ? (readSessionMessageIdentity(item.message)?.sequence ?? null)
+    : null;
+}
+
+/**
  * Order `items` (the freshly projected transcript) against what is already on
  * screen. Rows already shown keep their relative order even when the source
- * re-sorts them. A new row may only take the slot of a row this projection
- * removed (a placeholder swapped for its stored copy), sit above every shown
- * row (older history paged in), or land after the last shown row. Rows in
- * `floating` are the live edge (the reply being generated, the working
- * indicator, inputs queued behind the run): they follow every placed row and
- * do not enter the ledger.
+ * re-sorts them. A new row lands after the last shown row, even with an older
+ * timestamp, unless it is the stored copy of a row this projection removed
+ * (same tool call or text, or the same run in that row's gap), or it belongs to
+ * an older page (Show earlier): loaded history above every shown row, none of
+ * it recorded after them. Rows in `floating` are the live edge (the reply being
+ * generated, its working indicator, inputs queued behind the run): they follow
+ * every placed row and do not enter the ledger.
  */
 export function holdChatDisplayOrder(
   items: readonly ChatItem[],
   state: ChatDisplayOrderState,
-  floating: ReadonlySet<string> = new Set(),
+  {
+    floating = new Set(),
+    historyKeys,
+  }: { floating?: ReadonlySet<string>; historyKeys?: ReadonlySet<string> } = {},
 ): ChatItem[] {
   const placed = items.filter((item) => !floating.has(item.key));
   const floats = items.filter((item) => floating.has(item.key));
@@ -105,7 +137,12 @@ export function holdChatDisplayOrder(
       ledger.length > present.size * 2 + LEDGER_SLACK
         ? ledger.filter((key) => present.has(key))
         : ledger;
-    state.shown = new Map(placed.map((item) => [item.key, replacementSignatures(item)]));
+    state.shown = new Map(
+      placed.map((item) => [
+        item.key,
+        { signatures: replacementSignatures(item), gapKey: rowGapKey(item) },
+      ]),
+    );
   };
   if (present.size !== keys.length) {
     // Duplicate row keys have no single position to hold; start over.
@@ -130,7 +167,7 @@ export function holdChatDisplayOrder(
   if (removed.size > 0) {
     const removedBySignature = new Map<string, string[]>();
     for (const key of removed) {
-      for (const signature of state.shown.get(key) ?? []) {
+      for (const signature of state.shown.get(key)?.signatures ?? []) {
         const bucket = removedBySignature.get(signature) ?? [];
         bucket.push(key);
         removedBySignature.set(signature, bucket);
@@ -150,47 +187,60 @@ export function holdChatDisplayOrder(
     }
   }
   const positionOf = (key: string) => ledgerIndex.get(slotOf.get(key) ?? key);
-  const prependBefore = new Map<string, string[]>();
+  // An older page is loaded history above every retained row. A row recorded
+  // after a retained row (a later sequence) is a late arrival, whatever its
+  // timestamp, and so are live projections.
+  let oldestShownSequence = Number.POSITIVE_INFINITY;
+  for (const item of placed) {
+    const sequence = ledgerIndex.has(item.key) ? rowSequence(item) : null;
+    if (sequence !== null && sequence < oldestShownSequence) {
+      oldestShownSequence = sequence;
+    }
+  }
+  const firstRetained = keys.findIndex((key) => positionOf(key) !== undefined);
+  const prefix = placed.slice(0, Math.max(0, firstRetained));
+  const olderPage =
+    prefix.some((item) => historyKeys?.has(item.key) ?? true) &&
+    prefix.every((item) => (rowSequence(item) ?? Number.NEGATIVE_INFINITY) < oldestShownSequence);
+  const prepended: string[] = [];
   const appended: string[] = [];
   let anchor = -1;
-  for (const [index, key] of keys.entries()) {
+  for (const [index, item] of placed.entries()) {
+    const key = item.key;
     const known = positionOf(key);
     if (known !== undefined) {
       anchor = Math.max(anchor, known);
       continue;
     }
-    // A removed row between the reader's neighbors is the slot a reconciled
-    // copy fills; a shown row in between closes the gap.
+    if (olderPage && index < firstRetained) {
+      prepended.push(key);
+      continue;
+    }
+    // A removed row of the same run between the reader's neighbors is the slot
+    // its reconciled copy fills; a shown row in between closes the gap.
+    const gapKey = rowGapKey(item);
     for (let cursor = anchor + 1; cursor < state.ledger.length; cursor++) {
       const candidate = state.ledger[cursor]!;
-      if (present.has(candidate) || slotOwners.has(candidate)) {
+      if (!gapKey || present.has(candidate) || slotOwners.has(candidate)) {
         break;
       }
-      if (removed.has(candidate)) {
+      if (removed.has(candidate) && state.shown.get(candidate)?.gapKey === gapKey) {
         claim(candidate, key);
         anchor = cursor;
         break;
       }
     }
-    if (slotOf.has(key)) {
-      continue;
-    }
-    const successor =
-      anchor < 0 ? keys.slice(index + 1).find((next) => positionOf(next) !== undefined) : undefined;
-    if (successor) {
-      const before = slotOf.get(successor) ?? successor;
-      const bucket = prependBefore.get(before) ?? [];
-      bucket.push(key);
-      prependBefore.set(before, bucket);
-    } else {
+    if (!slotOf.has(key)) {
       appended.push(key);
     }
   }
+  const before = olderPage ? (slotOf.get(keys[firstRetained]!) ?? keys[firstRetained]!) : null;
   const ledger: string[] = [];
   for (const key of state.ledger) {
-    ledger.push(...(prependBefore.get(key) ?? []));
-    const owner = slotOwners.get(key);
-    ledger.push(owner ?? key);
+    if (key === before) {
+      ledger.push(...prepended);
+    }
+    ledger.push(slotOwners.get(key) ?? key);
   }
   ledger.push(...appended);
   remember(ledger);

@@ -176,25 +176,116 @@ export function measureTranscriptRow(
   );
 }
 
+export type TranscriptReaderMark = { element: Element; top: number };
+
+/** The element on the reader's top line while they hold a position. */
+export function captureTranscriptReaderMark(
+  scrollElement: HTMLElement | null,
+  following: boolean,
+): TranscriptReaderMark | null {
+  if (!scrollElement || following) {
+    return null;
+  }
+  const viewport = scrollElement.getBoundingClientRect();
+  const document = scrollElement.ownerDocument;
+  if (viewport.width === 0 || viewport.height === 0 || !document.elementFromPoint) {
+    return null;
+  }
+  const element = document.elementFromPoint(viewport.left + viewport.width / 2, viewport.top + 4);
+  return element && scrollElement.contains(element) && element.closest(".chat-virtual-row")
+    ? { element, top: element.getBoundingClientRect().top }
+    : null;
+}
+
+/** How far a resize inside the mark's row moved the mark, or null for another row. */
+export function transcriptReaderMarkShift(
+  mark: TranscriptReaderMark,
+  rowKey: VirtualItem["key"],
+): number | null {
+  const row = mark.element.isConnected
+    ? mark.element.closest<HTMLElement>(".chat-virtual-row")
+    : null;
+  return row?.dataset.virtualRowKey === String(rowKey)
+    ? mark.element.getBoundingClientRect().top - mark.top
+    : null;
+}
+
 /**
  * Whether a row's height change shifts the scroll offset by the same amount.
  * First measurements of rows above the viewport always compensate. While the
  * reader holds a position, a re-measured row compensates when it sits wholly
  * above the viewport, also while they scroll up: virtual-core's default skips
  * that case, so a late image, embed or collapsing card above moved the text
- * being read. A following transcript keeps the default.
+ * being read. A row spanning the viewport top compensates when the change
+ * moved the reader's top line by exactly its size change, i.e. it happened
+ * above that line. A following transcript keeps the default.
  */
 export function shouldCompensateTranscriptRowResize(
   item: VirtualItem,
   virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
   following: boolean,
+  delta = 0,
+  readerMarkShift: number | null = null,
 ): boolean {
   const offset = (virtualizer.scrollOffset ?? 0) + virtualizer.scrollAdjustments;
   if (!virtualizer.itemSizeCache.has(item.key)) {
     return item.start < offset;
   }
   const size = virtualizer.itemSizeCache.get(item.key) ?? item.size;
-  return item.start + size <= offset && (!following || virtualizer.scrollDirection !== "backward");
+  if (item.start + size <= offset) {
+    return !following || virtualizer.scrollDirection !== "backward";
+  }
+  return (
+    !following &&
+    item.start < offset &&
+    readerMarkShift !== null &&
+    readerMarkShift !== 0 &&
+    Math.abs(readerMarkShift - delta) <= 1
+  );
+}
+
+/** Virtual-core's resize predicate for a transcript that keeps the reader's line still. */
+export function compensateTranscriptRowResize(
+  readerMark: () => TranscriptReaderMark | null,
+  following: () => boolean,
+): (
+  item: VirtualItem,
+  delta: number,
+  virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
+) => boolean {
+  return (item, delta, virtualizer) => {
+    const mark = readerMark();
+    const shift = mark ? transcriptReaderMarkShift(mark, item.key) : null;
+    const compensate = shouldCompensateTranscriptRowResize(
+      item,
+      virtualizer,
+      following(),
+      delta,
+      shift,
+    );
+    if (mark && shift !== null && !compensate) {
+      // The reader saw this move; later growth is measured from here.
+      mark.top += shift;
+    }
+    return compensate;
+  };
+}
+
+/**
+ * Whether a row payload changed at or above the viewport's end. Growth below
+ * it (the reply streaming at the end) cannot move the reader.
+ */
+export function transcriptRowsChangedInView(
+  virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
+  items: readonly unknown[],
+  previous: readonly unknown[],
+): boolean {
+  const index = items.findIndex((item, row) => item !== previous[row]);
+  return (
+    index >= 0 &&
+    (virtualizer.measurementsCache[index]?.start ?? 0) <
+      (virtualizer.scrollOffset ?? 0) + (virtualizer.scrollRect?.height ?? 0)
+  );
 }
 
 export function maxTranscriptScrollOffset(element: HTMLElement | null): number | null {

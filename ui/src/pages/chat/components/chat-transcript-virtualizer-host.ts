@@ -23,8 +23,11 @@ import {
   initialTranscriptRect,
   measureConnectedTranscriptRows,
   measureTranscriptRow,
+  captureTranscriptReaderMark,
+  compensateTranscriptRowResize,
   reconcileInitialTranscriptOffset,
-  shouldCompensateTranscriptRowResize,
+  transcriptRowsChangedInView,
+  type TranscriptReaderMark,
   resolveTranscriptScrollMargin,
   PositionRailGutterController,
 } from "./chat-transcript-geometry.ts";
@@ -170,9 +173,10 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     this.viewportRect.recordMeasuredWidth(rect.width);
     this.measureConnectedRows();
   };
+  // The element on the reader's top line, recorded on every offset change.
+  private readerMark: TranscriptReaderMark | null = null;
   private rowKeys: readonly string[] = [];
-  // Item payloads of the committed rows: a changed payload under a reader is a
-  // projection change even when every row key stays.
+  // Committed row payloads: one changing under a reader is a projection change.
   private rowItems: readonly unknown[] = [];
   private rowIndexesByKey = new Map<string, number>();
   private messageRowKeysById: ReadonlyMap<string, string> = new Map();
@@ -228,7 +232,13 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
             cancelScroll: () => this.cancelScroll(),
             onLayoutCorrection: this.recordEndLayoutCorrection,
             requestUpdate: () => this.host.requestUpdate(),
-            onOffset: () => this.endAnchor.recordViewport(this.scrollElement),
+            onOffset: () => {
+              this.readerMark = captureTranscriptReaderMark(
+                this.scrollElement,
+                this.canAutoFollow(),
+              );
+              return this.endAnchor.recordViewport(this.scrollElement);
+            },
             onComposerLayout: (changed) => this.commitComposerResize(changed),
             onReaderScroll: (towardEnd) => {
               this.implicitEndAnchorPending = false;
@@ -249,8 +259,10 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     });
     // A row wholly above the viewport that changes height moves the reader
     // unless compensated, whichever way they scroll (DER-615).
-    this.virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
-      shouldCompensateTranscriptRowResize(item, instance, this.canAutoFollow());
+    this.virtualizer.shouldAdjustScrollPositionOnItemSizeChange = compensateTranscriptRowResize(
+      () => this.readerMark,
+      () => this.canAutoFollow(),
+    );
     // Virtual-core exposes these lifecycle hooks as bound arrow functions.
     const { _didMount: mountVirtualizer, _willUpdate: updateVirtualizer } = this.virtualizer;
     this.updateVirtualizer = updateVirtualizer;
@@ -489,14 +501,8 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     // Content rows are fresh templates every render; only item payloads count.
     const nextItems = rows.map((row) => (row.kind === "item" ? row.item : null));
     const virtualizer = this.virtualizer;
-    const firstChangedRow = rowModelChanged
-      ? -1
-      : nextItems.findIndex((item, index) => item !== this.rowItems[index]);
-    // Growth below the viewport (the reply streaming at the end) cannot move the reader.
     const rowContentChanged =
-      firstChangedRow >= 0 &&
-      (virtualizer.measurementsCache[firstChangedRow]?.start ?? 0) <
-        (virtualizer.scrollOffset ?? 0) + (virtualizer.scrollRect?.height ?? 0);
+      !rowModelChanged && transcriptRowsChangedInView(virtualizer, nextItems, this.rowItems);
     const nextRowKeys = rowModelChanged
       ? nextKeys
       : virtualizer.getVirtualItems().flatMap(({ index }) => rows[index]?.key ?? []);
