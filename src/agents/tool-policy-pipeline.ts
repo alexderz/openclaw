@@ -3,6 +3,7 @@
  * stay tied to the layer that introduced them, while plugin groups are
  * expanded only after unknown core/plugin entries are classified.
  */
+import type { ToolRestrictionOrigin } from "../../packages/gateway-protocol/src/schema/tools-catalog.js";
 import { isFrozenClawToolAllowPolicy } from "../claws/tool-policy-runtime.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { isKnownCoreToolId } from "./tool-catalog.js";
@@ -54,6 +55,8 @@ export type ToolPolicyPipelineStep = {
   policy: ToolPolicyLike | undefined;
   label: string;
   source?: ToolPolicySource;
+  /** Plain-word layer for diagnostics; never consulted for filtering. */
+  origin?: ToolRestrictionOrigin;
   stripPluginOnlyAllowlist?: boolean;
   suppressUnavailableCoreToolWarning?: boolean;
   suppressUnavailableCoreToolWarningAllowlist?: string[];
@@ -94,12 +97,14 @@ export function buildDefaultToolPolicyPipelineSteps(params: {
     {
       policy: params.profilePolicy,
       source: params.sources?.profile,
+      origin: "agent-policy",
       label: profile ? `tools.profile (${profile})` : "tools.profile",
       suppressUnavailableCoreToolWarningAllowlist: params.profileUnavailableCoreWarningAllowlist,
     },
     {
       policy: params.providerProfilePolicy,
       source: params.sources?.providerProfile,
+      origin: "agent-policy",
       label: providerProfile
         ? `tools.byProvider.profile (${providerProfile})`
         : "tools.byProvider.profile",
@@ -108,22 +113,29 @@ export function buildDefaultToolPolicyPipelineSteps(params: {
     },
     ...(
       [
-        [params.globalPolicy, params.sources?.global, "tools.allow"],
-        [params.globalProviderPolicy, params.sources?.globalProvider, "tools.byProvider.allow"],
+        [params.globalPolicy, params.sources?.global, "tools.allow", "agent-policy"],
+        [
+          params.globalProviderPolicy,
+          params.sources?.globalProvider,
+          "tools.byProvider.allow",
+          "agent-policy",
+        ],
         [
           params.agentPolicy,
           params.sources?.agent,
           agentId ? `agents.${agentId}.tools.allow` : "agent tools.allow",
+          "agent-policy",
         ],
         [
           params.agentProviderPolicy,
           params.sources?.agentProvider,
           agentId ? `agents.${agentId}.tools.byProvider.allow` : "agent tools.byProvider.allow",
+          "agent-policy",
         ],
-        [params.groupPolicy, { kind: "session" }, "group tools.allow"],
-        [params.senderPolicy, { kind: "session" }, "tools.toolsBySender"],
+        [params.groupPolicy, { kind: "session" }, "group tools.allow", "other"],
+        [params.senderPolicy, { kind: "session" }, "tools.toolsBySender", "role"],
       ] as const
-    ).map(([policy, source, label]) => ({ policy, source, label })),
+    ).map(([policy, source, label, origin]) => ({ policy, source, label, origin })),
   ];
   for (const step of steps) {
     step.stripPluginOnlyAllowlist = true;

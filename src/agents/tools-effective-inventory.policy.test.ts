@@ -32,6 +32,7 @@ function excludedByMessagingProfile(id: string, toolsPath = "agents.entries.assi
         label: "messaging profile",
         source: `${toolsPath}.profile`,
         profile: "messaging",
+        origin: "agent-policy",
       },
     ],
     alsoAllowPath: `${toolsPath}.alsoAllow`,
@@ -184,8 +185,84 @@ describe("tool access diagnostics", () => {
       if (ceiling) {
         const exec = result.toolAccess?.tools.find((tool) => tool.id === "exec");
         expect(exec?.reasons.map((reason) => reason.kind)).toEqual(["profile", "session"]);
+        expect(exec?.reasons.map((reason) => reason.origin)).toEqual([
+          "agent-policy",
+          "inherited-limit",
+        ]);
         expect(exec).not.toHaveProperty("alsoAllowPath");
       }
     },
   );
+
+  it("summarizes only what delegation takes away compared with an ordinary session", async () => {
+    const cfg: OpenClawConfig = {
+      tools: { profile: "full" },
+      agents: { entries: { assistant: { tools: { deny: ["process"] } } } },
+    };
+    const inventory = async (delegated: boolean) => {
+      const sessionKey = delegated ? "agent:assistant:subagent:summary" : "agent:assistant:main";
+      const conversationCapabilityProfile = resolveConversationCapabilityProfile({
+        config: cfg,
+        agentId: "assistant",
+        sessionKey,
+        ...(delegated
+          ? {
+              workspaceDir: "/tmp/tool-access-workspace",
+              preparedSessionEntry: {
+                sessionKey,
+                entry: {
+                  sessionId: "summary-session",
+                  spawnedBy: "agent:assistant:main",
+                  spawnDepth: 1,
+                  inheritedToolPolicyVersion: 1,
+                  inheritedToolDeny: ["exec", "process", "sessions_send", "not_a_built_tool"],
+                },
+              },
+            }
+          : {}),
+      });
+      return await resolveEffectiveToolInventory({
+        cfg,
+        agentId: "assistant",
+        sessionKey,
+        workspaceDir: "/tmp/tool-access-workspace",
+        agentDir: "/tmp/tool-access-agent",
+        modelApi: null,
+        conversationCapabilityProfile,
+      });
+    };
+
+    const delegated = await inventory(true);
+    expect(delegated.restrictions).toMatchObject({
+      evaluatedClass: "delegated",
+      sessionsSend: "denied",
+    });
+    // Each limit lists every delegation layer that removes it: the child also carries the default
+    // sub-agent deny list on top of the parent's inherited limit.
+    const limited = new Map(
+      delegated.restrictions?.limitedTools.map((tool) => [tool.id, tool.origins]),
+    );
+    expect(limited.get("exec")).toEqual(["inherited-limit"]);
+    expect(limited.get("sessions_send")).toEqual(["inherited-limit", "subagent-layer"]);
+    expect(limited.get("gateway")).toEqual(["subagent-layer"]);
+    // `process` is also denied by agent policy, so an ordinary session lacks it too; a tool the
+    // session never built is not a limit either.
+    expect(limited.has("process")).toBe(false);
+    expect(limited.has("not_a_built_tool")).toBe(false);
+    expect(delegated.restrictions?.limitedTools.map((tool) => tool.id)).toEqual(
+      delegated.restrictions?.limitedTools.map((tool) => tool.id).toSorted(),
+    );
+    const process = delegated.toolAccess?.tools.find((tool) => tool.id === "process");
+    expect(process?.reasons.map((reason) => reason.origin)).toEqual([
+      "agent-policy",
+      "inherited-limit",
+    ]);
+
+    const ordinary = await inventory(false);
+    expect(ordinary.restrictions).toMatchObject({
+      evaluatedClass: "ordinary",
+      limitedTools: [],
+    });
+    expect(ordinary.restrictions?.sessionsSend).not.toBe("denied");
+  });
 });

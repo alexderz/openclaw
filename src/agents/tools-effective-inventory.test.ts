@@ -144,7 +144,7 @@ describe("resolveEffectiveToolInventory", () => {
 
     const result = await resolveEffectiveToolInventory({ cfg: {} });
 
-    const { toolAccess: _toolAccess, ...inventory } = result;
+    const { toolAccess: _toolAccess, restrictions: _restrictions, ...inventory } = result;
     expect(inventory).toEqual({
       agentId: "main",
       profile: "full",

@@ -498,6 +498,53 @@ describe("ToolsEffectiveResultSchema", () => {
 
     expectRejected(ToolsEffectiveResultSchema, result);
   });
+
+  it("accepts typed restriction origins and the limited-vs-ordinary summary", () => {
+    const result = {
+      ...toolsEffectiveResult(),
+      toolAccess: {
+        checked: "live-session",
+        profiles: [],
+        tools: [
+          {
+            id: "sessions_send",
+            status: "excluded",
+            reasons: [
+              {
+                kind: "session",
+                label: "Not included in inherited tools",
+                origin: "inherited-limit",
+              },
+            ],
+          },
+        ],
+      },
+      restrictions: {
+        evaluatedClass: "delegated",
+        limitedTools: [{ id: "sessions_send", origins: ["inherited-limit"] }],
+        sessionsSend: "denied",
+        evaluatedAt: 1,
+      },
+    };
+
+    expectAccepted(ToolsEffectiveResultSchema, result);
+    expectRejected(ToolsEffectiveResultSchema, {
+      ...result,
+      toolAccess: {
+        ...result.toolAccess,
+        tools: [
+          {
+            ...result.toolAccess.tools[0],
+            reasons: [{ ...result.toolAccess.tools[0]?.reasons[0], origin: "parent" }],
+          },
+        ],
+      },
+    });
+    expectRejected(ToolsEffectiveResultSchema, {
+      ...result,
+      restrictions: { ...result.restrictions, limitedTools: [{ id: "exec", origins: [] }] },
+    });
+  });
 });
 
 describe("ToolsInvokeParamsSchema", () => {

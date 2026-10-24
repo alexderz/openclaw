@@ -130,6 +130,25 @@ export const ToolsEffectiveNoticeSchema = closedObject({
   servers: Type.Optional(Type.Array(NonEmptyString)),
 });
 
+/**
+ * Plain-word layer a restriction comes from. `label`/`source` keep the precise policy path;
+ * this enum lets clients group restrictions without parsing labels.
+ */
+export const ToolRestrictionOriginSchema = Type.Union([
+  /** The sender's or viewer's role, such as owner-only tools for a non-owner. */
+  Type.Literal("role"),
+  /** Configured tool profile or allow/deny policy that every session of the agent shares. */
+  Type.Literal("agent-policy"),
+  /** The tool surface a delegating parent passed down to this session. */
+  Type.Literal("inherited-limit"),
+  /** The sub-agent policy layer applied to delegated child sessions. */
+  Type.Literal("subagent-layer"),
+  /** Sandbox tool policy. */
+  Type.Literal("sandbox"),
+  /** Group/channel policy, per-run allowlists and runtime availability. */
+  Type.Literal("other"),
+]);
+
 /** Effective tool set for a session, including profile and filtering notices. */
 export const ToolAccessDiagnosticsSchema = closedObject({
   checked: Type.Union([Type.Literal("local-config"), Type.Literal("live-session")]),
@@ -161,11 +180,36 @@ export const ToolAccessDiagnosticsSchema = closedObject({
           label: NonEmptyString,
           source: Type.Optional(NonEmptyString),
           profile: Type.Optional(NonEmptyString),
+          /** Absent only from older Gateways. */
+          origin: Type.Optional(ToolRestrictionOriginSchema),
         }),
       ),
       alsoAllowPath: Type.Optional(NonEmptyString),
     }),
   ),
+});
+
+/**
+ * What this session cannot do that an ordinary session of the same agent can. Restrictions every
+ * session of the agent shares (agent policy, sandbox, role) are not counted here.
+ */
+export const ToolsEffectiveRestrictionSummarySchema = closedObject({
+  /** Class the tool surface was evaluated under; a promoted sub-agent's own turns can differ. */
+  evaluatedClass: Type.Union([Type.Literal("ordinary"), Type.Literal("delegated")]),
+  /** Excluded tools whose every restriction is a delegation layer, sorted by id. */
+  limitedTools: Type.Array(
+    closedObject({
+      id: NonEmptyString,
+      origins: Type.Array(ToolRestrictionOriginSchema, { minItems: 1 }),
+    }),
+  ),
+  /** Whether this session can message other sessions (`sessions_send`). */
+  sessionsSend: Type.Union([
+    Type.Literal("allowed"),
+    Type.Literal("denied"),
+    Type.Literal("unknown"),
+  ]),
+  evaluatedAt: Type.Number({ minimum: 0 }),
 });
 
 export const ToolsEffectiveResultSchema = closedObject({
@@ -174,6 +218,7 @@ export const ToolsEffectiveResultSchema = closedObject({
   groups: Type.Array(ToolsEffectiveGroupSchema),
   notices: Type.Optional(Type.Array(ToolsEffectiveNoticeSchema)),
   toolAccess: Type.Optional(ToolAccessDiagnosticsSchema),
+  restrictions: Type.Optional(ToolsEffectiveRestrictionSummarySchema),
 });
 
 export type ToolsEffectiveParams = Static<typeof ToolsEffectiveParamsSchema>;
@@ -182,3 +227,7 @@ export type ToolsEffectiveGroup = Static<typeof ToolsEffectiveGroupSchema>;
 export type ToolsEffectiveNotice = Static<typeof ToolsEffectiveNoticeSchema>;
 export type ToolsEffectiveResult = Static<typeof ToolsEffectiveResultSchema>;
 export type ToolAccessDiagnostics = Static<typeof ToolAccessDiagnosticsSchema>;
+export type ToolRestrictionOrigin = Static<typeof ToolRestrictionOriginSchema>;
+export type ToolsEffectiveRestrictionSummary = Static<
+  typeof ToolsEffectiveRestrictionSummarySchema
+>;

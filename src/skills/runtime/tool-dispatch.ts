@@ -220,10 +220,14 @@ export async function resolveSkillDispatchTools(
         senderPolicy,
         agentId: resolvedAgentId,
       }),
-      { policy: sandboxPolicy, label: "sandbox tools.allow" },
-      { policy: subagentPolicy, label: "subagent tools.allow" },
-      { policy: inheritedToolPolicy, label: "inherited tools" },
-      { policy: ownerOnlyCoreToolPolicy, label: "gateway sender owner-only tools" },
+      { policy: sandboxPolicy, label: "sandbox tools.allow", origin: "sandbox" },
+      { policy: subagentPolicy, label: "subagent tools.allow", origin: "subagent-layer" },
+      { policy: inheritedToolPolicy, label: "inherited tools", origin: "inherited-limit" },
+      {
+        policy: ownerOnlyCoreToolPolicy,
+        label: "gateway sender owner-only tools",
+        origin: "role",
+      },
     ],
     declaredToolAllowlist: buildDeclaredToolAllowlistContext({
       config: params.cfg,
