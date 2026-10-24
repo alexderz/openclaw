@@ -263,6 +263,8 @@ export const SessionRowSchema = Type.Object(
     ),
     execNode: Type.Optional(Type.String()),
     execCwd: Type.Optional(Type.String()),
+    /** Session exec host override (`/exec host=`); omission follows the agent's exec defaults. */
+    execHost: Type.Optional(NonEmptyString),
     spawnedWorkspaceDir: Type.Optional(Type.String()),
     spawnedCwd: Type.Optional(Type.String()),
     /** Persisted project registry association, distinct from a cloud repository workspace. */
@@ -318,6 +320,36 @@ export const SessionRowSchema = Type.Object(
     totalTokensFresh: Type.Optional(Type.Boolean()),
     contextTokens: Type.Optional(Type.Number()),
     estimatedCostUsd: Type.Optional(Type.Number()),
+    /** Cumulative prompt-cache tokens recorded for the current session id. */
+    cacheReadTokens: Type.Optional(Type.Number({ minimum: 0 })),
+    cacheWriteTokens: Type.Optional(Type.Number({ minimum: 0 })),
+    /** Completed compactions of the current transcript. */
+    compactionCount: Type.Optional(Type.Integer({ minimum: 0 })),
+    /** Fallback ladder a fresh run would use; `models` excludes the selected model. */
+    modelFallbacks: Type.Optional(
+      closedObject({
+        state: Type.Union([
+          Type.Literal("active"),
+          Type.Literal("none"),
+          Type.Literal("disabled-by-model-override"),
+          Type.Literal("disabled-by-model-lock"),
+        ]),
+        models: Type.Optional(Type.Array(NonEmptyString, { minItems: 1 })),
+      }),
+    ),
+    /**
+     * Pinned auth profile, display label only. A personal account is reported by kind alone;
+     * credentials and account locators are never sent.
+     */
+    authProfile: Type.Optional(
+      closedObject({
+        kind: Type.Union([Type.Literal("named"), Type.Literal("personal")]),
+        label: Type.Optional(NonEmptyString),
+        source: Type.Optional(
+          Type.Union([Type.Literal("auto"), Type.Literal("user"), Type.Literal("user-link")]),
+        ),
+      }),
+    ),
     model: Type.Optional(Type.String()),
     modelProvider: Type.Optional(Type.String()),
     /** Runtime model serving this session while it differs from the selected model. */

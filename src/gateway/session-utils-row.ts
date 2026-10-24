@@ -56,6 +56,7 @@ import { sessionModelRevision } from "./session-model-revision.js";
 import { isSessionPermissionChangePending } from "./session-permission-change.js";
 import { projectSessionProviderReview } from "./session-provider-review-projection.js";
 import { readSessionRowModelFacts } from "./session-row-model-facts.js";
+import { projectSessionRowSettings } from "./session-row-settings.js";
 import { buildSessionSwarmSummary } from "./session-swarm-summary.js";
 import { readSessionTitleFieldsFromTranscript as readScopedSessionTitleFieldsFromTranscript } from "./session-transcript-title-reader.js";
 import type {
@@ -602,6 +603,7 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
         ? "inherited"
         : resolveSessionModelOverrideSource(entry),
     modelSelectionLocked: entry?.modelSelectionLocked,
+    ...projectSessionRowSettings(input),
     runtimeSelectionLocked: input.thinkingProjection.runtimeSelectionLocked,
     agentRuntime: input.agentRuntime,
     contextTokens: input.contextTokens,

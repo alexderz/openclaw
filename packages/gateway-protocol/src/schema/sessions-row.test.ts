@@ -133,6 +133,26 @@ describe("SessionRowSchema", () => {
     },
   );
 
+  it("accepts session settings facts and keeps their shapes closed", () => {
+    const row = {
+      key: "agent:main:dashboard:settings",
+      kind: "direct",
+      execHost: "node",
+      cacheReadTokens: 1200,
+      cacheWriteTokens: 0,
+      compactionCount: 2,
+      modelFallbacks: { state: "active", models: ["anthropic/claude-sonnet-5-5"] },
+      authProfile: { kind: "personal", source: "user-link" },
+    };
+    expect(Value.Check(SessionRowSchema, row)).toBe(true);
+    expect(
+      Value.Check(SessionRowSchema, { ...row, authProfile: { kind: "personal", token: "x" } }),
+    ).toBe(false);
+    expect(
+      Value.Check(SessionRowSchema, { ...row, modelFallbacks: { state: "active", models: [] } }),
+    ).toBe(false);
+    expect(Value.Check(SessionRowSchema, { ...row, compactionCount: 1.5 })).toBe(false);
+  });
   it("rejects an invalid model override source", () => {
     expect(
       Value.Check(SessionRowSchema, {

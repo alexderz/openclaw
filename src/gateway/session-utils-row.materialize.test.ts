@@ -547,6 +547,12 @@ test("preserves complete base rows across time and caller presentation fixtures"
           createdSurface: _createdSurface,
           isDock: _isDock,
           sessionModelRevision: _sessionModelRevision,
+          execHost: _execHost,
+          cacheReadTokens: _cacheReadTokens,
+          cacheWriteTokens: _cacheWriteTokens,
+          compactionCount: _compactionCount,
+          modelFallbacks: _modelFallbacks,
+          authProfile: _authProfile,
           ...previousWireFields
         } = row;
         const json = JSON.stringify(previousWireFields);
@@ -574,6 +580,75 @@ test("preserves complete base rows across time and caller presentation fixtures"
         expect(rows[0]?.estimatedCostUsd).not.toEqual(rows[2]?.estimatedCostUsd);
       }
       expect(fixture.entry).toStrictEqual(originalEntry);
+    }
+  });
+});
+
+test("projects session settings facts without exposing account locators", async () => {
+  await withStateDirEnv("openclaw-row-settings-", async ({ stateDir }) => {
+    const cfg = config();
+    cfg.agents!.defaults!.model = {
+      primary: "row-fixture/primary",
+      fallbacks: ["row-fixture/older"],
+    };
+    setRuntimeConfigSnapshot(cfg);
+    setActivePluginRegistry(createEmptyPluginRegistry());
+    const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+    const build = (entry: InternalSessionEntry) =>
+      buildGatewaySessionRow({
+        cfg,
+        agentId: "main",
+        key: "agent:main:dashboard:settings",
+        entry,
+        preparedAcpMeta: null,
+        store: { "agent:main:dashboard:settings": entry },
+        storePath,
+        now: TIMES[0],
+        rowContext: buildSessionListRowMetadataContext({ now: TIMES[0], sessionKeys: [] }),
+        skipTranscriptUsageFallback: true,
+        lightweightListRow: true,
+      });
+
+    const row = build({
+      ...BASE_ENTRY,
+      execHost: "node",
+      cacheRead: 1200,
+      cacheWrite: 300,
+      compactionCount: 2,
+      authProfileOverride: "row-fixture:work",
+      authProfileOverrideSource: "user",
+    });
+    expect(row).toMatchObject({
+      execHost: "node",
+      cacheReadTokens: 1200,
+      cacheWriteTokens: 300,
+      compactionCount: 2,
+      modelFallbacks: { state: "active", models: ["row-fixture/older"] },
+      authProfile: { kind: "named", label: "row-fixture:work", source: "user" },
+    });
+
+    const personal =
+      "personal:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002";
+    const pinned = build({
+      ...BASE_ENTRY,
+      modelOverride: "newer",
+      providerOverride: "row-fixture",
+      modelOverrideSource: "user",
+      authProfileOverride: personal,
+      authProfileOverrideSource: "user-link",
+    });
+    expect(pinned.modelFallbacks).toEqual({ state: "disabled-by-model-override" });
+    expect(pinned.authProfile).toEqual({ kind: "personal", source: "user-link" });
+    expect(JSON.stringify(pinned)).not.toContain("00000000-0000-4000-8000-000000000002");
+
+    const plain = build({ ...BASE_ENTRY });
+    for (const field of [
+      "execHost",
+      "cacheReadTokens",
+      "compactionCount",
+      "authProfile",
+    ] as const) {
+      expect(plain).not.toHaveProperty(field, expect.anything());
     }
   });
 });
