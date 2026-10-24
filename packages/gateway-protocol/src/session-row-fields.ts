@@ -11,4 +11,5 @@ export const SESSION_ROW_DETAIL_FIELDS = [
   "contextBudgetStatus",
   "agentRuntime",
   "pluginExtensions",
+  "modelFallbacks",
 ] as const;
