@@ -627,7 +627,11 @@ export function buildChatItems(
       }
       floating.add(item.key);
     }
-    items = holdChatDisplayOrder(items, displayOrder, { floating, historyKeys });
+    items = holdChatDisplayOrder(items, displayOrder, {
+      floating,
+      historyKeys,
+      settledInputKeys: historicalKeys,
+    });
   }
   // Place output against the complete transcript before search hides any rows.
   // Pending/local inputs contribute people and turn boundaries just like history;

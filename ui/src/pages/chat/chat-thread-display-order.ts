@@ -158,10 +158,13 @@ function longestAscending(places: readonly TranscriptPlace[]): number[] {
  * the loaded window): that row takes its place among the shown stored rows by
  * transcript sequence, so a question stays above its answer (DER-623). A local
  * copy shown before its stored row (a send's bubble) yields its slot when the
- * stored row turns out to precede a stored row shown above it. Rows in
- * `floating` are the live edge (the reply being generated, its working
- * indicator, inputs queued behind the run): they follow every placed row and
- * do not enter the ledger.
+ * stored row turns out to precede a stored row shown above it. A stopped
+ * pending input (`settledInputKeys`) is already placed by its accepted time.
+ * When that place is before a row on screen, it keeps it instead of landing
+ * at the bottom with the other sequenceless late arrivals. One that follows
+ * every shown row still lands at the bottom. Rows in `floating` are the live
+ * edge (the reply being generated, its working indicator, inputs queued
+ * behind the run): they follow every placed row and do not enter the ledger.
  */
 export function holdChatDisplayOrder(
   items: readonly ChatItem[],
@@ -169,7 +172,12 @@ export function holdChatDisplayOrder(
   {
     floating = new Set(),
     historyKeys,
-  }: { floating?: ReadonlySet<string>; historyKeys?: ReadonlySet<string> } = {},
+    settledInputKeys,
+  }: {
+    floating?: ReadonlySet<string>;
+    historyKeys?: ReadonlySet<string>;
+    settledInputKeys?: ReadonlySet<string>;
+  } = {},
 ): ChatItem[] {
   const placed = items.filter((item) => !floating.has(item.key));
   const floats = items.filter((item) => floating.has(item.key));
@@ -380,13 +388,35 @@ export function holdChatDisplayOrder(
   // History rows without a sequence (a divider, a canvas card) follow a row
   // this pass placed by sequence just before them.
   let group: string[] | null = null;
+  // True when a row already on screen comes later in this projection. A
+  // stopped input placed before that row is not a late arrival.
+  const hasShownAfter: boolean[] = Array.from({ length: placed.length }, () => false);
+  for (let index = placed.length - 1, seen = false; index >= 0; index -= 1) {
+    hasShownAfter[index] = seen;
+    if (positionOf(placed[index]!.key) !== undefined) {
+      seen = true;
+    }
+  }
+  let previousShownLedgerKey: string | undefined;
   for (const [index, item] of placed.entries()) {
     const key = item.key;
     const known = positionOf(key);
     if (known !== undefined) {
       anchor = Math.max(anchor, known);
+      previousShownLedgerKey = ledgerKeyOf(key);
       group = null;
       continue;
+    }
+    if (settledInputKeys?.has(key) && hasShownAfter[index]) {
+      const listKey =
+        previousShownLedgerKey ??
+        headKey ??
+        (firstRetained >= 0 ? ledgerKeyOf(keys[firstRetained]!) : undefined);
+      if (listKey) {
+        insertionList(previousShownLedgerKey ? insertedAfter : insertedBefore, listKey).push(key);
+        group = null;
+        continue;
+      }
     }
     if (olderPage && index < firstRetained && isHistory(item)) {
       prepended.push(key);
