@@ -259,6 +259,13 @@ export function observeTranscriptOffset(
     }
   };
   owner.state.syncNativeOffset = syncOffset;
+  // Corrections deferred while the finger moved the transcript must not land
+  // when it lifts or the fling stops: what the reader sees then stays put.
+  // Attribute undelivered native movement first so it is not counted twice.
+  const releaseReader = () => {
+    syncOffset();
+    owner.prependAnchor.rebaseOnReader(element);
+  };
   const finishTouch = (event: TouchEvent) => {
     const wasTouchActive = owner.state.touchActive;
     for (const touch of event.changedTouches) {
@@ -271,6 +278,7 @@ export function observeTranscriptOffset(
       return;
     }
     touchY = undefined;
+    releaseReader();
     // Idle may have arrived while the finger was still down; no further
     // offset notification is guaranteed after releasing a stationary touch.
     if (!instance.isScrolling) {
@@ -284,6 +292,7 @@ export function observeTranscriptOffset(
   const finishScroll = () => {
     // Only touch scrolling holds history; wheel and trackpad settles need no render.
     if (!owner.state.touching && owner.state.touchScrolling) {
+      releaseReader();
       owner.state.touchScrolling = false;
       owner.requestUpdate();
     }

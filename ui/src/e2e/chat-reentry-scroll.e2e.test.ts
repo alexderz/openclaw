@@ -8,6 +8,13 @@ import {
   installMockGateway,
   waitForChatScrollIdle,
 } from "./chat-flow.test-support.ts";
+import {
+  growPassedBubble,
+  jumpsAfterRelease,
+  startRecorder,
+  stopRecorder,
+  touchDrag,
+} from "./chat-reader-scroll.test-support.ts";
 
 // DER-622 (P7): a chat you return to shows the place you left, and Scroll to
 // latest lands at the true bottom and stays there, through the re-entry read.
@@ -210,6 +217,60 @@ suite.define(() => {
       await tapScrollToLatest(browserPage);
       // The re-entry read lands during the journey.
       await farthestFromEnd(browserPage, 3);
+      await gateway.resolveDeferred("chat.history");
+      await waitForChatScrollIdle(browserPage);
+      expect((await viewport(browserPage)).distance).toBeLessThanOrEqual(8);
+      expect(await farthestFromEnd(browserPage, 60)).toBeLessThanOrEqual(8);
+      await thread(browserPage)
+        .locator(".chat-bubble")
+        .getByText(/^Message 153:/)
+        .waitFor();
+    } finally {
+      await suite.closeBrowserContext(context);
+    }
+  });
+
+  /** Back in the chat at the reader's place, with the re-entry read still held. */
+  async function returnWhileReadIsHeld(
+    browserPage: Page,
+    gateway: Awaited<ReturnType<typeof openMolting>>["gateway"],
+    all: unknown[],
+  ) {
+    await scrollReaderUp(browserPage);
+    await navigateToControlUiSession(browserPage, other);
+    await waitForChatScrollIdle(browserPage);
+    await runEndsWhileAway(gateway, all);
+    await gateway.deferNext("chat.history", { sessionKey: molting });
+    await navigateToControlUiSession(browserPage, molting);
+    await waitForChatScrollIdle(browserPage);
+    return browserPage.context().newCDPSession(browserPage);
+  }
+
+  it("moves only with the reader's fling while the re-entry read lands under it", async () => {
+    const { context, page: browserPage, gateway, all } = await openMolting();
+    try {
+      const cdp = await returnWhileReadIsHeld(browserPage, gateway, all);
+      await startRecorder(browserPage);
+      // The stored rows replace the live ones, then one the reader passed finishes its layout.
+      await touchDrag(browserPage, cdp, -500, 8, 0, {
+        0.25: () => gateway.resolveDeferred("chat.history"),
+        0.75: () => growPassedBubble(browserPage),
+      });
+      await browserPage.waitForTimeout(1_500);
+      const { release, jumps } = jumpsAfterRelease(await stopRecorder(browserPage));
+      expect(release).toBeGreaterThan(0);
+      expect(jumps).toEqual([]);
+    } finally {
+      await suite.closeBrowserContext(context);
+    }
+  });
+
+  it("lands at the bottom when Scroll to latest is tapped during a fling, as the re-entry read lands", async () => {
+    const { context, page: browserPage, gateway, all } = await openMolting();
+    try {
+      const cdp = await returnWhileReadIsHeld(browserPage, gateway, all);
+      await touchDrag(browserPage, cdp, -500, 8, 0);
+      await tapScrollToLatest(browserPage);
       await gateway.resolveDeferred("chat.history");
       await waitForChatScrollIdle(browserPage);
       expect((await viewport(browserPage)).distance).toBeLessThanOrEqual(8);

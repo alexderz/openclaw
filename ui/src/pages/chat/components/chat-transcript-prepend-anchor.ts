@@ -85,6 +85,20 @@ export class TranscriptPrependAnchor {
     }
   }
 
+  /**
+   * A finished touch gesture owns what is on screen. Anchor any pending
+   * restoration to the bubble the reader sees now: the old anchor may sit
+   * screens above, and restoring it would undo every compensated resize
+   * between it and the reader, or a change they already watched land (DER-622).
+   */
+  rebaseOnReader(element: HTMLDivElement | null): void {
+    if (!this.pending) {
+      return;
+    }
+    const anchor = captureTranscriptPrependAnchor(element, this.messageKeys);
+    this.pending = anchor ? { ...anchor, measured: false } : null;
+  }
+
   /** Retire pending restoration when the reader or another command takes over. */
   clear(): void {
     this.pending = null;
