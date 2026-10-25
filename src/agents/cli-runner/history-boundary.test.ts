@@ -168,6 +168,18 @@ describe("CLI history for identity-less subscription logins", () => {
     await f.withRun("ownerless-run", async (params) => {
       expect(await prepareCliHistoryBoundary(params, {})).toBeUndefined();
       expect(canReseedCliHistoryWithoutOwner(params, {})).toBe(true);
+      // The gate depends on an ownerless run never leaving a boundary behind.
+      expect(await prepareCliHistoryBoundary(params, {})).toBeUndefined();
+      expect(canReseedCliHistoryWithoutOwner(params, {})).toBe(true);
+      // The real subscription shape: OAuth with no account id or email.
+      const oauth = {
+        type: "oauth" as const,
+        provider: "test-cli",
+        access: "a",
+        refresh: "r",
+        expires: 1,
+      };
+      expect(canReseedCliHistoryWithoutOwner(params, { credential: oauth })).toBe(true);
       const context = await loadCliSessionPromptContext({
         ...params,
         allowRawTranscriptReseed: true,
