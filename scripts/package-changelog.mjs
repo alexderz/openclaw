@@ -21,17 +21,24 @@ const RELEASE_VERSION_PATTERN =
 const PRERELEASE_VERSION_PATTERN =
   /^([0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*)-(?:alpha|beta)\.[1-9][0-9]*$/u;
 
+function withoutBuildMetadata(version) {
+  const plus = version.indexOf("+");
+  return plus === -1 ? version : version.slice(0, plus);
+}
+
 export function resolvePackageChangelogVersions(packageVersion, options = {}) {
-  const match = RELEASE_VERSION_PATTERN.exec(packageVersion);
+  // Fork build metadata selects the release notes of the version it is built on.
+  const releaseVersion = withoutBuildMetadata(packageVersion);
+  const match = RELEASE_VERSION_PATTERN.exec(releaseVersion);
   if (!match) {
     throw new Error(
       `Unsupported OpenClaw package version for changelog packaging: ${packageVersion}`,
     );
   }
-  if (PRERELEASE_VERSION_PATTERN.test(packageVersion)) {
-    return [packageVersion, match[1], UNRELEASED_HEADING];
+  if (PRERELEASE_VERSION_PATTERN.test(releaseVersion)) {
+    return [releaseVersion, match[1], UNRELEASED_HEADING];
   }
-  return options.allowUnreleased ? [packageVersion, UNRELEASED_HEADING] : [packageVersion];
+  return options.allowUnreleased ? [releaseVersion, UNRELEASED_HEADING] : [releaseVersion];
 }
 
 function splitLines(content) {
@@ -75,7 +82,7 @@ export function extractCurrentPackageChangelog(content, packageVersion, options 
     const compacted = compactReleaseNotes(
       releaseSection,
       "openclaw/openclaw",
-      `v${packageVersion}`,
+      `v${withoutBuildMetadata(packageVersion)}`,
       options.recordPath,
     );
     if (compacted) {

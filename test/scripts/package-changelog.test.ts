@@ -150,6 +150,7 @@ describe("package-changelog", () => {
 
   it("maps release-channel package versions to package changelog candidate headings", () => {
     expect(resolvePackageChangelogVersions("2026.5.28")).toEqual(["2026.5.28"]);
+    expect(resolvePackageChangelogVersions("2026.10.5+fork.108")).toEqual(["2026.10.5"]);
     expect(resolvePackageChangelogVersions("2026.5.28-1")).toEqual(["2026.5.28-1"]);
     expect(resolvePackageChangelogVersions("2026.5.28-beta.1")).toEqual([
       "2026.5.28-beta.1",
