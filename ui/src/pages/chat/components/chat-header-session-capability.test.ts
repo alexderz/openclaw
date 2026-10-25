@@ -8,6 +8,7 @@ import {
 } from "../../../components/session-menu-actions.ts";
 import { promotionProjection } from "../../../lib/sessions/session-promotion.test-support.ts";
 import "./chat-header-session-menu.ts";
+import { capabilityCodeLabel } from "./session-capability-info.ts";
 
 type HeaderMenuElement = HTMLElementTagNameMap["openclaw-chat-header-session-menu"];
 
@@ -16,7 +17,7 @@ const containers: HTMLElement[] = [];
 const promotionStatus = {
   ...promotionProjection("authorized-none"),
   lifecycleRevision: "rev-1",
-  effectiveRestrictions: ["Delegated tools"],
+  effectiveRestrictions: ["inherited-limit"],
   capabilities: { sessionsSend: "denied" },
 } satisfies NonNullable<SessionMenuData["capabilityStatus"]>;
 
@@ -131,9 +132,25 @@ it("compacts the capability badge to one glyph that keeps the full words as its 
   }
 });
 
+/** The glyph opens the Session settings sheet; its Class section holds the old bubble's facts. */
+async function openSettings(menu: HeaderMenuElement) {
+  menu.querySelector<HTMLButtonElement>(".session-capability-details-toggle")!.click();
+  await menu.updateComplete;
+  const sheet = menu.querySelector("openclaw-session-settings-sheet")!;
+  await sheet.updateComplete;
+  return sheet;
+}
+
+/** The open sheet renders in a body-level portal, outside the header. */
+const sheetContent = (menu: HeaderMenuElement): ParentNode =>
+  menu.querySelector("openclaw-session-settings-sheet")?.content ??
+  document.createDocumentFragment();
+
 const facts = (menu: HeaderMenuElement) =>
   Object.fromEntries(
-    [...menu.querySelectorAll(".session-capability-details__facts dt")].map((term) => [
+    [
+      ...sheetContent(menu).querySelectorAll('[data-section="class"] .session-settings__facts dt'),
+    ].map((term) => [
       term.textContent?.trim(),
       [
         ...(term.nextElementSibling?.querySelectorAll("li").length
@@ -142,54 +159,58 @@ const facts = (menu: HeaderMenuElement) =>
       ].map((node) => node.textContent?.replace(/\s+/g, " ").trim()),
     ]),
   );
-const bubbleButtons = (menu: HeaderMenuElement) =>
+const promotionButtons = (menu: HeaderMenuElement) =>
   [
-    ...menu.querySelectorAll<HTMLButtonElement>(
-      ".session-capability-details [data-promotion-action]",
+    ...sheetContent(menu).querySelectorAll<HTMLButtonElement>(
+      ':is([data-action="promotion"], [data-action="check-promotion"]) button',
     ),
   ].map((button) => ({
-    kind: button.dataset.promotionAction,
+    action: button.closest("[data-action]")?.getAttribute("data-action"),
     label: button.textContent?.trim(),
     disabled: button.disabled,
   }));
 
-it("makes the capability glyph itself the keyboard-operable info button; no separate ⓘ", async () => {
+it("makes the capability glyph itself the keyboard-operable entry to Session settings", async () => {
   const menu = await mountMenu({ key: "k", sessionId: "s", capabilityStatus: promotionStatus });
   const toggle = menu.querySelector<HTMLButtonElement>("button.session-capability-details-toggle")!;
-  const panel = menu.querySelector<HTMLElement>(".session-capability-details")!;
   expect(menu.querySelectorAll("button.session-capability-details-toggle")).toHaveLength(1);
   expect(toggle.classList.contains("session-capability-status")).toBe(true);
   expect(toggle.getAttribute("aria-label")).toBe("Delegated · limited");
+  expect(toggle.getAttribute("aria-haspopup")).toBe("dialog");
   expect(toggle.querySelector('[aria-hidden="true"]')?.textContent?.trim()).toBe("🔒");
   expect(toggle.querySelector("svg")).toBeNull();
-  expect(toggle.getAttribute("aria-controls")).toBe(panel.id);
-  expect(toggle.getAttribute("aria-expanded")).toBe("false");
-  expect(panel.hidden).toBe(true);
+  expect(document.querySelector("openclaw-modal-dialog")).toBeNull();
 
-  toggle.click();
+  const sheet = await openSettings(menu);
+  const dialog = sheet.content!.querySelector("openclaw-modal-dialog")!;
+  expect(dialog.getAttribute("label")).toBe("Session settings");
+  expect(sheet.returnFocus).toBe(toggle);
+  // The dialog's cancel (Escape or a tap outside) closes the sheet.
+  dialog.dispatchEvent(new CustomEvent("modal-cancel", { bubbles: true, composed: true }));
   await menu.updateComplete;
-  expect(toggle.getAttribute("aria-expanded")).toBe("true");
-  expect(panel.hidden).toBe(false);
-
-  toggle.focus();
-  toggle.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  await menu.updateComplete;
-  expect(toggle.getAttribute("aria-expanded")).toBe("false");
-  expect(panel.hidden).toBe(true);
-  expect(document.activeElement).toBe(toggle);
-
-  // A tap elsewhere closes it (phones have no Escape key); a tap inside does not.
-  toggle.click();
-  await menu.updateComplete;
-  panel.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true }));
-  await menu.updateComplete;
-  expect(panel.hidden).toBe(false);
-  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true }));
-  await menu.updateComplete;
-  expect(panel.hidden).toBe(true);
+  await sheet.updateComplete;
+  expect(document.querySelector("openclaw-modal-dialog")).toBeNull();
 });
 
-it("shows a standard session as type and permissions only, with no promote button", async () => {
+it("opens Session settings from the header menu item, returning focus to the menu trigger", async () => {
+  const menu = await mountMenu({ key: "k", sessionId: "s", capabilityStatus: promotionStatus });
+  const item = menu.querySelector<HTMLElement>('wa-dropdown-item[value="session-settings"]')!;
+  expect(item.textContent?.trim()).toBe("Session settings…");
+  menu.querySelector("wa-dropdown")!.dispatchEvent(
+    new CustomEvent("wa-select", {
+      bubbles: true,
+      cancelable: true,
+      detail: { item: { value: "session-settings" } },
+    }),
+  );
+  await menu.updateComplete;
+  const sheet = menu.querySelector("openclaw-session-settings-sheet")!;
+  await sheet.updateComplete;
+  expect(sheet.open).toBe(true);
+  expect(sheet.returnFocus).toBe(menu.querySelector(".chat-header-session-menu__trigger"));
+});
+
+it("shows a standard session's class as type and turns only, with no promote action", async () => {
   const menu = await mountMenu({
     key: "k",
     sessionId: "s",
@@ -200,19 +221,13 @@ it("shows a standard session as type and permissions only, with no promote butto
       classScope: "all-turns",
       canPromote: false,
       disabledReasons: ["unsupported-target:not-delegated"],
-      effectiveRestrictions: ["current-role-grants-resource-policy-and-sandbox-still-apply"],
+      effectiveRestrictions: [],
       capabilities: { sessionsSend: "unknown" },
     },
   });
-  expect(facts(menu)).toEqual({
-    Type: ["Standard"],
-    Permissions: [
-      "Standard: every turn",
-      "Your role, resource policy and sandbox still apply",
-      "Session messaging: checked when used",
-    ],
-  });
-  expect(bubbleButtons(menu)).toEqual([]);
+  await openSettings(menu);
+  expect(facts(menu)).toEqual({ Type: ["Standard"], Turns: ["Standard: every turn"] });
+  expect(promotionButtons(menu)).toEqual([]);
 });
 
 it("shows a detached promotion as Standard with where and when it was promoted from", async () => {
@@ -223,20 +238,18 @@ it("shows a detached promotion as Standard with where and when it was promoted f
     capabilityStatus: status,
     promotedFromLabel: "Parent board",
   });
+  await openSettings(menu);
   const date = new Date(status.promotedFrom!.at).toLocaleDateString();
   expect(facts(menu)).toEqual({
     Type: ["Standard"],
     Origin: [`Promoted from Parent board on ${date}`],
-    Permissions: [
-      "Standard: every turn",
-      "Your role, resource policy and sandbox still apply",
-      "Session messaging: checked when used",
-    ],
+    Turns: ["Standard: every turn"],
     Status: ["Promoted"],
   });
-  expect(bubbleButtons(menu)).toEqual([]);
+  expect(promotionButtons(menu)).toEqual([]);
   menu.session = { ...menu.session, promotedFromLabel: undefined };
   await menu.updateComplete;
+  await menu.querySelector("openclaw-session-settings-sheet")!.updateComplete;
   expect(facts(menu).Origin).toEqual([`Promoted on ${date}`]);
 });
 
@@ -246,24 +259,19 @@ it("offers Promote on a delegated session through the same action as the menu", 
     { key: "k", sessionId: "s", capabilityStatus: promotionProjection("authorized-none") },
     onAction,
   );
-  menu.querySelector<HTMLButtonElement>(".session-capability-details-toggle")!.click();
-  await menu.updateComplete;
+  await openSettings(menu);
   expect(facts(menu)).toEqual({
     Type: ["Limited (delegated)"],
-    Permissions: [
-      "Delegated limits: every turn",
-      "Your role, resource policy and sandbox still apply",
-      "Session messaging: checked when used",
-    ],
+    Turns: ["Delegated limits: every turn"],
   });
-  expect(bubbleButtons(menu)).toEqual([
-    { kind: "promote-session", label: "Promote", disabled: false },
+  expect(promotionButtons(menu)).toEqual([
+    { action: "promotion", label: "Promote to ordinary session…", disabled: false },
   ]);
-  menu.querySelector<HTMLButtonElement>('[data-promotion-action="promote-session"]')!.click();
+  sheetContent(menu).querySelector<HTMLButtonElement>('[data-action="promotion"] button')!.click();
   await menu.updateComplete;
   expect(onAction).toHaveBeenCalledWith({ kind: "promote-session" });
-  // The confirm dialog takes over; the bubble does not linger behind it.
-  expect(menu.querySelector<HTMLElement>(".session-capability-details")!.hidden).toBe(true);
+  // The confirm dialog takes over; the sheet does not linger behind it.
+  expect(menu.querySelector("openclaw-session-settings-sheet")!.open).toBe(false);
 });
 
 it("disables Promote with a short reason when this viewer may not promote", async () => {
@@ -272,41 +280,41 @@ it("disables Promote with a short reason when this viewer may not promote", asyn
     { key: "k", sessionId: "s", capabilityStatus: promotionProjection("restricted-viewer") },
     onAction,
   );
+  await openSettings(menu);
   expect(facts(menu)["Why not"]).toEqual(["Needs your current authorization"]);
-  expect(bubbleButtons(menu)).toEqual([
-    { kind: "promote-session", label: "Promote", disabled: true },
+  expect(promotionButtons(menu)).toEqual([
+    { action: "promotion", label: "Promote to ordinary session…", disabled: true },
   ]);
-  menu.querySelector<HTMLButtonElement>('[data-promotion-action="promote-session"]')!.click();
+  sheetContent(menu).querySelector<HTMLButtonElement>('[data-action="promotion"] button')!.click();
   expect(onAction).not.toHaveBeenCalled();
 });
 
-it("shows a pending promotion's blocker and offers Cancel only to a viewer who may cancel", async () => {
+it("shows a pending promotion's blocker and enables Cancel only for a viewer who may cancel", async () => {
   const onAction = vi.fn();
   const menu = await mountMenu(
     { key: "k", sessionId: "s", capabilityStatus: promotionProjection("authorized-pending") },
     onAction,
   );
+  await openSettings(menu);
   expect(facts(menu)).toEqual({
     Type: ["Pending promotion"],
-    Permissions: [
-      "Delegated limits: every turn",
-      "Your role, resource policy and sandbox still apply",
-      "Session messaging: checked when used",
-    ],
+    Turns: ["Delegated limits: every turn"],
     Status: [
       "Starts on the next fresh turn",
       "Waiting for running work to settle and an access re-check",
     ],
   });
-  expect(bubbleButtons(menu)).toEqual([
-    { kind: "cancel-promotion", label: "Cancel promotion", disabled: false },
+  expect(promotionButtons(menu)).toEqual([
+    { action: "promotion", label: "Cancel pending promotion…", disabled: false },
   ]);
-  menu.querySelector<HTMLButtonElement>('[data-promotion-action="cancel-promotion"]')!.click();
+  sheetContent(menu).querySelector<HTMLButtonElement>('[data-action="promotion"] button')!.click();
   expect(onAction).toHaveBeenCalledWith({ kind: "cancel-promotion" });
 
   menu.session = { ...menu.session, capabilityStatus: promotionProjection("unauthorized-pending") };
-  await menu.updateComplete;
-  expect(bubbleButtons(menu)).toEqual([]);
+  await openSettings(menu);
+  expect(promotionButtons(menu)).toEqual([
+    { action: "promotion", label: "Cancel pending promotion…", disabled: true },
+  ]);
   expect(facts(menu).Status?.[0]).toBe("Starts on the next fresh turn");
   expect(facts(menu)["Why not"]).toEqual(["Needs your current authorization"]);
 });
@@ -326,14 +334,32 @@ it("keeps an unknown Gateway code verbatim and offers a status check when the re
     },
     onAction,
   );
+  await openSettings(menu);
   expect(facts(menu)["Why not"]).toEqual(["some-future-reason"]);
   expect(facts(menu).Status).toEqual(["Promotion result unknown · check status"]);
-  expect(bubbleButtons(menu)).toEqual([
-    { kind: "promote-session", label: "Promote", disabled: true },
-    { kind: "check-promotion", label: "Check status", disabled: false },
+  expect(promotionButtons(menu)).toEqual([
+    { action: "promotion", label: "Promote to ordinary session…", disabled: true },
+    { action: "check-promotion", label: "Check promotion status", disabled: false },
   ]);
-  menu.querySelector<HTMLButtonElement>('[data-promotion-action="check-promotion"]')!.click();
+  sheetContent(menu)
+    .querySelector<HTMLButtonElement>('[data-action="check-promotion"] button')!
+    .click();
   expect(onAction).toHaveBeenCalledWith({ kind: "check-promotion" });
+});
+
+it("maps the Gateway's restriction origins to plain words", () => {
+  expect(
+    ["inherited-limit", "subagent-layer", "agent-policy", "role", "sandbox", "other"].map(
+      capabilityCodeLabel,
+    ),
+  ).toEqual([
+    "Some tools limited by its parent",
+    "Standard sub-agent limits",
+    "Some tools limited by agent policy",
+    "Some tools limited by your role",
+    "Some tools limited by the sandbox",
+    "Some tools limited by other policy",
+  ]);
 });
 
 it("lists Check promotion status only for a session with a promotion record or request", async () => {

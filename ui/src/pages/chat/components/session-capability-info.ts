@@ -1,4 +1,3 @@
-import { html, nothing } from "lit";
 import type { SessionCapabilityStatus } from "../../../api/types.ts";
 import type { SessionMenuData } from "../../../components/session-menu-actions.ts";
 import type { PromotionMenuActionKind } from "../../../components/session-promotion-menu.ts";
@@ -23,6 +22,13 @@ const CODE_LABELS: Record<string, string> = {
   "unsupported-target:no-revision": "reason.noRevision",
   "quiescence-and-current-human-revalidation-required": "state.waitingFor",
   "current-role-grants-resource-policy-and-sandbox-still-apply": "permission.roleAndSandbox",
+  // Restriction origins (`ToolRestrictionOrigin`) the projection sends in effectiveRestrictions.
+  role: "permission.limitedByRole",
+  "agent-policy": "permission.limitedByAgentPolicy",
+  "inherited-limit": "permission.limitedByParent",
+  "subagent-layer": "permission.limitedBySubagentLayer",
+  sandbox: "permission.limitedBySandbox",
+  other: "permission.limitedByOther",
 };
 
 /** An unmapped code is shown as sent, so a new Gateway reason is never hidden or reworded. */
@@ -45,8 +51,8 @@ export function capabilityTypeLabel(status: SessionCapabilityStatus | undefined)
   return t(`${KEY}.type.${direct ? "standardDirect" : "standard"}`);
 }
 
-/** Permissions from the projection only: turn scope, restrictions and session messaging. */
-export function capabilityPermissionLabels(status: SessionCapabilityStatus | undefined): string[] {
+/** Which turns run ordinary or delegated, from the projection; tool limits live in Permissions. */
+export function capabilityScopeLabels(status: SessionCapabilityStatus | undefined): string[] {
   if (!status || status.effectiveClass === "unknown") {
     return [];
   }
@@ -57,18 +63,27 @@ export function capabilityPermissionLabels(status: SessionCapabilityStatus | und
         ? [t(`${KEY}.permission.directTurnsStandard`), t(`${KEY}.permission.otherTurnsLimited`)]
         : [t(`${KEY}.permission.allTurnsStandard`)]
       : [t(`${KEY}.permission.${direct ? "yourTurnsLimited" : "allTurnsLimited"}`)];
-  const send = status.capabilities.sessionsSend;
   return [
     ...scope,
-    ...status.effectiveRestrictions.map(capabilityCodeLabel),
-    t(
-      `${KEY}.permission.${send === "allowed" ? "sessionsSendAllowed" : send === "denied" ? "sessionsSendDenied" : "sessionsSendUnknown"}`,
-    ),
     ...(status.historicalOrigin === "delegated" &&
     status.effectiveClass === "ordinary" &&
     !status.promotedFrom
       ? [t(`${KEY}.permission.originDelegated`)]
       : []),
+  ];
+}
+
+/** Restriction origins and session messaging as the row projects them, in plain words. */
+export function capabilityRestrictionLabels(status: SessionCapabilityStatus | undefined): string[] {
+  if (!status || status.effectiveClass === "unknown") {
+    return [];
+  }
+  const send = status.capabilities.sessionsSend;
+  return [
+    ...status.effectiveRestrictions.map(capabilityCodeLabel),
+    t(
+      `${KEY}.permission.${send === "allowed" ? "sessionsSendAllowed" : send === "denied" ? "sessionsSendDenied" : "sessionsSendUnknown"}`,
+    ),
   ];
 }
 
@@ -108,51 +123,19 @@ export function capabilityDisabledLabels(status: SessionCapabilityStatus | undef
   ];
 }
 
-type CapabilityDetailsProps = {
-  id: string;
-  open: boolean;
-  session: SessionMenuData;
-  /** The badge words: shown again when only the badge carries an in-flight or refused outcome. */
-  capabilityLabel: string;
-  actionAllowed: (kind: PromotionActionKind) => boolean;
-  onAction: (kind: PromotionActionKind) => void;
-  onKeydown: (event: KeyboardEvent) => void;
-};
-
-/** Promote, cancel or check. Standard sessions have nothing to promote and get no button. */
-function renderCapabilityActions(props: CapabilityDetailsProps) {
-  const status = props.session.capabilityStatus;
-  const pending = status?.promotionState === "pending";
-  const button = (kind: PromotionActionKind, label: string, primary = false) => html`<button
-    class=${`btn btn--sm${primary ? " primary" : ""} session-capability-details__action`}
-    type="button"
-    data-promotion-action=${kind}
-    ?disabled=${!props.actionAllowed(kind)}
-    @click=${() => props.onAction(kind)}
-  >
-    ${t(`${KEY}.info.${label}`)}
-  </button>`;
-  // Cancel needs the projected cancel authority; without it a pending row offers nothing.
-  const actions = [
-    ...(pending && status.canCancel ? [button("cancel-promotion", "cancel")] : []),
-    ...(status && !pending && status.effectiveClass !== "ordinary"
-      ? [button("promote-session", "promote", true)]
-      : []),
-    ...(props.session.promotionUncertain ? [button("check-promotion", "check")] : []),
-  ];
-  return actions.length
-    ? html`<div class="session-capability-details__actions">${actions}</div>`
-    : nothing;
-}
-
-/** The info bubble: short labelled facts from the projection, then the promotion buttons. */
-export function renderSessionCapabilityDetails(props: CapabilityDetailsProps) {
-  const { session } = props;
+/**
+ * The Class facts the info bubble used to show, label key first: type, origin, scope, status and
+ * why promotion is unavailable. Empty values are left out.
+ */
+export function capabilityFacts(
+  session: SessionMenuData,
+  capabilityLabel: string,
+): Array<[label: string, values: string[]]> {
   const status = session.capabilityStatus;
   const transient = session.promotionBusy || session.promotionUncertain || session.promotionDenied;
   const states = [
     ...capabilityStateLabels(status),
-    ...(transient ? [props.capabilityLabel] : []),
+    ...(transient ? [capabilityLabel] : []),
     ...(session.promotionMessage ? [session.promotionMessage] : []),
   ];
   const pending = status?.promotionState === "pending";
@@ -170,35 +153,15 @@ export function renderSessionCapabilityDetails(props: CapabilityDetailsProps) {
               : []),
           ]
         : [];
-  const row = (label: string, values: string[]) => {
+  const rows: Array<[string, string[]]> = [
+    ["type", [capabilityTypeLabel(status)]],
+    ["origin", capabilityOriginLabels(session)],
+    ["scope", capabilityScopeLabels(status)],
+    ["status", states],
+    ["why", why],
+  ];
+  return rows.flatMap(([label, values]) => {
     const unique = [...new Set(values)];
-    return unique.length
-      ? html`<dt>${t(`${KEY}.info.${label}`)}</dt>
-          <dd>
-            ${
-              unique.length === 1
-                ? unique[0]
-                : html`<ul>
-                    ${unique.map((value) => html`<li>${value}</li>`)}
-                  </ul>`
-            }
-          </dd>`
-      : nothing;
-  };
-  return html`<div
-    id=${props.id}
-    class="session-capability-details"
-    role="region"
-    aria-label=${t(`${KEY}.details`)}
-    ?hidden=${!props.open}
-    @keydown=${props.onKeydown}
-  >
-    <dl class="session-capability-details__facts">
-      ${row("type", [capabilityTypeLabel(status)])}
-      ${row("origin", capabilityOriginLabels(session))}
-      ${row("permissions", capabilityPermissionLabels(status))} ${row("status", states)}
-      ${row("why", why)}
-    </dl>
-    ${renderCapabilityActions(props)}
-  </div>`;
+    return unique.length ? [[t(`${KEY}.info.${label}`), unique] as [string, string[]]] : [];
+  });
 }

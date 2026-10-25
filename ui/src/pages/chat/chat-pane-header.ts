@@ -618,6 +618,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
         row && this.state
           ? html`<openclaw-chat-header-session-menu
               .session=${this.headerSessionMenuData(row, pinnable)}
+              .row=${row}
               .worktreePath=${row.execNode || !isNativeLocalGateway() ? null : workspace.root}
               .onboarding=${this.onboarding}
               .preferencesBrowserOnly=${
