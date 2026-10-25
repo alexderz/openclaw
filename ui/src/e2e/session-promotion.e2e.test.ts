@@ -65,6 +65,7 @@ async function openHandoffPage(
     /** Extra wire fields for the one row, such as a registry spawnedBy overlay. */
     row?: Partial<GatewaySessionRow>;
     methods?: string[];
+    responses?: Record<string, unknown>;
   } = {},
 ) {
   const context = await suite.browser.newContext({
@@ -94,6 +95,7 @@ async function openHandoffPage(
         },
       ]),
       "sessions.promote": promoteResponse,
+      ...look.responses,
     },
   });
   await page.goto(controlUiSessionUrl(suite.server.baseUrl, key));
@@ -136,6 +138,22 @@ async function expectDialogButtonsAtLeast44(page: Page) {
   }
 }
 
+/** The sheet slides in from the right; measure it only once it has come to rest. */
+async function waitForSettledSheet(page: Page) {
+  const sheet = page.locator(".session-settings");
+  await sheet.waitFor({ state: "visible" });
+  let previous = "";
+  await expect
+    .poll(async () => {
+      const bounds = await sheet.boundingBox();
+      const current = JSON.stringify(bounds);
+      const settled = current === previous;
+      previous = current;
+      return settled;
+    })
+    .toBe(true);
+}
+
 suite.define(() => {
   it.each(VIEWPORTS)(
     "renders an accessible handoff at $name without live Gateway access",
@@ -145,15 +163,22 @@ suite.define(() => {
         await expect
           .poll(() => host.locator('[role="status"]').textContent())
           .toContain("Delegated · limited");
-        // The capability glyph is the info button; its name is the capability in words.
+        // The capability glyph opens Session settings; its name is the capability in words.
         const detailsToggle = host.getByRole("button", { name: "Delegated · limited" });
         await detailsToggle.focus();
         await page.keyboard.press("Enter");
-        await expect.poll(() => detailsToggle.getAttribute("aria-expanded")).toBe("true");
-        const detailBounds = await host.locator(".session-capability-details").boundingBox();
+        const sheet = page.locator(".session-settings");
+        await waitForSettledSheet(page);
+        const detailBounds = await sheet.boundingBox();
         expect(detailBounds!.x).toBeGreaterThanOrEqual(0);
         expect(detailBounds!.x + detailBounds!.width).toBeLessThanOrEqual(viewport.width);
         await captureUiProof(suite, page, "session-promotion-" + viewport.name + "-details.png");
+        // Escape closes the sheet and returns focus to the glyph that opened it.
+        await page.keyboard.press("Escape");
+        await sheet.waitFor({ state: "detached" });
+        await expect
+          .poll(() => detailsToggle.evaluate((element) => element === document.activeElement))
+          .toBe(true);
         const promote = await openPromotionMenuItem(page, "promote-session");
         await captureUiProof(suite, page, "session-promotion-" + viewport.name + "-menu.png");
         await promote.click();
@@ -264,12 +289,12 @@ suite.define(() => {
         await captureUiProof(suite, page, "session-capability-" + viewport.name + "-header.png");
 
         await toggle.click();
-        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
-        // The panel overlays the conversation; opening it must not push the header around.
+        // The sheet overlays the conversation; opening it must not push the header around.
+        const panel = page.locator(".session-settings");
+        await waitForSettledSheet(page);
         expect(await box(header)).toEqual(headerBefore);
         expect(await box(badge)).toEqual(own.toggle);
         // Visible on top of the conversation, not clipped by or painted under a pane ancestor.
-        const panel = host.locator(".session-capability-details");
         const panelBox = await box(panel, "details panel");
         expect(panelBox.x).toBeGreaterThanOrEqual(0);
         expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(viewport.width);
@@ -282,7 +307,7 @@ suite.define(() => {
             );
             return hit ? element.contains(hit) : false;
           }),
-          "details panel is the topmost element at its center",
+          "settings sheet is the topmost element at its center",
         ).toBe(true);
         await captureUiProof(suite, page, "session-capability-" + viewport.name + "-details.png");
       } catch (error) {
@@ -535,7 +560,7 @@ suite.define(() => {
       ),
     ),
   )(
-    "opens the info bubble from the capability glyph: $label",
+    "opens Session settings from the capability glyph: $label",
     async ({ viewport, colorScheme, state }) => {
       const { context, page, host } = await openHandoffPage(
         viewport,
@@ -548,23 +573,22 @@ suite.define(() => {
       try {
         const toggle = host.getByRole("button", { name: state.glyph, exact: true });
         await toggle.click();
-        await expect.poll(() => toggle.getAttribute("aria-expanded")).toBe("true");
-        const panel = host.locator(".session-capability-details");
-        await panel.waitFor({ state: "visible" });
+        const panel = page.locator(".session-settings");
+        await waitForSettledSheet(page);
         const panelBox = (await panel.boundingBox())!;
         expect(panelBox.x).toBeGreaterThanOrEqual(0);
         expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(viewport.width);
-        const actions = panel.locator("[data-promotion-action]");
+        const actions = panel.locator('[data-action="promotion"] button');
         expect(
           await actions.evaluateAll((buttons) =>
-            buttons.map((button) => (button as HTMLElement).dataset.promotionAction),
+            buttons.map((button) => button.textContent?.trim()),
           ),
         ).toEqual(
           state.name === "standard" || state.name === "promoted"
             ? []
             : state.name === "pending"
-              ? ["cancel-promotion"]
-              : ["promote-session"],
+              ? ["Cancel pending promotion…"]
+              : ["Promote to ordinary session…"],
         );
         for (const box of await actions.evaluateAll((buttons) =>
           buttons.map((button) => (button as HTMLElement).offsetHeight),
@@ -580,7 +604,7 @@ suite.define(() => {
         }
         await captureUiProof(suite, page, name + ".png");
         if (state.name === "delegated") {
-          await panel.locator('[data-promotion-action="promote-session"]').click();
+          await actions.click();
           await page
             .getByRole("button", { name: "Promote session", exact: true })
             .waitFor({ state: "visible" });
@@ -816,4 +840,95 @@ suite.define(() => {
       await context.close();
     }
   }, 90_000);
+  it.each([VIEWPORTS[0], VIEWPORTS[1]])(
+    "summarizes delegated permissions first in Session settings at $name",
+    async (viewport) => {
+      const standard = [
+        "agents_list",
+        "automations",
+        "conversations_list",
+        "conversations_send",
+        "conversations_turn",
+        "gateway",
+        "message",
+        "openclaw",
+        "progress_card",
+        "session_status",
+        "sessions_send",
+      ];
+      const { context, page, host } = await openHandoffPage(
+        viewport,
+        "authorized-none",
+        undefined,
+        false,
+        {
+          methods: ["tools.effective"],
+          responses: {
+            "tools.effective": {
+              agentId: "main",
+              profile: "coding",
+              groups: [
+                {
+                  id: "core",
+                  label: "Built-in tools",
+                  source: "core",
+                  tools: ["read", "write", "edit", "exec", "web_fetch"].map((id) => ({
+                    id,
+                    label: id,
+                    description: "",
+                    rawDescription: "",
+                    source: "core",
+                  })),
+                },
+              ],
+              restrictions: {
+                evaluatedClass: "delegated",
+                limitedTools: [
+                  ...standard.map((id) => ({ id, origins: ["subagent-layer"] })),
+                  { id: "browser", origins: ["inherited-limit"] },
+                  { id: "sessions_spawn", origins: ["subagent-layer"] },
+                ],
+                sessionsSend: "denied",
+                evaluatedAt: 1,
+              },
+            },
+          },
+        },
+      );
+      try {
+        await host.getByRole("button", { name: "Delegated · limited" }).click();
+        await waitForSettledSheet(page);
+        const permissions = page.locator('[data-section="permissions"]');
+        await expect
+          .poll(() => permissions.locator(".session-settings__headline").textContent())
+          .toContain("Delegated · 2 extra limits · can't message other sessions");
+        expect(
+          await permissions.locator(".session-settings__fold > summary").allTextContents(),
+        ).toEqual([
+          expect.stringContaining("Standard sub-agent limits (11)"),
+          expect.stringContaining("Show all 5 tools"),
+        ]);
+        expect(await permissions.locator(".session-settings__limits h4").allTextContents()).toEqual(
+          ["Inherited from parent", "Sub-agent layer"],
+        );
+        await captureUiProof(suite, page, "session-settings-permissions-" + viewport.name + ".png");
+        await permissions.locator('[data-fold="standard"] > summary').click();
+        await captureUiProof(
+          suite,
+          page,
+          "session-settings-permissions-" + viewport.name + "-standard.png",
+        );
+      } catch (error) {
+        await captureUiProof(
+          suite,
+          page,
+          "session-settings-permissions-" + viewport.name + "-failure.png",
+        );
+        throw error;
+      } finally {
+        await context.close();
+      }
+    },
+    90_000,
+  );
 });

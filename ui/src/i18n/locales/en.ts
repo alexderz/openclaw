@@ -31,6 +31,7 @@ export const en: TranslationMap & {
       >;
     pullRequests: TranslationMap;
     processesPanel: TranslationMap;
+    sessionSettings: TranslationMap;
     sessionHeader: TranslationMap & { promotion: TranslationMap };
   };
   configForm: TranslationMap & { sections: TranslationMap };
@@ -2895,6 +2896,7 @@ export const en: TranslationMap & {
     subagentViewOnly: "View-only subagent",
     subagentSessionDisabled: "Continue in {parent}.",
     processesPanel: { title: "Processes", refresh: "Refresh processes" },
+    sessionSettings: { title: "Session settings", open: "Session settings…" },
     subagentsPanel: {
       title: "Subagents",
       back: "Back to Subagents",

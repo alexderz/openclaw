@@ -16,7 +16,8 @@ const base = {
   pendingBlockers: [],
   activationBoundary: "next-fresh-human-run-after-quiescence",
   policyEvaluatedAt: 1,
-  effectiveRestrictions: ["current-role-grants-resource-policy-and-sandbox-still-apply"],
+  // Not evaluated yet: rows claim no limits until tools.effective has run for the session.
+  effectiveRestrictions: [],
   capabilities: { sessionsSend: "unknown" },
 } satisfies SessionCapabilityStatus;
 

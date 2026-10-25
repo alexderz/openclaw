@@ -1,5 +1,6 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { property, state } from "lit/decorators.js";
+import type { GatewaySessionRow } from "../../../api/types.ts";
 import type { UiSettings } from "../../../app/settings.ts";
 import { renderBoardGrantedCapabilities } from "../../../components/board/board-widget-capabilities.ts";
 import {
@@ -21,11 +22,13 @@ import {
   type CompactSessionMenuView,
 } from "../../../components/session-menu-compact.ts";
 import type { SessionCreatedActor } from "../../../components/session-owner-chip.ts";
+import "../../../components/session-settings/session-settings-sheet.ts";
 import {
   isPromotionMenuAction,
   promotionActionAllowed,
   renderPromotionMenuItems,
 } from "../../../components/session-promotion-menu.ts";
+import type { SessionSettingsSectionId } from "../../../components/session-settings/session-settings-sheet.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerSessionPromotionEnglish } from "../../../i18n/locales/en-session-promotion.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
@@ -35,10 +38,7 @@ import {
   selectChatSessionSharingItem,
   type ChatSessionSharingProps,
 } from "./chat-session-sharing.ts";
-import {
-  renderSessionCapabilityDetails,
-  type PromotionActionKind,
-} from "./session-capability-info.ts";
+import type { PromotionActionKind } from "./session-capability-info.ts";
 
 registerSessionPromotionEnglish();
 
@@ -95,16 +95,22 @@ const CAPABILITY_GLYPHS = {
   denied: "🔴",
 } as const;
 
-let capabilityDetailsIds = 0;
-
-/** Light DOM: each header (split panes included) needs its own aria-controls target. */
-function nextCapabilityDetailsId() {
-  capabilityDetailsIds += 1;
-  return `session-capability-details-${capabilityDetailsIds}`;
-}
-
 class ChatHeaderSessionMenu extends OpenClawLightDomElement {
   @property({ attribute: false }) session: SessionMenuData = EMPTY_SESSION_MENU_DATA;
+  #row: GatewaySessionRow | undefined = undefined;
+  /**
+   * The pane's row, read only by the Session settings sheet. Fresh rows arrive on every pane
+   * render, so they repaint the menu only while the sheet is open.
+   */
+  get row(): GatewaySessionRow | undefined {
+    return this.#row;
+  }
+  set row(value: GatewaySessionRow | undefined) {
+    this.#row = value;
+    if (this.settingsOpen) {
+      this.requestUpdate();
+    }
+  }
   @property({ attribute: false }) worktreePath: string | null = null;
   @property({ attribute: false }) onboarding = false;
   @property({ attribute: false }) preferencesBrowserOnly = false;
@@ -144,8 +150,9 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
   @property({ attribute: false }) onSettingsChange: (patch: Partial<UiSettings>) => void = () => {};
   @property({ attribute: false }) onAction: (action: HeaderMenuAction) => void = () => {};
   @state() private compactView: CompactMenuView = "root";
-  @state() private capabilityDetailsOpen = false;
-  private readonly capabilityDetailsId = nextCapabilityDetailsId();
+  @state() private settingsOpen = false;
+  @state() private settingsSection: SessionSettingsSectionId | null = null;
+  private settingsReturnFocus: HTMLElement | null = null;
   private readonly managementActions = new SessionMenuActions(
     this,
     () => ({
@@ -211,6 +218,10 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     }
     if (value === "open-command-palette") {
       this.onOpenCommandPalette();
+      return;
+    }
+    if (value === "session-settings") {
+      this.openSettings(null, this.querySelector(".chat-header-session-menu__trigger"));
       return;
     }
     if (value.startsWith("quick:")) {
@@ -443,6 +454,10 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
       }
       ${this.renderSubmenu("view")}
       <div class="session-menu__separator" role="separator"></div>
+      <wa-dropdown-item class="session-menu__item" value="session-settings">
+        <span slot="icon" class="session-menu__icon" aria-hidden="true">${icons.settings}</span>
+        <span class="session-menu__text">${t("chat.sessionSettings.open")}</span>
+      </wa-dropdown-item>
       ${this.renderPromotionActions()} ${this.managementActions.renderPrimaryActions()}
       <div class="session-menu__separator" role="separator"></div>
       ${this.managementActions.renderOrganizationActions()}
@@ -516,51 +531,33 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
     );
   }
 
-  private readonly closeCapabilityDetailsOnEscape = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || !this.capabilityDetailsOpen) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    this.capabilityDetailsOpen = false;
-    this.querySelector<HTMLButtonElement>(".session-capability-details-toggle")?.focus();
-  };
-
   private renderPromotionActions() {
     return renderPromotionMenuItems(this.session, { includeCheck: true });
   }
 
-  private readonly closeCapabilityDetailsOnOutsidePointer = (event: PointerEvent) => {
-    if (!event.composedPath().includes(this)) {
-      this.capabilityDetailsOpen = false;
-    }
+  /**
+   * Opens the Session settings sheet, optionally at one section; focus returns to `returnFocus`
+   * (the glyph or menu trigger that asked) when it closes.
+   */
+  openSettings(
+    section: SessionSettingsSectionId | null = null,
+    returnFocus: Element | null = null,
+  ) {
+    this.settingsSection = section;
+    this.settingsReturnFocus = returnFocus instanceof HTMLElement ? returnFocus : null;
+    this.settingsOpen = true;
+  }
+
+  private readonly closeSettings = () => {
+    this.settingsOpen = false;
   };
 
-  override updated(changed: Map<PropertyKey, unknown>) {
-    super.updated(changed);
-    if (changed.has("capabilityDetailsOpen")) {
-      // Tap or click anywhere else closes the bubble, as on a phone there is no Escape key.
-      document.removeEventListener("pointerdown", this.closeCapabilityDetailsOnOutsidePointer);
-      if (this.capabilityDetailsOpen) {
-        document.addEventListener("pointerdown", this.closeCapabilityDetailsOnOutsidePointer);
-      }
-    }
-  }
-
-  override disconnectedCallback() {
-    document.removeEventListener("pointerdown", this.closeCapabilityDetailsOnOutsidePointer);
-    super.disconnectedCallback();
-  }
-
-  private runBubblePromotionAction(kind: PromotionActionKind) {
-    if (!this.promotionActionAllowed(kind)) {
+  /** Sheet actions take the menu's path; promotion keeps its one shared gate. */
+  private runSettingsAction(action: HeaderMenuAction) {
+    if (isPromotionMenuAction(action.kind) && !this.promotionActionAllowed(action.kind)) {
       return;
     }
-    if (kind !== "check-promotion") {
-      // The confirm dialog takes focus; the bubble would only sit behind it.
-      this.capabilityDetailsOpen = false;
-    }
-    this.onAction({ kind });
+    this.onAction(action);
   }
 
   override render() {
@@ -572,12 +569,8 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
         type="button"
         aria-label=${capability.label}
         title=${capability.label}
-        aria-expanded=${String(this.capabilityDetailsOpen)}
-        aria-controls=${this.capabilityDetailsId}
-        @click=${() => {
-          this.capabilityDetailsOpen = !this.capabilityDetailsOpen;
-        }}
-        @keydown=${this.closeCapabilityDetailsOnEscape}
+        aria-haspopup="dialog"
+        @click=${(event: Event) => this.openSettings(null, event.currentTarget as HTMLElement)}
       >
         <span class="session-capability-status__glyph" aria-hidden="true">${capability.glyph}</span
         ><span class="sr-only">${capability.label}</span>
@@ -585,15 +578,20 @@ class ChatHeaderSessionMenu extends OpenClawLightDomElement {
       <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
         >${capability.label}</span
       >
-      ${renderSessionCapabilityDetails({
-        id: this.capabilityDetailsId,
-        open: this.capabilityDetailsOpen,
-        session: this.session,
-        capabilityLabel: capability.label,
-        actionAllowed: (kind) => this.promotionActionAllowed(kind),
-        onAction: (kind) => this.runBubblePromotionAction(kind),
-        onKeydown: this.closeCapabilityDetailsOnEscape,
-      })}
+      <openclaw-session-settings-sheet
+        .open=${this.settingsOpen}
+        .row=${this.row}
+        .session=${this.session}
+        .capabilityLabel=${capability.label}
+        .groups=${this.groups}
+        .currentOwner=${this.currentOwner}
+        .archiveAllowed=${this.archiveAllowed}
+        .actionDisabledReasons=${this.actionDisabledReasons}
+        .initialSection=${this.settingsSection}
+        .returnFocus=${this.settingsReturnFocus}
+        .onAction=${(action: HeaderMenuAction) => this.runSettingsAction(action)}
+        .onClose=${this.closeSettings}
+      ></openclaw-session-settings-sheet>
       <wa-dropdown
         class=${`session-menu chat-header-session-menu${this.compact ? " session-menu--compact chat-header-session-menu--compact" : ""}${this.compact && this.compactView === "sharing" ? " chat-header-session-menu--compact-sharing" : ""}`}
         placement="bottom-end"

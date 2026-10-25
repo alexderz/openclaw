@@ -56,10 +56,17 @@ export class SessionOwnerMenu {
     void this.profiles.run();
   };
 
-  render(params: SessionOwnerMenuParams, inline = false) {
+  get loading(): boolean {
+    return this.profiles.status === TaskStatus.PENDING;
+  }
+
+  /** Assignable owners, the viewer first; the recorded owner stays listed while the directory loads. */
+  options(currentOwner: SessionCreatedActor | null): {
+    self: SessionOwnerOption | null;
+    owners: SessionOwnerOption[];
+  } {
     const context = this.context.value;
     const self = sessionSelfOwner(context?.gateway.snapshot.selfUser);
-    const currentOwner = params.currentOwner;
     const currentOwnerId = currentOwner?.identity?.id ?? currentOwner?.id;
     // The session already records its owner; directory availability must not erase the checked row.
     const owners: SessionOwnerOption[] =
@@ -99,6 +106,13 @@ export class SessionOwnerMenu {
     if (self) {
       owners.unshift(self);
     }
+    return { self, owners };
+  }
+
+  render(params: SessionOwnerMenuParams, inline = false) {
+    const currentOwner = params.currentOwner;
+    const currentOwnerId = currentOwner?.identity?.id ?? currentOwner?.id;
+    const { self, owners } = this.options(currentOwner);
     const slot = inline ? nothing : "submenu";
     return html`
       ${searchablePeopleMenu(

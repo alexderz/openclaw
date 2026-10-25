@@ -35,9 +35,19 @@ const containers: HTMLElement[] = [];
 const promotionStatus = {
   ...promotionProjection("authorized-none"),
   lifecycleRevision: "rev-1",
-  effectiveRestrictions: ["Delegated tools"],
+  effectiveRestrictions: ["inherited-limit"],
   capabilities: { sessionsSend: "denied" },
+  toolLimits: { count: 1, evaluatedAt: 1 },
 } satisfies NonNullable<SessionMenuData["capabilityStatus"]>;
+
+/** Opens the Session settings sheet from the glyph; it replaced the inline info bubble. */
+async function openSettingsSheet(menu: HeaderMenuElement) {
+  menu.querySelector<HTMLButtonElement>(".session-capability-details-toggle")!.click();
+  await menu.updateComplete;
+  const sheet = menu.querySelector("openclaw-session-settings-sheet")!;
+  await sheet.updateComplete;
+  return sheet;
+}
 
 it("offers explicit promotion and accessible live capability details in both layouts", async () => {
   for (const compact of [false, true]) {
@@ -51,8 +61,10 @@ it("offers explicit promotion and accessible live capability details in both lay
       } satisfies Partial<SessionMenuData>,
     });
     expect(menu.querySelector('[role="status"]')?.getAttribute("aria-live")).toBe("polite");
-    expect(menu.querySelector(".session-capability-details")?.textContent).toContain(
-      "Delegated tools",
+    const sheet = await openSettingsSheet(menu);
+    // Without a tools.effective read the sheet repeats only what the row recorded, in plain words.
+    expect(sheet.content?.querySelector('[data-section="permissions"]')?.textContent).toContain(
+      "Some tools limited by its parent",
     );
     expect(menu.querySelector('wa-dropdown-item[value="promote-session"]')).not.toBeNull();
     select(menu, "promote-session");
@@ -88,7 +100,8 @@ it("distinguishes ordinary policy limits and pending cancellation without wideni
     "Promotion pending",
   );
   expect(menu.querySelector('wa-dropdown-item[value="cancel-promotion"]')).not.toBeNull();
-  expect(menu.textContent).toContain("Active run");
+  const sheet = await openSettingsSheet(menu);
+  expect(sheet.content?.textContent).toContain("Active run");
 });
 
 it("tells the truth about who the promoted class covers and keeps a revoke re-requestable", async () => {
@@ -99,7 +112,8 @@ it("tells the truth about who the promoted class covers and keeps a revoke re-re
     return menu.querySelector(".session-capability-status")?.textContent ?? "";
   };
   expect(await show("promoted-requester")).toContain("Ordinary · your chat turns only");
-  const details = menu.querySelector(".session-capability-details")?.textContent ?? "";
+  const sheet = await openSettingsSheet(menu);
+  const details = sheet.content?.querySelector('[data-section="class"]')?.textContent ?? "";
   expect(details).toContain("Standard: your direct chat turns");
   // Turns the promotion does not reach are named, so the badge is not read as full parity.
   expect(details).toContain("Limited: wakes, automation, other sessions and people");
@@ -518,6 +532,7 @@ describe("chat header session menu", () => {
           "Panels",
           "Layout",
           "View",
+          "Session settings…",
           "Pin session",
           "Rename…",
           "Mark as unread",
