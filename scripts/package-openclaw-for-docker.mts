@@ -213,7 +213,7 @@ function resolvePackedOpenClawFileName(value: string) {
     return "";
   }
   if (
-    !/^openclaw-[A-Za-z0-9._-]+\.tgz$/u.test(filename) ||
+    !/^openclaw-[A-Za-z0-9._+-]+\.tgz$/u.test(filename) ||
     filename.includes("\0") ||
     filename !== path.basename(filename) ||
     filename !== path.win32.basename(filename)
