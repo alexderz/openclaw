@@ -39,6 +39,7 @@ import {
 import { pickSandboxToolPolicy } from "./sandbox-tool-policy.js";
 import type { SandboxToolPolicy } from "./sandbox.js";
 import { resolveSandboxToolPolicyForAgent } from "./sandbox/tool-policy.js";
+import { SUBAGENT_TOOL_DENY_ALWAYS, SUBAGENT_TOOL_DENY_LEAF } from "./subagent-tool-deny.js";
 import {
   resolveSubagentCapabilityStore,
   resolveStoredSubagentInheritedToolAllowlist,
@@ -50,39 +51,8 @@ import {
 import { createToolPolicyMatcher } from "./tool-policy-match.js";
 import type { ConfiguredToolPolicySources } from "./tool-policy-pipeline.js";
 import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "./tool-policy.js";
-import { AUTOMATIONS_TOOL_NAME } from "./tools/automations-tool-name.js";
 
 export { resolveProviderToolPolicy };
-
-/**
- * Tools always denied for sub-agents regardless of depth.
- * These are system-level or interactive tools that sub-agents should never use.
- */
-const SUBAGENT_TOOL_DENY_ALWAYS = [
-  // System admin - dangerous from subagent
-  "gateway",
-  "agents_list",
-  "openclaw",
-  // Status/scheduling - main agent coordinates
-  "session_status",
-  "progress_card",
-  AUTOMATIONS_TOOL_NAME,
-  // Direct user/session sends - subagents communicate through announce chain
-  "message",
-  "sessions_send",
-  "conversations_list",
-  "conversations_send",
-  "conversations_turn",
-];
-
-/** Tools that only make sense for orchestrator sub-agents that can spawn children. */
-const SUBAGENT_TOOL_DENY_LEAF = [
-  "subagents",
-  "sessions_list",
-  "sessions_history",
-  "sessions_search",
-  "sessions_spawn",
-];
 
 function resolveSubagentDenyListForRole(role: SubagentSessionRole): string[] {
   if (role === "leaf") {
