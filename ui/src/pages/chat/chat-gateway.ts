@@ -14,6 +14,7 @@ import {
   isSilentReplyStream,
   shouldHideAssistantChatMessage,
 } from "../../lib/chat/message-visibility.ts";
+import { recordRunAuthorityClass } from "../../lib/chat/turn-authority.ts";
 import { visibleSessionMatches } from "../../lib/sessions/navigation.ts";
 import { isUiGlobalSessionKey, resolveUiDefaultAgentId } from "../../lib/sessions/session-key.ts";
 import { materializeVisibleAssistantStreamMessages } from "./chat-history-stream.ts";
@@ -100,6 +101,8 @@ export function handleChatGatewayEvent(state: ChatState, incoming?: ChatEventPay
   if (!incoming) {
     return null;
   }
+  // Marks the local copy of the run's turn until the transcript stamp arrives.
+  recordRunAuthorityClass(incoming.runId, incoming.authorityClass);
   const wireMessage = asRecord(incoming.message);
   const displayMessage =
     wireMessage && incoming.state !== "delta" && incoming.state !== "status"

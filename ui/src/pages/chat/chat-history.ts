@@ -258,6 +258,8 @@ export type ChatEventPayload = {
   sessionKey: string;
   agentId?: string;
   state: "status" | "delta" | "final" | "aborted" | "error";
+  /** Class the run's typed turn was admitted under; absent from older Gateways. */
+  authorityClass?: "ordinary" | "delegated";
   phase?: ChatRunStartupPhase;
   retry?: NonNullable<Extract<ChatEvent, { state: "status" }>["retry"]>;
   message?: unknown;
