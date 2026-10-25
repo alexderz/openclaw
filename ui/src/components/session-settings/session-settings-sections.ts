@@ -152,7 +152,7 @@ export function renderLineageSection(params: {
   ])}`;
 }
 
-/** The Permissions headline in words; the "!" turn marker shows this line alone. */
+/** The Permissions headline in words; the "!" turn marker shows it after "Now:". */
 export function formatPermissionsHeadline(summary: SessionPermissionsSummary) {
   if (summary.kind === "unknown") {
     return t(`${KEY}.permissions.notChecked`);
