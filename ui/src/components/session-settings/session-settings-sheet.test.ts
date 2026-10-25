@@ -226,6 +226,20 @@ it("shows delegated permissions summary-first: headline, one standard fold, extr
   ]);
 });
 
+it("drops the all-tools fold when tools.effective lists no tool groups", async () => {
+  const { sheet } = await mountSheet({
+    session: { capabilityStatus: promotionProjection("authorized-none") },
+    respond: (method) =>
+      method === "tools.effective" ? { ...delegatedTools, groups: [] } : undefined,
+  });
+  const permissions = section(sheet, "permissions");
+  expect(text(permissions.querySelector(".session-settings__headline"))).toBe(
+    "Delegated · 2 extra limits · can't message other sessions",
+  );
+  expect(permissions.querySelector('[data-fold="all-tools"]')).toBeNull();
+  expect(text(permissions)).not.toContain("Show all");
+});
+
 it("shows an ordinary unrestricted session as one line", async () => {
   const { sheet } = await mountSheet({
     session: {

@@ -248,7 +248,7 @@ export function renderPermissionsSection(params: {
         ${renderToolList(group.tools)}
       </section>`,
     )}
-    ${result ? renderAllTools(result, summary.toolCount) : nothing}`;
+    ${result && summary.toolCount > 0 ? renderAllTools(result, summary.toolCount) : nothing}`;
 }
 
 function fallbackLabel(row: GatewaySessionRow) {
