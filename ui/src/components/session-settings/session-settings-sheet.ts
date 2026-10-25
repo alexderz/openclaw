@@ -64,11 +64,13 @@ export type SessionSettingsSectionId = (typeof SESSION_SETTINGS_SECTIONS)[number
 /** Open on first show: what the session is and what it may do. The rest load when opened. */
 const DEFAULT_OPEN: readonly SessionSettingsSectionId[] = ["class", "permissions"];
 
-type LoadId = "children" | "tools" | "usage" | "processes" | "automations" | "board";
+type LoadId = "children" | "tools" | "usage" | "modelRow" | "processes" | "automations" | "board";
 type Loads = {
   children: LineageChildren;
   tools: ToolsEffectiveResult;
   usage: SessionsUsageResult;
+  /** Full row for this session; compact list rows omit the fallback ladder. */
+  modelRow: GatewaySessionRow | null;
   processes: SessionsProcessesListResult;
   automations: CronJobsListResult;
   board: BoardSnapshot;
@@ -77,7 +79,7 @@ type Loads = {
 const SECTION_LOADS: Partial<Record<SessionSettingsSectionId, readonly LoadId[]>> = {
   lineage: ["children"],
   permissions: ["tools"],
-  models: ["usage"],
+  models: ["usage", "modelRow"],
   activity: ["processes", "automations"],
   dashboard: ["board"],
 };
@@ -86,6 +88,7 @@ const LOAD_METHODS: Record<LoadId, string> = {
   children: "sessions.list",
   tools: "tools.effective",
   usage: "sessions.usage",
+  modelRow: "sessions.describe",
   processes: "sessions.processes.list",
   automations: "cron.list",
   board: "board.get",
@@ -259,6 +262,13 @@ class SessionSettingsSheet extends OpenClawLightDomContentsElement {
           sessionKey: key,
           ...agent,
         });
+      case "modelRow":
+        // sessions.list compact rows omit modelFallbacks on purpose. sessions.describe is the
+        // existing per-session read that still returns the full row, including the ladder.
+        return this.request<{ session: GatewaySessionRow | null }>("sessions.describe", {
+          key,
+          ...agent,
+        }).then((result) => result.session);
       case "usage": {
         const client = this.context.value?.gateway.snapshot.client;
         if (!client) {
@@ -428,7 +438,13 @@ class SessionSettingsSheet extends OpenClawLightDomContentsElement {
           onRetry: this.retry("tools"),
         });
       case "models":
-        return renderModelsSection({ row, usage: this.loads.usage, onRetry: this.retry("usage") });
+        return renderModelsSection({
+          row,
+          usage: this.loads.usage,
+          modelRow: this.loads.modelRow,
+          onRetry: this.retry("usage"),
+          onRetryModelRow: this.retry("modelRow"),
+        });
       case "usage":
         return renderUsageSection(row);
       case "activity":

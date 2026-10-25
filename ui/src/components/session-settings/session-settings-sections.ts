@@ -251,8 +251,7 @@ export function renderPermissionsSection(params: {
     ${result && summary.toolCount > 0 ? renderAllTools(result, summary.toolCount) : nothing}`;
 }
 
-function fallbackLabel(row: GatewaySessionRow) {
-  const fallbacks = row.modelFallbacks;
+function fallbackLabel(fallbacks: GatewaySessionRow["modelFallbacks"]) {
   if (!fallbacks) {
     return undefined;
   }
@@ -277,7 +276,13 @@ function modelRef(provider: string | undefined, model: string | undefined) {
 export function renderModelsSection(params: {
   row: GatewaySessionRow | undefined;
   usage: SectionLoad<SessionsUsageResult> | undefined;
+  /**
+   * The non-compact row for this session. Compact list rows omit modelFallbacks, so the ladder
+   * comes from this read and not from `row`.
+   */
+  modelRow: SectionLoad<GatewaySessionRow | null> | undefined;
   onRetry: () => void;
+  onRetryModelRow: () => void;
 }) {
   const { row } = params;
   if (!row) {
@@ -293,7 +298,13 @@ export function renderModelsSection(params: {
   return html`${renderFacts([
       [t(`${KEY}.models.model`), selected],
       [t(`${KEY}.models.activeModel`), active && active !== selected ? active : undefined],
-      [t(`${KEY}.models.fallbacks`), fallbackLabel(row)],
+      [
+        t(`${KEY}.models.fallbacks`),
+        // A missing ladder while this read is in flight or failed must not look like "none" or "off".
+        params.modelRow?.status === "done"
+          ? fallbackLabel(params.modelRow.value?.modelFallbacks)
+          : html`${renderLoad(params.modelRow, () => undefined, params.onRetryModelRow)}`,
+      ],
       [
         t(`${KEY}.models.runtime`),
         row.agentRuntime ? formatAgentRuntimeLabel(row.agentRuntime) : undefined,
