@@ -79,6 +79,7 @@ import {
   renderToolOutcome,
   type ToolRenderOptions,
 } from "./chat-tool-content.ts";
+import { renderTurnAuthorityMarker, type TurnAuthorityHost } from "./chat-turn-authority-marker.ts";
 import { renderWorkspaceConflictTranscriptMessage } from "./chat-workspace-conflict.ts";
 import { renderToolPreview } from "./widget-card.ts";
 
@@ -225,6 +226,8 @@ export function renderGroupedMessage(
     replyLine?: ReplyLine;
     onOpenReply?: (replyToId: string) => void;
     replyNavigationId?: string | null;
+    /** Backs the "!" on user turns stamped delegated; absent, the marker only names the class. */
+    turnAuthority?: TurnAuthorityHost;
   },
   onOpenSidebar?: (content: SidebarContent) => void,
 ) {
@@ -605,6 +608,7 @@ export function renderGroupedMessage(
       data-message-text=${actionText || nothing}
       .messageActions=${opts.messageActions}
     >
+      ${normalizedRole === "user" ? renderTurnAuthorityMarker(message, opts.turnAuthority) : nothing}
       ${opts.replyLine ? renderReplyLine(opts.replyLine, opts, true) : nothing}
       ${
         onlyToolCards

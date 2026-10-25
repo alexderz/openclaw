@@ -152,7 +152,14 @@ export function renderLineageSection(params: {
   ])}`;
 }
 
-function permissionsHeadline(summary: Extract<SessionPermissionsSummary, { kind: "limited" }>) {
+/** The Permissions headline in words; the "!" turn marker shows this line alone. */
+export function formatPermissionsHeadline(summary: SessionPermissionsSummary) {
+  if (summary.kind === "unknown") {
+    return t(`${KEY}.permissions.notChecked`);
+  }
+  if (summary.kind === "full") {
+    return t(`${KEY}.permissions.full`);
+  }
   const extra =
     summary.extraCount === 0
       ? summary.standard.length
@@ -211,7 +218,7 @@ export function renderPermissionsSection(params: {
   if (summary.kind === "unknown") {
     // The row may still carry a matching earlier evaluation; say what it recorded, nothing more.
     const recorded = status?.toolLimits ? capabilityRestrictionLabels(status) : [];
-    return html`<p class="session-settings__headline">${t(`${KEY}.permissions.notChecked`)}</p>
+    return html`<p class="session-settings__headline">${formatPermissionsHeadline(summary)}</p>
       ${recorded.length ? list(recorded) : nothing}
       ${load.status === "done" ? nothing : renderLoad(load, () => nothing, params.onRetry)}`;
   }
@@ -219,10 +226,10 @@ export function renderPermissionsSection(params: {
     ? html`<p class="session-settings__muted">${t(`${KEY}.permissions.viewerDiffers`)}</p>`
     : nothing;
   if (summary.kind === "full") {
-    return html`<p class="session-settings__headline">${t(`${KEY}.permissions.full`)}</p>
+    return html`<p class="session-settings__headline">${formatPermissionsHeadline(summary)}</p>
       ${viewerNote}`;
   }
-  return html`<p class="session-settings__headline">${permissionsHeadline(summary)}</p>
+  return html`<p class="session-settings__headline">${formatPermissionsHeadline(summary)}</p>
     ${viewerNote}
     ${
       summary.standard.length

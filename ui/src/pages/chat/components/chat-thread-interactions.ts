@@ -60,6 +60,7 @@ import {
   removeChatSelectionPopup,
 } from "./chat-selection-popup.ts";
 import type { SidebarContent, SidebarFullMessageLoader } from "./chat-sidebar-content-types.ts";
+import type { TurnAuthorityHost } from "./chat-turn-authority-marker.ts";
 
 registerChatMessageMetadataEnglish();
 
@@ -209,6 +210,8 @@ export type ChatThreadProps = ChatSendStatusActions &
     onOpenSubagent?: (sessionKey: string) => void;
     /** Shows the session's subagents; absent where the pane has no list of them to show. */
     onOpenSubagents?: () => void;
+    /** Backs the "!" on delegated user turns; absent where no Session settings sheet exists. */
+    turnAuthority?: TurnAuthorityHost;
     modelSetupRequired?: boolean;
     onModelSetup?: () => void;
   };
