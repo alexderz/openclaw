@@ -52,6 +52,7 @@ export async function mountMenu(
     actionDisabledReasons?: Partial<Record<SessionMenuActionKind, string>>;
     forkFromLastCompleted?: boolean;
     promotionItems?: TemplateResult;
+    settingsAvailable?: boolean;
   } = {},
 ): Promise<SessionMenuElement> {
   const container = options.context
@@ -98,6 +99,7 @@ export async function mountMenu(
       .currentOwner=${options.currentOwner ?? null}
       .work=${options.work ?? null}
       .pluginActions=${options.pluginActions ?? []}
+      .settingsAvailable=${options.settingsAvailable ?? false}
       .promotionItems=${options.promotionItems ?? nothing}
       .onAction=${options.onAction ?? (() => {})}
       .onClose=${options.onClose ?? (() => {})}

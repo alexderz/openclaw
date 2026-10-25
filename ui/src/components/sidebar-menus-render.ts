@@ -31,16 +31,19 @@ import { renderSidebarAgentMenu } from "./app-sidebar-agent-menu.ts";
 import { renderSidebarIdentityMenu } from "./app-sidebar-identity-menu.ts";
 import { renderSidebarCustomizeMenu, renderSidebarMoreMenu } from "./app-sidebar-nav-menus.ts";
 import { formatSidebarTimestamp } from "./app-sidebar-session-catalogs.ts";
-import { canRetryGatewayStatus } from "./gateway-status.ts";
+import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import "../styles/sidebar-menus.css";
+import { canRetryGatewayStatus } from "./gateway-status.ts";
 import { sessionMenuReasons } from "./session-menu-access.ts";
 import type { SessionMenuData } from "./session-menu-actions.ts";
 import type { SessionMenuAction } from "./session-menu.ts";
 import { renderPromotionMenuItems } from "./session-promotion-menu.ts";
+import "./session-settings/session-settings-sheet.ts";
 import {
   runSidebarSessionPromotion,
   sessionPromotionOutcomes,
 } from "./session-promotion-request.ts";
+import type { SessionSettingsHostAction } from "./session-settings/session-settings-actions.ts";
 import {
   isSidebarAttentionDismissed,
   isUpdateAttentionForced,
@@ -220,39 +223,47 @@ export function renderSidebarIdentityMenuForController(controller: SidebarMenusC
   });
 }
 
-export function renderSidebarSessionMenuForController(controller: SidebarMenusController) {
+/**
+ * Everything one sidebar session's menu or settings sheet needs, and the one action switch both
+ * run. `allowBatch` lets the menu act on a multi-selection; the sheet always acts on one session.
+ */
+function resolveSidebarSessionModel(
+  controller: SidebarMenusController,
+  menuSession: SidebarRecentSession,
+  allowBatch: boolean,
+) {
   const { host } = controller;
-  const menu = controller.sessionMenu;
-  if (!menu) {
-    return nothing;
-  }
   const context = host.sessionDataContext;
+  // Captured now: the menu clears its trigger as it closes, before the action runs.
+  const menuTrigger = controller.sessionMenuTrigger;
   const pluginActionSignal = controller.pluginActionLifetime.signal;
-  const currentSession = host.findSidebarMenuSessionByKey(menu.session.key);
+  const currentSession = host.findSidebarMenuSessionByKey(menuSession.key);
   // Read again at dispatch: session updates can arrive before the menu rerenders.
   const currentPluginSession = () =>
     host.sessionData.sessionsResult?.sessions.find(
-      (row) => row.key === menu.session.key && row.sessionId === menu.session.sessionId,
+      (row) => row.key === menuSession.key && row.sessionId === menuSession.sessionId,
     );
   const pluginSession = currentPluginSession();
   // Promotion reads the canonical list, never the roster presentation copy.
   const currentPromotionRow = () =>
     context?.sessions.state.result?.sessions.find(
-      (row) => row.key === menu.session.key && row.sessionId === menu.session.sessionId,
+      (row) => row.key === menuSession.key && row.sessionId === menuSession.sessionId,
     );
   // Appearance editing keeps this menu open. Refresh its row without adopting
   // a replacement session that happens to reuse the captured key.
   const session =
-    currentSession && currentSession.sessionId === menu.session.sessionId
+    currentSession && currentSession.sessionId === menuSession.sessionId
       ? currentSession
-      : menu.session;
+      : menuSession;
   const mainKey = resolveUiConfiguredMainKey({
     agentsList: host.sessionDataContext?.agents.state.agentsList,
     hello: host.sessionDataContext?.gateway.snapshot.hello,
   });
   const selection = host.selectedVisibleSessions();
   const batchRows =
-    selection.length > 1 && selection.some((row) => row.key === session.key) ? selection : null;
+    allowBatch && selection.length > 1 && selection.some((row) => row.key === session.key)
+      ? selection
+      : null;
   const rows = batchRows ?? [session];
   const archiveAllowed = rows.every((row) => canArchiveSessionRow(row, mainKey));
   const deleteAllowed = canDeleteSessionRows(rows, mainKey);
@@ -319,6 +330,193 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
         categoryClearReturnsToGroups: false,
       }
     : null;
+  const runAction = (action: SessionMenuAction) => {
+    if (batchRows) {
+      void host.sessionOrganizer.runBatchSessionAction(action, batchRows, allUnread);
+      return;
+    }
+    switch (action.kind) {
+      case "open-pr":
+        openExternalUrlSafe(action.url);
+        break;
+      case "open-in":
+        openEditor(action.editor, action.path);
+        break;
+      case "copy-session-id":
+      case "copy-session-link":
+      case "copy-session-preview-link":
+      case "copy-markdown":
+      case "open-new-tab":
+      case "open-new-window":
+      case "split-right":
+      case "split-below":
+        if (context) {
+          const selectedAgentId = host.getSessionNavigationState().selectedAgentId;
+          void runSessionNavigationAction(action.kind, {
+            context,
+            session,
+            agentId: selectedAgentId,
+            isCurrent: () =>
+              host.sessionDataContext === context &&
+              host.getSessionNavigationState().selectedAgentId === selectedAgentId,
+          });
+        }
+        break;
+      case "toggle-pin":
+        void host.sessionOrganizer.patchSession(
+          session,
+          { pinned: !session.pinned },
+          {
+            sessionScope: true,
+          },
+        );
+        break;
+      case "toggle-involving-me":
+        void host.sessionOrganizer.setSessionInvolvement(session, !session.hiddenFromInvolvingMe);
+        break;
+      case "toggle-unread":
+        if (hiddenUnreadRuns.length > 0) {
+          void host.sessionOrganizer.runBatchSessionAction(action, rows, allUnread);
+        } else {
+          void host.sessionOrganizer.patchSession(session, { unread: !session.unread });
+        }
+        break;
+      case "rename":
+        void host.sessionOrganizer.renameSession(session);
+        break;
+      case "set-color":
+        void host.sessionOrganizer.patchSession(session, { color: action.color });
+        break;
+      case "set-icon":
+        void host.sessionOrganizer.patchSession(session, { icon: action.icon });
+        break;
+      case "reset-appearance":
+        void host.sessionOrganizer.patchSession(session, { icon: null, color: null });
+        break;
+      case "assign-owner":
+        void host.sessionOrganizer.assignSessionOwner(session, action.owner);
+        break;
+      case "fork":
+        void host.sessionOrganizer.forkSession(session);
+        break;
+      case "plugin":
+        if (context?.plugins) {
+          void runControlUiPluginAction({
+            runtime: context.plugins,
+            id: action.id,
+            placement: "session",
+            sessionKey: menuSession.key,
+            session: currentPluginSession(),
+            signal: pluginActionSignal,
+          }).catch((error: unknown) => {
+            if (!pluginActionSignal.aborted) {
+              showToast({ message: error instanceof Error ? error.message : String(error) });
+            }
+          });
+        }
+        break;
+      case "move-to-group":
+        if (action.category === null || session.category !== action.category) {
+          void host.sessionOrganizer.assignSessionCategory(session, action.category);
+        }
+        break;
+      case "new-group":
+        void host.sessionOrganizer.createSessionGroup([session]);
+        break;
+      case "snooze":
+        void host.sessionOrganizer.snoozeSessionWithUndo(session, action.snoozedUntil);
+        break;
+      case "wake":
+        void host.sessionOrganizer.patchSession(
+          session,
+          { snoozedUntil: null },
+          { sessionScope: true },
+        );
+        break;
+      case "toggle-archived":
+        if (session.archived) {
+          void host.sessionOrganizer.patchSession(
+            session,
+            { archived: false },
+            {
+              sessionScope: true,
+            },
+          );
+        } else {
+          void host.sessionOrganizer.archiveSessionWithUndo(session);
+        }
+        break;
+      case "stop-cloud-worker":
+        void host.sessionOrganizer.stopCloudWorker(session);
+        break;
+      case "promote-session":
+      case "cancel-promotion": {
+        // The row this menu showed: a cancel stays bound to the intent it displayed, and
+        // the shared request re-checks the live row, busy and uncertain state itself.
+        const row = promotionRow;
+        if (row && context) {
+          void runSidebarSessionPromotion(action.kind, row, {
+            gateway: context.gateway,
+            sessionData: host.sessionData,
+            title: session.label,
+            requestUpdate: () => host.requestUpdate(),
+          });
+        } else {
+          showToast({ message: t("chat.sessionHeader.promotion.stale") });
+        }
+        break;
+      }
+      case "delete":
+        void host.sessionOrganizer.deleteSession(session);
+        break;
+      case "session-settings":
+        controller.openSessionSettings(menuSession, menuTrigger);
+        break;
+      default:
+        action satisfies never;
+    }
+  };
+  return {
+    context,
+    session,
+    batchRows,
+    rows,
+    allUnread,
+    allArchived,
+    sharedCategory,
+    archiveAllowed,
+    deleteAllowed,
+    cloudWorkerStopAllowed,
+    actionDisabledReasons,
+    promotionRow,
+    promotionSession,
+    pluginSession,
+    runAction,
+  };
+}
+
+export function renderSidebarSessionMenuForController(controller: SidebarMenusController) {
+  const { host } = controller;
+  const menu = controller.sessionMenu;
+  if (!menu) {
+    return nothing;
+  }
+  const {
+    context,
+    session,
+    batchRows,
+    rows,
+    allUnread,
+    allArchived,
+    sharedCategory,
+    archiveAllowed,
+    deleteAllowed,
+    cloudWorkerStopAllowed,
+    actionDisabledReasons,
+    promotionSession,
+    pluginSession,
+    runAction,
+  } = resolveSidebarSessionModel(controller, menu.session, true);
   return keyed(
     menu,
     html`
@@ -375,155 +573,63 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
             controller.closeSessionMenu();
           }
         }}
-        .onAction=${(action: SessionMenuAction) => {
-          if (batchRows) {
-            void host.sessionOrganizer.runBatchSessionAction(action, batchRows, allUnread);
-            return;
-          }
-          switch (action.kind) {
-            case "open-pr":
-              openExternalUrlSafe(action.url);
-              break;
-            case "open-in":
-              openEditor(action.editor, action.path);
-              break;
-            case "copy-session-id":
-            case "copy-session-link":
-            case "copy-session-preview-link":
-            case "copy-markdown":
-            case "open-new-tab":
-            case "open-new-window":
-            case "split-right":
-            case "split-below":
-              if (context) {
-                const selectedAgentId = host.getSessionNavigationState().selectedAgentId;
-                void runSessionNavigationAction(action.kind, {
-                  context,
-                  session,
-                  agentId: selectedAgentId,
-                  isCurrent: () =>
-                    host.sessionDataContext === context &&
-                    host.getSessionNavigationState().selectedAgentId === selectedAgentId,
-                });
-              }
-              break;
-            case "toggle-pin":
-              void host.sessionOrganizer.patchSession(
-                session,
-                { pinned: !session.pinned },
-                {
-                  sessionScope: true,
-                },
-              );
-              break;
-            case "toggle-involving-me":
-              void host.sessionOrganizer.setSessionInvolvement(
-                session,
-                !session.hiddenFromInvolvingMe,
-              );
-              break;
-            case "toggle-unread":
-              if (hiddenUnreadRuns.length > 0) {
-                void host.sessionOrganizer.runBatchSessionAction(action, rows, allUnread);
-              } else {
-                void host.sessionOrganizer.patchSession(session, { unread: !session.unread });
-              }
-              break;
-            case "rename":
-              void host.sessionOrganizer.renameSession(session);
-              break;
-            case "set-color":
-              void host.sessionOrganizer.patchSession(session, { color: action.color });
-              break;
-            case "set-icon":
-              void host.sessionOrganizer.patchSession(session, { icon: action.icon });
-              break;
-            case "reset-appearance":
-              void host.sessionOrganizer.patchSession(session, { icon: null, color: null });
-              break;
-            case "assign-owner":
-              void host.sessionOrganizer.assignSessionOwner(session, action.owner);
-              break;
-            case "fork":
-              void host.sessionOrganizer.forkSession(session);
-              break;
-            case "plugin":
-              if (context?.plugins) {
-                void runControlUiPluginAction({
-                  runtime: context.plugins,
-                  id: action.id,
-                  placement: "session",
-                  sessionKey: menu.session.key,
-                  session: currentPluginSession(),
-                  signal: pluginActionSignal,
-                }).catch((error: unknown) => {
-                  if (!pluginActionSignal.aborted) {
-                    showToast({ message: error instanceof Error ? error.message : String(error) });
-                  }
-                });
-              }
-              break;
-            case "move-to-group":
-              if (action.category === null || session.category !== action.category) {
-                void host.sessionOrganizer.assignSessionCategory(session, action.category);
-              }
-              break;
-            case "new-group":
-              void host.sessionOrganizer.createSessionGroup([session]);
-              break;
-            case "snooze":
-              void host.sessionOrganizer.snoozeSessionWithUndo(session, action.snoozedUntil);
-              break;
-            case "wake":
-              void host.sessionOrganizer.patchSession(
-                session,
-                { snoozedUntil: null },
-                { sessionScope: true },
-              );
-              break;
-            case "toggle-archived":
-              if (session.archived) {
-                void host.sessionOrganizer.patchSession(
-                  session,
-                  { archived: false },
-                  {
-                    sessionScope: true,
-                  },
-                );
-              } else {
-                void host.sessionOrganizer.archiveSessionWithUndo(session);
-              }
-              break;
-            case "stop-cloud-worker":
-              void host.sessionOrganizer.stopCloudWorker(session);
-              break;
-            case "promote-session":
-            case "cancel-promotion": {
-              // The row this menu showed: a cancel stays bound to the intent it displayed, and
-              // the shared request re-checks the live row, busy and uncertain state itself.
-              const row = promotionRow;
-              if (row && context) {
-                void runSidebarSessionPromotion(action.kind, row, {
-                  gateway: context.gateway,
-                  sessionData: host.sessionData,
-                  title: session.label,
-                  requestUpdate: () => host.requestUpdate(),
-                });
-              } else {
-                showToast({ message: t("chat.sessionHeader.promotion.stale") });
-              }
-              break;
-            }
-            case "delete":
-              void host.sessionOrganizer.deleteSession(session);
-              break;
-            default:
-              action satisfies never;
-          }
-        }}
+        .settingsAvailable=${true}
+        .onAction=${runAction}
       ></openclaw-session-menu>
     `,
   );
+}
+
+export function renderSidebarSessionSettingsForController(controller: SidebarMenusController) {
+  const settings = controller.sessionSettings;
+  if (!settings) {
+    return nothing;
+  }
+  const { host } = controller;
+  const model = resolveSidebarSessionModel(controller, settings.session, false);
+  const { context, session, promotionRow } = model;
+  const row =
+    promotionRow ??
+    context?.sessions.state.result?.sessions.find((candidate) => candidate.key === session.key);
+  const menuData: SessionMenuData = {
+    ...model.promotionSession,
+    label: session.label,
+    key: session.key,
+    sessionId: session.sessionId ?? null,
+    isChild: session.isChild,
+    pinned: session.pinned,
+    pinnable: session.pinnable,
+    unread: session.unread,
+    hiddenFromInvolvingMe: session.hiddenFromInvolvingMe,
+    archived: session.archived === true,
+    snoozedUntil: session.snoozedUntil ?? null,
+    archiving: context?.sessions.archiveVisibility(session.key) === "pending",
+    category: session.category ?? null,
+    icon: session.icon ?? null,
+    color: session.color ?? null,
+    categoryClearReturnsToGroups: categoryClearReturnsToGroups(session, host.sessionsGrouping),
+  };
+  return html`<openclaw-session-settings-sheet
+    .open=${true}
+    .row=${row}
+    .session=${menuData}
+    .groups=${host.knownSessionGroups()}
+    .currentOwner=${session.owner?.actor ?? null}
+    .archiveAllowed=${model.archiveAllowed}
+    .actionDisabledReasons=${model.actionDisabledReasons}
+    .returnFocus=${settings.returnFocus}
+    .promotionCheck=${false}
+    .onAction=${(action: SessionSettingsHostAction) => {
+      if (controller.sessionSettings === settings && action.kind !== "check-promotion") {
+        model.runAction(action);
+      }
+    }}
+    .onClose=${() => {
+      if (controller.sessionSettings === settings) {
+        controller.closeSessionSettings();
+      }
+    }}
+  ></openclaw-session-settings-sheet>`;
 }
 
 export function renderSidebarMoreMenuForController(controller: SidebarMenusController) {

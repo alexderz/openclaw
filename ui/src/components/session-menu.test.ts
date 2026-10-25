@@ -34,6 +34,18 @@ function focusButton() {
 }
 
 describe("session menu", () => {
+  it("offers Session settings… for one session only where the host renders the sheet", async () => {
+    const onAction = vi.fn<(action: SessionMenuAction) => void>();
+    const item = (menu: Element) =>
+      menu.querySelector('wa-dropdown-item[value="session-settings"]');
+    expect(item(await mountMenu({ onAction }))).toBeNull();
+    expect(item(await mountMenu({ settingsAvailable: true, selectionCount: 2 }))).toBeNull();
+    const menu = await mountMenu({ settingsAvailable: true, onAction });
+    expect(item(menu)?.textContent?.trim()).toBe("Session settings…");
+    selectMenuValue(menu, "session-settings");
+    expect(onAction).toHaveBeenCalledWith({ kind: "session-settings" });
+  });
+
   it("keeps self, agents, and the current owner while the directory loads, then retries a visible failure", async () => {
     const pending = deferred<ReturnType<typeof sessionOwnerProfiles>>();
     const { context, request } = createSessionOwnerMenuHarness(() => pending.promise);

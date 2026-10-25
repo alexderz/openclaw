@@ -37,7 +37,8 @@ export type SessionMenuAction =
   | { kind: "cancel-promotion" }
   | { kind: "open-pr"; url: string }
   | { kind: "plugin"; id: string }
-  | { kind: "stop-cloud-worker" };
+  | { kind: "stop-cloud-worker" }
+  | { kind: "session-settings" };
 
 export type SessionMenuActionKind = SessionMenuAction["kind"];
 
@@ -70,6 +71,8 @@ class SessionMenu extends OpenClawLightDomElement {
   @property({ attribute: false }) currentOwner: SessionCreatedActor | null = null;
   @property({ attribute: false }) work: SessionMenuWork | null = null;
   @property({ attribute: false }) pluginActions: readonly PluginSessionMenuAction[] = [];
+  /** Offers "Session settings…"; only hosts that render the sheet set it. */
+  @property({ attribute: false }) settingsAvailable = false;
   /** Promote or cancel items rendered by the lazy host, which also owns their gate and copy. */
   @property({ attribute: false }) promotionItems: TemplateResult | typeof nothing = nothing;
   @property({ attribute: false }) onAction: (action: SessionMenuAction) => void = () => {};
@@ -146,7 +149,10 @@ class SessionMenu extends OpenClawLightDomElement {
     }
     if (
       value === "stop-cloud-worker" ||
-      ((value === "promote-session" || value === "cancel-promotion") && this.selectionCount === 1)
+      ((value === "promote-session" ||
+        value === "cancel-promotion" ||
+        (value === "session-settings" && this.settingsAvailable)) &&
+        this.selectionCount === 1)
     ) {
       this.runAction({ kind: value });
       return;
@@ -226,6 +232,16 @@ class SessionMenu extends OpenClawLightDomElement {
                     ? html`<div class="session-menu__info">
                         ${t("sessionsView.lastActive", { time: this.lastActive })}
                       </div>`
+                    : nothing
+                }
+                ${
+                  !batch && this.settingsAvailable
+                    ? html`<wa-dropdown-item class="session-menu__item" value="session-settings">
+                        <span slot="icon" class="session-menu__icon" aria-hidden="true"
+                          >${icons.settings}</span
+                        >
+                        <span class="session-menu__text">${t("chat.sessionSettings.open")}</span>
+                      </wa-dropdown-item>`
                     : nothing
                 }
                 ${batch ? nothing : this.promotionItems}
