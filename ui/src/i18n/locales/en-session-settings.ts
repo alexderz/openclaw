@@ -69,6 +69,10 @@ const catalog = {
           other: "Other policy",
         },
       },
+      delegatedTurn: {
+        label: "Ran with delegated limits, not your normal permissions",
+        open: "Open Session settings",
+      },
       models: {
         model: "Model",
         activeModel: "Running now",

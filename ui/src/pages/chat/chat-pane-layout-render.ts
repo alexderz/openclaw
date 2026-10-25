@@ -20,7 +20,9 @@ import { resolveChatPaneDesktopTarget } from "./chat-pane-placement.ts";
 import type { createChatPaneRails } from "./chat-pane-rails.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { renderSidebarRegion, sidebarRegionCallbacks } from "./chat-pane-sidebar-layout.ts";
+import { createTurnAuthorityHost } from "./chat-pane-turn-authority.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { selectedChatSessionRow } from "./chat-state-route.ts";
 import { ChatToolIconController } from "./chat-tool-icon-controller.ts";
 import { renderChat, type ChatProps } from "./chat-view.ts";
 import { publishChatWorkContext } from "./chat-work-context.ts";
@@ -67,6 +69,18 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
     () => this.context,
     () => (this.state && !this.catalogHost ? this.resolveChatReadTarget() : undefined),
   );
+  private readonly turnAuthority = createTurnAuthorityHost({
+    readRow: () => (this.state ? selectedChatSessionRow(this.state) : undefined),
+    readClient: () => {
+      const snapshot = this.context.gateway.snapshot;
+      return snapshot.phase === "connected" ? snapshot.client : null;
+    },
+    openPermissions: (returnFocus) => {
+      const menu = this.querySelector("openclaw-chat-header-session-menu");
+      menu?.openSettings("permissions", returnFocus);
+      return Boolean(menu);
+    },
+  });
   private desktopFocus: {
     key: string;
     client: ChatPageHost["client"];
@@ -157,6 +171,8 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       ...chatProps,
       onOpenSubagent: ownsSubagentsPanel ? (key) => this.showSubagents(key) : undefined,
       onOpenSubagents: ownsSubagentsPanel ? () => this.showSubagents(null) : undefined,
+      // Imported catalog sessions have no Session settings sheet to open.
+      turnAuthority: catalog ? undefined : this.turnAuthority,
       composerRecovery: recovery,
       pluginToolIcons: this.toolIcons.icons,
       presented: {

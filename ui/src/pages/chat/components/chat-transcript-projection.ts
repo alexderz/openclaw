@@ -362,6 +362,7 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
       ...sharedMessageRenderOptions,
       messageReactions: props.messageReactions,
       onReact: props.onReact,
+      turnAuthority: props.turnAuthority,
       transcriptVisible: props.transcriptVisible,
       latestBrowserTabs,
       showReasoning,

@@ -1,0 +1,99 @@
+/* Delegated-turn marker: a quiet muted-amber "!" beside the corner of a user turn that ran
+   under delegated limits. It sits outside the bubble so it never covers text, never joins a
+   text selection, and leaves the bubble's border and actions alone. */
+.chat-turn-authority {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: calc(100% + 2px);
+  display: block;
+  line-height: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* A participant's turn sits on the start edge, beside their avatar: mark the free side. */
+.chat-group--peer .chat-turn-authority {
+  inset-inline-start: calc(100% + 2px);
+  inset-inline-end: auto;
+}
+
+.chat-turn-authority__trigger {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 24px;
+  block-size: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--warn-muted);
+  cursor: pointer;
+}
+
+.chat-turn-authority__glyph {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 15px;
+  block-size: 15px;
+  border-radius: var(--radius-full);
+  box-shadow: inset 0 0 0 1.25px currentColor;
+  font: 700 10px/1 var(--font-body);
+}
+
+.chat-turn-authority__trigger:hover,
+.chat-turn-authority__trigger[aria-expanded="true"] {
+  background: var(--warn-subtle);
+  color: var(--warn);
+}
+
+.chat-turn-authority__trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+  color: var(--warn);
+}
+
+.chat-turn-authority__popover {
+  --arrow-size: 0;
+  --max-width: min(320px, calc(100vw - 24px));
+}
+
+.chat-turn-authority__popover::part(body) {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  color: var(--text);
+  box-shadow: var(--overlay-shadow);
+}
+
+.chat-turn-authority__panel {
+  display: grid;
+  gap: var(--space-1);
+  font: 400 13px/1.45 var(--font-body);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.chat-turn-authority__headline {
+  margin: 0;
+  color: var(--text-strong);
+}
+
+.chat-turn-authority__link {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.chat-turn-authority__link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
