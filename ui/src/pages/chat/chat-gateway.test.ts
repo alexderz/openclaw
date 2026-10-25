@@ -7,6 +7,10 @@ import { createRequireRecord } from "../../../../test/helpers/record.js";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { SessionsListResult } from "../../api/types.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
+import {
+  readTurnAuthorityClass,
+  resetRunAuthorityTestState,
+} from "../../lib/chat/turn-authority.ts";
 import { createTestSessionCapability } from "../../lib/sessions/session-capability.test-support.ts";
 import { handleChatGatewayEvent, type ChatEventPayload } from "./chat-gateway.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
@@ -2404,4 +2408,23 @@ describe("aborted chat diagnostics", () => {
     expect(state.chatRunId).toBeNull();
     expect(state.chatMessages.at(-1)).toMatchObject(textMessage("assistant", "New final answer"));
   });
+});
+
+it("marks the local copy of the run's turn from the live event's authority class", () => {
+  onTestFinished(resetRunAuthorityTestState);
+  const local = {
+    role: "user",
+    content: [{ type: "text", text: "continue" }],
+    timestamp: 1,
+    __openclaw: { idempotencyKey: "run-1:user" },
+  };
+  const original = structuredClone(local);
+  const state = createState({ chatMessages: [local] });
+  receive(state, "delta", { seq: 1, deltaText: "Working" });
+  expect(readTurnAuthorityClass(local)).toBeUndefined();
+  receive(state, "delta", { seq: 2, deltaText: "Working on it", authorityClass: "delegated" });
+  expect(readTurnAuthorityClass(local)).toBe("delegated");
+  // Display only: the transcript copy is not rewritten.
+  expect(state.chatMessages[0]).toBe(local);
+  expect(local).toEqual(original);
 });
