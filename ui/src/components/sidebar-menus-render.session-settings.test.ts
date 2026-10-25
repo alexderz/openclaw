@@ -111,6 +111,21 @@ it("opens the sheet from the sidebar menu and runs its actions through the sideb
     { pinned: true },
     { sessionScope: true },
   );
+  // Rename closes the sheet before it dispatches; the sidebar must still run it.
+  const opened = controller.sessionSettings;
+  const content = sheet.content!;
+  const actions = content.querySelector<HTMLDetailsElement>('details[data-section="actions"]')!;
+  actions.open = true;
+  actions.dispatchEvent(new Event("toggle"));
+  await sheet.updateComplete;
+  content.querySelector<HTMLButtonElement>('[data-action="rename"] button')!.click();
+  expect(controller.closeSessionSettings).toHaveBeenCalledOnce();
+  expect(sessionOrganizer.renameSession).toHaveBeenCalledWith(
+    expect.objectContaining({ key: session.key }),
+  );
+  controller.sessionSettings = opened;
+  controller.closeSessionSettings.mockClear();
+
   // The sidebar has no status check; the sheet's request for one is ignored, not misrouted.
   sheet.onAction({ kind: "check-promotion" });
   sheet.onClose();

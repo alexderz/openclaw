@@ -306,16 +306,19 @@ class SessionSettingsSheet extends OpenClawLightDomContentsElement {
       this.loads = { ...this.loads, [id]: { status: "unavailable" } };
       return;
     }
-    const generation = this.generation;
-    this.loads = { ...this.loads, [id]: { status: "loading" } };
+    // Only the latest read of a section may settle it: a slow earlier attempt that a Retry
+    // superseded, or one for the previous session, is dropped.
+    const pending: SectionLoad<unknown> = { status: "loading" };
+    const current = () => this.loads[id] === pending;
+    this.loads = { ...this.loads, [id]: pending };
     this.fetch(id).then(
       (value) => {
-        if (generation === this.generation) {
+        if (current()) {
           this.loads = { ...this.loads, [id]: { status: "done", value } };
         }
       },
       (error: unknown) => {
-        if (generation === this.generation) {
+        if (current()) {
           this.loads = { ...this.loads, [id]: { status: "error", error: formatUiError(error) } };
         }
       },
