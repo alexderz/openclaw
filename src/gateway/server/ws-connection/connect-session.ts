@@ -7,8 +7,8 @@ import {
 import { ConnectErrorDetailCodes } from "../../../../packages/gateway-protocol/src/connect-error-details.js";
 import { ErrorCodes, PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/index.js";
 import { getRuntimeConfig } from "../../../config/io.js";
+import { compareOpenClawVersions } from "../../../config/version.js";
 import { captureAuthenticatedNodePairingState } from "../../../infra/device-pairing-node-state.js";
-import { compareOpenClawReleaseVersions } from "../../../infra/npm-registry-spec.js";
 import { upsertPresence } from "../../../infra/system-presence.js";
 import { loadVoiceWakeRoutingConfig } from "../../../infra/voicewake-routing.js";
 import { loadVoiceWakeConfig } from "../../../infra/voicewake.js";
@@ -446,7 +446,9 @@ export async function attachAuthenticatedGatewayConnect(
     if (localNodeId && device?.id === localNodeId) {
       const gatewayVersion = resolveRuntimeServiceVersion(process.env);
       const clientVersion = connectParams.client.version;
-      const releaseOrder = compareOpenClawReleaseVersions(clientVersion, gatewayVersion);
+      // Build metadata must not hide an older local node. compareOpenClawVersions
+      // treats 2026.10.5+fork.108 as 2026.10.5 and still orders corrections.
+      const releaseOrder = compareOpenClawVersions(clientVersion, gatewayVersion);
       if (releaseOrder !== null && releaseOrder < 0) {
         logWsControl.info(
           `node version mismatch conn=${connId} client=${formatForLog(clientLabel)} clientVersion=${formatForLog(clientVersion)} gatewayVersion=${gatewayVersion}; closing for supervisor restart`,

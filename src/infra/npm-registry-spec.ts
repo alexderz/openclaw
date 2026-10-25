@@ -142,13 +142,25 @@ function isOpenClawStableCorrectionVersion(value: string): boolean {
   return parsed !== null && isOpenClawCorrectionSemver(parsed);
 }
 
-/** Resolves stable correction releases to their shared base release cohort. */
+/** Drop SemVer build metadata without rewriting a version the parser rejects. */
+function stripSemverBuildMetadata(value: string): string {
+  const parsed = parseSemver(value);
+  if (!parsed || parsed.build.length === 0) {
+    return value;
+  }
+  const suffix = `+${parsed.build.join(".")}`;
+  return value.endsWith(suffix) ? value.slice(0, -suffix.length) : parsed.version;
+}
+
+/** Resolves stable correction releases to their shared base release cohort.
+ * Build metadata is not part of the cohort: 2026.10.5+fork.108 is 2026.10.5.
+ */
 export function resolveOpenClawReleaseCohortVersion(value: string): string {
-  const trimmed = value.trim();
-  const parsed = parseOpenClawReleaseVersion(trimmed);
+  const withoutBuild = stripSemverBuildMetadata(value.trim());
+  const parsed = parseOpenClawReleaseVersion(withoutBuild);
   return parsed && isOpenClawCorrectionSemver(parsed)
     ? `${parsed.major}.${parsed.minor}.${parsed.patch}`
-    : trimmed;
+    : withoutBuild;
 }
 
 /** Compares OpenClaw monthly patch release versions across alpha, beta, stable, and corrections. */

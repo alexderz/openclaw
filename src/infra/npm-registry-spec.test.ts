@@ -116,6 +116,9 @@ describe("npm registry spec parsing helpers", () => {
     ["2026.7.1", "2026.7.1"],
     ["2026.7.1-beta.3", "2026.7.1-beta.3"],
     ["1.2.3-1", "1.2.3-1"],
+    ["2026.10.5+fork.108", "2026.10.5"],
+    ["2026.10.5-1+fork.108", "2026.10.5"],
+    ["2026.5.3+build", "2026.5.3"],
   ])("resolves the OpenClaw release cohort for %s", (version, expected) => {
     expect(resolveOpenClawReleaseCohortVersion(version)).toBe(expected);
   });

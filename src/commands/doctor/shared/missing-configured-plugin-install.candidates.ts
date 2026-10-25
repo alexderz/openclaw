@@ -3,7 +3,7 @@ import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/s
 import { listRawChannelPluginCatalogEntries } from "../../../channels/plugins/catalog.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
-import { compareOpenClawReleaseVersions } from "../../../infra/npm-registry-spec.js";
+import { compareOpenClawVersions } from "../../../config/version.js";
 import {
   normalizeUpdateChannel,
   resolveRegistryUpdateChannel,
@@ -552,7 +552,10 @@ function collectInstalledPluginIdsWithStaleVersionBoundRuntimePackages(params: {
     if (!installedVersion) {
       continue;
     }
-    const comparison = compareOpenClawReleaseVersions(installedVersion, currentVersion);
+    // Release compare rejects build metadata. This compare ignores it and
+    // still orders OpenClaw correction releases (-N). Exact strings remain
+    // only when the version does not parse.
+    const comparison = compareOpenClawVersions(installedVersion, currentVersion);
     if (comparison === null ? installedVersion !== currentVersion : comparison < 0) {
       pluginIds.add(candidate.pluginId);
     }
