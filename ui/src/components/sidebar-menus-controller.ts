@@ -61,6 +61,8 @@ export class SidebarMenusController implements ReactiveController {
     | (MenuPosition & { entry: ControlUiRegistration<ControlUiNavigationItem> })
     | null = null;
   sessionMenu: SidebarSessionMenuState | null = null;
+  /** The Session settings sheet outlives the menu that opened it. */
+  sessionSettings: { session: SidebarRecentSession; returnFocus: HTMLElement | null } | null = null;
   sessionMenuWork: SessionMenuWork | null = null;
   sessionGroupMenu: SidebarSessionGroupMenuState | null = null;
   sessionSortMenuPosition: MenuPosition | null = null;
@@ -278,6 +280,15 @@ export class SidebarMenusController implements ReactiveController {
     this.sessionMenuTrigger = trigger;
     this.updateState("sessionMenu", { session, x, y });
     this.loadSessionMenuWork(session);
+  }
+
+  openSessionSettings(session: SidebarRecentSession, returnFocus: HTMLElement | null) {
+    this.loadMenuRenderer();
+    this.updateState("sessionSettings", { session, returnFocus });
+  }
+
+  closeSessionSettings() {
+    this.updateState("sessionSettings", null);
   }
 
   closeSessionMenu() {
@@ -581,6 +592,7 @@ export class SidebarMenusController implements ReactiveController {
       )}
       ${renderer?.renderSidebarIdentityMenuForController(this) ?? nothing}
       ${renderer?.renderSidebarSessionMenuForController(this) ?? nothing}
+      ${renderer?.renderSidebarSessionSettingsForController(this) ?? nothing}
       ${this.catalogMenu.render()}
       ${renderer?.renderSidebarSessionGroupMenuForController(this) ?? nothing}
       ${renderer?.renderSidebarSessionSortMenuForController(this) ?? nothing}

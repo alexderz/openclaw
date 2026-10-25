@@ -15,7 +15,10 @@ import {
 import { canCopySessionMarkdown } from "../../lib/sessions/session-menu-navigation.ts";
 import { pluginSessionMenuActions } from "../../plugins/control-ui-actions.ts";
 
-type SessionsPageMenuAction = Exclude<SessionMenuAction, { kind: "snooze" | "wake" }>;
+type SessionsPageMenuAction = Exclude<
+  SessionMenuAction,
+  { kind: "snooze" | "wake" | "session-settings" }
+>;
 
 export function renderSessionManagementMenu(params: {
   context: ApplicationContext;
@@ -82,8 +85,13 @@ export function renderSessionManagementMenu(params: {
       .pluginActions=${pluginSessionMenuActions(context.plugins, row)}
       .onClose=${params.onClose}
       .onAction=${(action: SessionMenuAction) => {
-        // Snooze controls belong to the sidebar; the page retains its existing action contract.
-        if (action.kind !== "snooze" && action.kind !== "wake") {
+        // Snooze controls and the settings sheet belong to the sidebar; the page retains its
+        // existing action contract.
+        if (
+          action.kind !== "snooze" &&
+          action.kind !== "wake" &&
+          action.kind !== "session-settings"
+        ) {
           params.onAction(action);
         }
       }}
