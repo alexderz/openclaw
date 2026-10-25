@@ -29,7 +29,7 @@ import { persistCliSessionBindingResult } from "../cli-session-store.js";
 import { claimAgentSessionWriter } from "../embedded-agent-runner/run/session-bootstrap.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../sessions/session-manager.js";
 import { persistCliAssistantTranscript } from "./cli-run-transcript.js";
-import { prepareCliHistoryBoundary } from "./history-boundary.js";
+import { canReseedCliHistoryWithoutOwner, prepareCliHistoryBoundary } from "./history-boundary.js";
 import { buildCliSessionHistoryPrompt, loadCliSessionPromptContext } from "./session-history.js";
 import type { PreparedCliRunContext } from "./types.js";
 
@@ -155,6 +155,65 @@ async function settleNativeBinding(
     },
   });
 }
+
+describe("CLI history for identity-less subscription logins", () => {
+  async function ownerlessWithHistory() {
+    const f = await fixture();
+    f.manager().appendMessage({ role: "user", content: "subscription canary", timestamp: 1 });
+    return f;
+  }
+
+  it("reseeds when no boundary was ever stored", async () => {
+    const f = await ownerlessWithHistory();
+    await f.withRun("ownerless-run", async (params) => {
+      expect(await prepareCliHistoryBoundary(params, {})).toBeUndefined();
+      expect(canReseedCliHistoryWithoutOwner(params, {})).toBe(true);
+      const context = await loadCliSessionPromptContext({
+        ...params,
+        allowRawTranscriptReseed: true,
+        rawTranscriptReseedReason: "missing-transcript",
+      });
+      expect(context.reseedMessages.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("keeps refusing after any stored boundary (account switch)", async () => {
+    const f = await fixture();
+    await f.seed();
+    await f.run("epoch-b", async (allowed) => expect(allowed).toBe(false));
+    await f.withRun("ownerless-after-switch", async (params) => {
+      expect(await prepareCliHistoryBoundary(params, {})).toBeUndefined();
+      expect(canReseedCliHistoryWithoutOwner(params, {})).toBe(false);
+    });
+  });
+
+  it("never applies when the credential resolves to an owner", async () => {
+    const f = await ownerlessWithHistory();
+    await f.withRun("owned-run", async (params) => {
+      expect(
+        canReseedCliHistoryWithoutOwner(params, {
+          credential: { type: "token", provider: "test-cli", token: "t" },
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it.each(["auth-profile", "auth-epoch", "auth-unknown"] as const)(
+    "session history still refuses reason %s",
+    async (reason) => {
+      const f = await ownerlessWithHistory();
+      await f.withRun("refuse-" + reason, async (params) => {
+        const context = await loadCliSessionPromptContext({
+          ...params,
+          allowRawTranscriptReseed: true,
+          rawTranscriptReseedReason: reason,
+        });
+        expect(context.reseedMessages).toEqual([]);
+        expect(context.durableContext).toBeUndefined();
+      });
+    },
+  );
+});
 
 describe("CLI transcript account boundary", () => {
   it("prepares and commits CLI history without caller-thread data SQL", async () => {

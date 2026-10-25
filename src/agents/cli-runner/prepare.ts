@@ -137,7 +137,7 @@ import {
   unsupportedIsolatedCompletionError,
 } from "./execution-target.js";
 import { isClaudeCliBackendId, normalizeCliModel } from "./helpers.js";
-import { prepareCliHistoryBoundary } from "./history-boundary.js";
+import { canReseedCliHistoryWithoutOwner, prepareCliHistoryBoundary } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
 import { buildCliMcpGrantContext } from "./mcp-grant-context.js";
 import { resolveCliCatalogCapabilities } from "./model-capabilities.js";
@@ -1494,7 +1494,13 @@ async function prepareCliRunContextWithinReadFence(
       ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
       : undefined;
     // Explicit caller-owned memory remains input; it cannot authorize borrowed durable history.
-    const historyAllowed = params.sessionManager !== undefined || cliHistoryWriter !== undefined;
+    const historyAllowed =
+      params.sessionManager !== undefined ||
+      cliHistoryWriter !== undefined ||
+      // An identity-less subscription login can never hold a writer; its unbounded
+      // local transcript has no foreign owner unless a boundary was ever stored.
+      (!isSideQuestion &&
+        canReseedCliHistoryWithoutOwner(historyParams, { credential: authCredential }));
     // Native compatibility and transcript account ownership are independent gates.
     const rawTranscriptReseedReason = !historyAllowed
       ? "auth-unknown"
