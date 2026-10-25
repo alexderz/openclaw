@@ -75,9 +75,15 @@
   -webkit-user-select: text;
 }
 
-.chat-turn-authority__headline {
+.chat-turn-authority__turn {
   margin: 0;
   color: var(--text-strong);
+}
+
+/* The session as it is now, which may differ from the turn: one quieter line. */
+.chat-turn-authority__headline {
+  margin: 0;
+  color: var(--muted);
 }
 
 .chat-turn-authority__link {

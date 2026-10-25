@@ -62,6 +62,10 @@ function bubbleMarkers(root: HTMLElement) {
   );
 }
 
+function popoverLines(root: HTMLElement) {
+  return [...root.querySelectorAll("wa-popover p")].map((line) => line.textContent?.trim());
+}
+
 async function settle(root: HTMLElement) {
   for (const element of root.querySelectorAll("openclaw-chat-turn-authority-marker")) {
     await (element as HTMLElement & { updateComplete: Promise<unknown> }).updateComplete;
@@ -112,7 +116,7 @@ describe("delegated-turn marker", () => {
     expect(bubbleMarkers(root)).toEqual([true]);
   });
 
-  it("mounts its popover on first activation with the headline and a way to Permissions", async () => {
+  it("mounts its popover on first activation: the turn, the session now, and a way to Permissions", async () => {
     const host: TurnAuthorityHost = {
       readPermissionsHeadline: vi.fn(async () => "Delegated · 1 extra limit"),
       openPermissions: vi.fn(() => true),
@@ -129,11 +133,16 @@ describe("delegated-turn marker", () => {
     const popover = root.querySelector("wa-popover")!;
     expect(popover.getAttribute("for")).toBe(trigger.id);
     expect(popover.getAttribute("aria-label")).toBe(LABEL);
+    expect(popoverLines(root)).toEqual([
+      "This message ran with delegated limits.",
+      "Now: Checking permissions…",
+    ]);
     popover.dispatchEvent(new Event("wa-show"));
     await vi.waitFor(() =>
-      expect(root.querySelector(".chat-turn-authority__headline")?.textContent?.trim()).toBe(
-        "Delegated · 1 extra limit",
-      ),
+      expect(popoverLines(root)).toEqual([
+        "This message ran with delegated limits.",
+        "Now: Delegated · 1 extra limit",
+      ]),
     );
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     // Inform only: the popover offers the sheet, not a promotion of its own.
@@ -160,9 +169,42 @@ describe("delegated-turn marker", () => {
     root.querySelector("wa-popover")!.dispatchEvent(new Event("wa-show"));
     await vi.waitFor(() =>
       expect(root.querySelector(".chat-turn-authority__headline")?.textContent?.trim()).toBe(
-        "Permissions not checked yet",
+        "Now: Permissions not checked yet",
       ),
     );
+  });
+
+  it("keeps the turn's delegated line when the session has since been promoted", async () => {
+    const host: TurnAuthorityHost = {
+      readPermissionsHeadline: async () => "Full permissions",
+      openPermissions: () => true,
+    };
+    const root = renderGroup(
+      userGroup([{ content: "older turn", __openclaw: { authorityClass: "delegated" } }]),
+      host,
+    );
+    await settle(root);
+    root.querySelector<HTMLButtonElement>(".chat-turn-authority__trigger")!.click();
+    await settle(root);
+    root.querySelector("wa-popover")!.dispatchEvent(new Event("wa-show"));
+    await vi.waitFor(() =>
+      expect(popoverLines(root)).toEqual([
+        "This message ran with delegated limits.",
+        "Now: Full permissions",
+      ]),
+    );
+  });
+
+  it("shows only the turn's line where no session can be checked", async () => {
+    const root = renderGroup(
+      userGroup([{ content: "imported turn", __openclaw: { authorityClass: "delegated" } }]),
+    );
+    await settle(root);
+    root.querySelector<HTMLButtonElement>(".chat-turn-authority__trigger")!.click();
+    await settle(root);
+    const popover = root.querySelector("wa-popover")!;
+    expect(popoverLines(root)).toEqual(["This message ran with delegated limits."]);
+    expect(popover.querySelector("button")).toBeNull();
   });
 });
 

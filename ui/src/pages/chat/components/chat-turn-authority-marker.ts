@@ -11,7 +11,7 @@ import "../../../styles/chat/turn-authority.css";
 
 registerSessionSettingsEnglish();
 
-/** What the pane lends the marker: the Permissions headline and the way to the full section. */
+/** What the pane lends the marker: the session's headline now and the way to Permissions. */
 export type TurnAuthorityHost = {
   /** The session's Permissions headline, worded as the Session settings sheet words it. */
   readPermissionsHeadline: () => Promise<string>;
@@ -27,9 +27,10 @@ function nextMarkerId() {
 }
 
 /**
- * The quiet "!" on a user turn stamped `delegated`. Its popover holds only the Permissions
- * headline and a way to the full section; it informs and offers no promotion of its own. The
- * popover mounts on first activation, so a long delegated transcript renders plain buttons.
+ * The quiet "!" on a user turn stamped `delegated`. Its popover says what the turn ran with, then
+ * the session's Permissions headline as it is now (it may have been promoted since), and a way to
+ * the full section; it informs and offers no promotion of its own. The popover mounts on first
+ * activation, so a long delegated transcript renders plain buttons.
  */
 class ChatTurnAuthorityMarker extends OpenClawLightDomElement {
   @property({ attribute: false }) host: TurnAuthorityHost | null = null;
@@ -110,18 +111,17 @@ class ChatTurnAuthorityMarker extends OpenClawLightDomElement {
       @wa-hide=${this.handleHide}
     >
       <div class="chat-turn-authority__panel">
-        <p class="chat-turn-authority__headline" role="status">
-          ${host ? (this.headline ?? t("chat.sessionSettings.permissions.checking")) : label}
-        </p>
+        <p class="chat-turn-authority__turn">${t("chat.sessionSettings.delegatedTurn.turn")}</p>
         ${
           host
-            ? html`<button
-                class="chat-turn-authority__link"
-                type="button"
-                @click=${this.openSettings}
-              >
-                ${t("chat.sessionSettings.delegatedTurn.open")}
-              </button>`
+            ? html`<p class="chat-turn-authority__headline" role="status">
+                  ${t("chat.sessionSettings.delegatedTurn.now", {
+                    headline: this.headline ?? t("chat.sessionSettings.permissions.checking"),
+                  })}
+                </p>
+                <button class="chat-turn-authority__link" type="button" @click=${this.openSettings}>
+                  ${t("chat.sessionSettings.delegatedTurn.open")}
+                </button>`
             : nothing
         }
       </div>

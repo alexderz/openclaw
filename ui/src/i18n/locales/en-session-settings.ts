@@ -71,6 +71,8 @@ const catalog = {
       },
       delegatedTurn: {
         label: "Ran with delegated limits, not your normal permissions",
+        turn: "This message ran with delegated limits.",
+        now: "Now: {headline}",
         open: "Open Session settings",
       },
       models: {

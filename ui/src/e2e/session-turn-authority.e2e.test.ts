@@ -200,7 +200,12 @@ suite.define(() => {
         await popover.waitFor({ state: "visible" });
         await expect
           .poll(() => popover.locator(".chat-turn-authority__headline").textContent())
-          .toContain("Delegated · 2 extra limits · can't message other sessions");
+          .toContain("Now: Delegated · 2 extra limits · can't message other sessions");
+        // First what this turn ran with, then the session as it is now.
+        expect((await popover.locator("p").allTextContents()).map((text) => text.trim())).toEqual([
+          "This message ran with delegated limits.",
+          "Now: Delegated · 2 extra limits · can't message other sessions",
+        ]);
         expect(await trigger.getAttribute("aria-expanded")).toBe("true");
         expect(
           (await popover.locator("button").allTextContents()).map((text) => text.trim()),
