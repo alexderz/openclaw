@@ -410,3 +410,130 @@ it("renders outside its host, so pane key and tap handlers never reach it, and c
   sheet.remove();
   expect(reopened.isConnected).toBe(false);
 });
+
+const usageEmpty = { sessions: [] };
+
+function describedFallbacks(fallbacks: NonNullable<GatewaySessionRow["modelFallbacks"]>) {
+  return {
+    session: { modelFallbacks: fallbacks },
+  };
+}
+
+it("loads the fallback ladder from the one-session full row when Models opens", async () => {
+  const { sheet, request } = await mountSheet({
+    row: {
+      model: "opus",
+      modelProvider: "anthropic",
+      execHost: "gateway",
+      authProfile: { kind: "personal" },
+      rowMode: "compact",
+    },
+    respond: (method, params) =>
+      method === "sessions.describe"
+        ? {
+            session: {
+              key: params.key,
+              modelFallbacks: {
+                state: "active",
+                models: ["openai/gpt-5.5", "google/gemini-3.1-pro"],
+              },
+              // The detail read is not a license to show an auth locator. The host row stays redacted.
+              authProfile: { kind: "named", label: "personal:owner:secret-credential" },
+            },
+          }
+        : method === "sessions.usage"
+          ? usageEmpty
+          : undefined,
+  });
+  expect(request.mock.calls.some(([method]) => method === "sessions.describe")).toBe(false);
+  await openSection(sheet, "models");
+  expect(request).toHaveBeenCalledWith("sessions.describe", { key: KEY, agentId: "main" });
+  const models = text(section(sheet, "models"));
+  expect(models).toContain("anthropic/opus");
+  expect(models).toContain("openai/gpt-5.5 → google/gemini-3.1-pro");
+  expect(models).toContain("Personal account");
+  expect(models).toContain("gateway");
+  expect(models).not.toContain("secret-credential");
+});
+
+it("shows fallbacks off with the server reason", async () => {
+  for (const [state, reason] of [
+    ["disabled-by-model-override", "Off: the model was chosen for this session"],
+    ["disabled-by-model-lock", "Off: the model is locked"],
+  ] as const) {
+    const { sheet } = await mountSheet({
+      initialSection: "models",
+      respond: (method) =>
+        method === "sessions.describe"
+          ? describedFallbacks({ state })
+          : method === "sessions.usage"
+            ? usageEmpty
+            : undefined,
+    });
+    const models = text(section(sheet, "models"));
+    expect(models).toContain("Fallbacks");
+    expect(models).toContain(reason);
+    expect(models).not.toContain("No fallbacks");
+  }
+});
+
+it("shows nothing about the ladder while the full row is loading or failed", async () => {
+  let rejectDescribe: (error: Error) => void = () => {};
+  const { sheet } = await mountSheet({
+    row: { model: "opus", modelProvider: "anthropic", execHost: "gateway", rowMode: "compact" },
+    initialSection: "models",
+    respond: (method) =>
+      method === "sessions.describe"
+        ? new Promise((_resolve, reject) => {
+            rejectDescribe = reject;
+          })
+        : method === "sessions.usage"
+          ? usageEmpty
+          : undefined,
+  });
+  const models = () => section(sheet, "models");
+  expect(text(models())).toContain("Loading…");
+  expect(text(models())).toContain("gateway");
+  expect(text(models())).not.toContain("No fallbacks");
+  expect(text(models())).not.toContain("Off:");
+  rejectDescribe(new Error("boom"));
+  await settle(sheet);
+  expect(text(models().querySelector('[role="alert"]'))).toContain("boom");
+  expect(text(models())).not.toContain("No fallbacks");
+  expect(text(models())).not.toContain("Off:");
+});
+
+it("drops a stale fallback read when the session changes", async () => {
+  const otherKey = "agent:main:dashboard:other";
+  let resolveFirst: (value: unknown) => void = () => {};
+  const { sheet, request } = await mountSheet({
+    row: { model: "opus", modelProvider: "anthropic", rowMode: "compact" },
+    initialSection: "models",
+    respond: (method, params) => {
+      if (method === "sessions.usage") {
+        return usageEmpty;
+      }
+      if (method !== "sessions.describe") {
+        return undefined;
+      }
+      if (params.key === KEY) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return describedFallbacks({ state: "active", models: ["openai/gpt-5.5"] });
+    },
+  });
+  expect(text(section(sheet, "models"))).toContain("Loading…");
+  sheet.row = { ...sheet.row!, key: otherKey, sessionId: "s-2" };
+  sheet.session = { ...sheet.session, key: otherKey, sessionId: "s-2", label: "Other" };
+  await settle(sheet);
+  expect(request).toHaveBeenCalledWith("sessions.describe", { key: otherKey, agentId: "main" });
+  expect(text(section(sheet, "models"))).toContain("openai/gpt-5.5");
+  resolveFirst(describedFallbacks({ state: "disabled-by-model-lock" }));
+  await settle(sheet);
+  const models = text(section(sheet, "models"));
+  expect(models).toContain("openai/gpt-5.5");
+  expect(models).not.toContain("Off: the model is locked");
+  expect(section(sheet, "models").querySelector('[role="alert"]')).toBeNull();
+});
