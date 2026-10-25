@@ -114,6 +114,22 @@ describe("summarizeSessionPermissions", () => {
     ).toEqual({ kind: "full", toolCount: 3, viewerDiffers: false });
   });
 
+  it("is not full permissions while session messaging is denied or unchecked", () => {
+    for (const sessionsSend of ["denied", "unknown"] as const) {
+      expect(
+        summarizeSessionPermissions(
+          ordinary,
+          toolsResult({
+            evaluatedClass: "ordinary",
+            limitedTools: [],
+            sessionsSend,
+            evaluatedAt: 1,
+          }),
+        ),
+      ).toMatchObject({ kind: "limited", standard: [], groups: [], extraCount: 0, sessionsSend });
+    }
+  });
+
   it("says unknown, with the row's messaging state, until tools.effective has run", () => {
     expect(summarizeSessionPermissions(delegated, null)).toEqual({
       kind: "unknown",

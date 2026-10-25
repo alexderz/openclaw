@@ -620,7 +620,10 @@ export function renderSidebarSessionSettingsForController(controller: SidebarMen
     .returnFocus=${settings.returnFocus}
     .promotionCheck=${false}
     .onAction=${(action: SessionSettingsHostAction) => {
-      if (controller.sessionSettings === settings && action.kind !== "check-promotion") {
+      // A closing action (Promote, Rename, Archive) closes the sheet just before it dispatches,
+      // so a cleared sheet still owns it; only a sheet opened for another row does not.
+      const current = controller.sessionSettings;
+      if ((current === settings || current === null) && action.kind !== "check-promotion") {
         model.runAction(action);
       }
     }}

@@ -155,7 +155,9 @@ export function renderLineageSection(params: {
 function permissionsHeadline(summary: Extract<SessionPermissionsSummary, { kind: "limited" }>) {
   const extra =
     summary.extraCount === 0
-      ? t(`${KEY}.permissions.standardOnly`)
+      ? summary.standard.length
+        ? t(`${KEY}.permissions.standardOnly`)
+        : undefined
       : summary.extraCount === 1
         ? t(`${KEY}.permissions.extraLimit`)
         : t(`${KEY}.permissions.extraLimits`, { count: String(summary.extraCount) });
@@ -165,7 +167,9 @@ function permissionsHeadline(summary: Extract<SessionPermissionsSummary, { kind:
       : summary.sessionsSend === "allowed"
         ? t(`${KEY}.permissions.sendAllowed`)
         : t(`${KEY}.permissions.sendUnknown`);
-  return [t(`${KEY}.permissions.${summary.evaluatedClass}`), extra, send].join(" · ");
+  return [t(`${KEY}.permissions.${summary.evaluatedClass}`), extra, send]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function renderToolList(tools: string[]) {

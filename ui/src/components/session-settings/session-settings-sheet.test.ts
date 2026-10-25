@@ -268,6 +268,39 @@ it("says plainly when permissions could not be checked, and retries on request",
   expect(text(permissions.querySelector(".session-settings__headline"))).toContain("Delegated");
 });
 
+it("keeps the latest read when an earlier attempt of the same section fails late", async () => {
+  let failSlow: (error: Error) => void = () => {};
+  let attempts = 0;
+  const { sheet } = await mountSheet({
+    session: { capabilityStatus: promotionProjection("authorized-none") },
+    respond: (method) => {
+      if (method !== "tools.effective") {
+        return undefined;
+      }
+      attempts += 1;
+      if (attempts === 1) {
+        return new Error("boom");
+      }
+      return attempts === 2
+        ? new Promise((_resolve, reject) => {
+            failSlow = reject;
+          })
+        : delegatedTools;
+    },
+  });
+  const permissions = section(sheet, "permissions");
+  // Two Retry taps before the sheet re-renders start two reads of the same section.
+  const retry = permissions.querySelector<HTMLButtonElement>(".session-settings__retry")!;
+  retry.click();
+  retry.click();
+  await settle(sheet);
+  expect(text(permissions.querySelector(".session-settings__headline"))).toContain("Delegated");
+  failSlow(new Error("slow"));
+  await settle(sheet);
+  expect(text(permissions.querySelector(".session-settings__headline"))).toContain("Delegated");
+  expect(permissions.querySelector('[role="alert"]')).toBeNull();
+});
+
 it("opens at the requested section with its summary as the initial focus target", async () => {
   const { sheet } = await mountSheet({ initialSection: "usage", row: { inputTokens: 1200 } });
   const usage = section(sheet, "usage");
@@ -327,6 +360,16 @@ it("lists a registered action without any change to the sheet", async () => {
   } finally {
     unregister();
   }
+});
+
+it("refuses a registration that would replace a built-in action such as Promote", () => {
+  expect(() =>
+    registerSessionSettingsAction({
+      id: "promotion",
+      order: 10,
+      resolve: () => ({ label: "Promote", run: () => {} }),
+    }),
+  ).toThrow(/reserved/);
 });
 
 it("closes on the dialog's cancel (Escape or a tap outside)", async () => {

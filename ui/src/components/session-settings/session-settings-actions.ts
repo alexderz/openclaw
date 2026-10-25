@@ -219,10 +219,19 @@ const BUILT_IN_ACTIONS: SessionSettingsActionDescriptor[] = [
 
 const registeredActions = new Map<string, SessionSettingsActionDescriptor>();
 
-/** Adds an action to every Session settings sheet; returns the unregister function. */
+const BUILT_IN_ACTION_IDS: ReadonlySet<string> = new Set(BUILT_IN_ACTIONS.map(({ id }) => id));
+
+/**
+ * Adds an action to every Session settings sheet; returns the unregister function. Built-in ids
+ * are reserved: Promote and the other built-ins carry the menus' permission checks, and a
+ * registration must not be able to swap them out.
+ */
 export function registerSessionSettingsAction(
   descriptor: SessionSettingsActionDescriptor,
 ): () => void {
+  if (BUILT_IN_ACTION_IDS.has(descriptor.id)) {
+    throw new Error(`Session settings action id "${descriptor.id}" is reserved`);
+  }
   registeredActions.set(descriptor.id, descriptor);
   return () => {
     if (registeredActions.get(descriptor.id) === descriptor) {
@@ -231,7 +240,7 @@ export function registerSessionSettingsAction(
   };
 }
 
-/** The actions that apply to this target, in order. A registered id replaces a built-in one. */
+/** The actions that apply to this target, built-in and registered, sorted by `order`. */
 export function resolveSessionSettingsActions(
   target: SessionSettingsActionTarget,
 ): Array<SessionSettingsActionView & { id: string }> {

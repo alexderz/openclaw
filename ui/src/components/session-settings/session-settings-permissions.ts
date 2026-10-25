@@ -63,7 +63,9 @@ export function summarizeSessionPermissions(
     status.effectiveClass !== "unknown" &&
     status.effectiveClass !== restrictions.evaluatedClass,
   );
-  if (restrictions.limitedTools.length === 0) {
+  // Session messaging is reported apart from the tool list, so a denied or unchecked
+  // sessions_send still keeps the headline off "Full permissions".
+  if (restrictions.limitedTools.length === 0 && restrictions.sessionsSend === "allowed") {
     return { kind: "full", toolCount, viewerDiffers };
   }
   const standard: string[] = [];
