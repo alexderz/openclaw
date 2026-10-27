@@ -448,7 +448,8 @@ describe("sqlite WAL maintenance", () => {
           expect(sessionScope.getStore()).toBe(session);
           // The native resource must be detached at allocation, not only when its callback runs.
           expect(timerContexts).toEqual([[undefined, undefined]]);
-          expect(db["exec"]).toHaveBeenCalledTimes(3);
+          // journal_mode, wal_autocheckpoint, journal_size_limit, cache_size, mmap_size.
+          expect(db["exec"]).toHaveBeenCalledTimes(5);
 
           await vi.advanceTimersByTimeAsync(5);
           expect(await periodic.promise).toEqual([undefined, undefined]);
