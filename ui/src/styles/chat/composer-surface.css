@@ -1257,3 +1257,52 @@
     padding-block: 0;
   }
 }
+
+/* An attached image must not push the draft under the keyboard. Growing the
+   textarea plus the attachment row is taller than a keyboard-sized conversation,
+   so keep a slice of transcript, shrink the thumb and cap the draft at three
+   lines. The custom property is the marker that survives minification; the
+   built-UI check looks for it. */
+@container chat-conversation (height <= 520px) {
+  .chat-footer:has(.chat-attachments-preview) {
+    --openclaw-composer-attachment-visible: 1;
+    --chat-footer-max-height: calc(100cqh - clamp(56px, 28cqh, 120px));
+
+    justify-content: flex-end;
+  }
+
+  .chat-footer:has(.chat-attachments-preview) .agent-chat__composer-shell {
+    min-height: 0;
+    max-height: 100%;
+    overflow: hidden;
+    justify-content: flex-end;
+  }
+
+  .agent-chat__input:has(.chat-attachments-preview) {
+    min-height: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+  }
+
+  .agent-chat__input:has(.chat-attachments-preview) .chat-attachments-preview {
+    padding-block: 4px 2px;
+    margin-block-start: 0;
+  }
+
+  .agent-chat__input:has(.chat-attachments-preview) .chat-attachment-thumb {
+    width: 36px;
+    height: 36px;
+  }
+
+  .agent-chat__input:has(.chat-attachments-preview) .agent-chat__composer-combobox > :is(textarea, input) {
+    max-height: min(
+      22dvh,
+      calc(var(--chat-composer-editor-line) * 3 + var(--chat-composer-editor-inset-block) * 2)
+    ) !important;
+  }
+
+  .agent-chat__input:has(.chat-attachments-preview)
+    :is(.agent-chat__composer-input-row, .agent-chat__composer-footer) {
+    flex: none;
+  }
+}
