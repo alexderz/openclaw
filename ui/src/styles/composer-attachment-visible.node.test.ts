@@ -15,13 +15,18 @@ describe("composer attachment visibility", () => {
   it("keeps the marker rule in a <=520px conversation container", () => {
     expect(start).toBeGreaterThan(-1);
     expect(css.indexOf(MARKER, start)).toBeGreaterThan(start);
+    expect(css.indexOf("min-height: min-content")).toBeGreaterThan(-1);
+    expect(css.indexOf("min-height: min-content")).toBeLessThan(start);
   });
 
-  it("clamps the footer, thumb and draft when an attachment is present", () => {
+  it("clamps the footer and makes the draft the scrollport when an attachment is present", () => {
     const block = css.slice(start);
     expect(block).toContain("clamp(56px, 28cqh, 120px)");
     expect(block).toMatch(/\.chat-attachment-thumb\s*\{\s*width: 36px;\s*height: 36px;/);
-    expect(block).toMatch(/\* 3 \+/);
+    expect(block).toContain("flex-shrink: 0");
+    expect(block).toContain("height: var(--chat-footer-max-height)");
+    expect(block).toContain("field-sizing: fixed !important");
+    expect(block).toContain("max-height: 100% !important");
     expect(block).toContain(".chat-footer:has(.chat-attachments-preview)");
   });
 });

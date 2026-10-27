@@ -1,4 +1,5 @@
 import { captureChatSessionScrollPosition } from "../scroll.ts";
+import { revealComposerCaret } from "./composer-caret.ts";
 import { publishTranscriptScroll } from "./chat-transcript-scroll-events.ts";
 
 const COMPOSER_CHROME_INTERACTIVE_SELECTOR = [
@@ -381,15 +382,20 @@ export function observeTextareaOverflow(el: HTMLTextAreaElement) {
       invalidateNativeTextareaLayout(el, state);
     }
     updateTextareaOverflow(el);
+    if (event.type === "input" || event.type === "keyup" || event.type === "compositionend") {
+      revealComposerCaret(el);
+    }
   };
   const eventOptions = { passive: true, signal: state.events.signal };
   for (const type of [
     "beforeinput",
     "input",
     "compositionstart",
+    "compositionend",
     "wheel",
     "pointerdown",
     "keydown",
+    "keyup",
     "blur",
   ]) {
     el.addEventListener(type, onInteraction, eventOptions);
