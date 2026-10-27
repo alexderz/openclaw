@@ -215,6 +215,51 @@ async function prepareCliHistoryBoundaryOnce(
   return writer;
 }
 
+// Native reuse epochs intentionally tolerate identity-less OAuth and stable
+// SecretRefs. History cannot: use the resolved static credential or a named
+// OAuth account, never a profile name, reference, or opaque CLI login alone.
+function resolveCliHistoryOwner(
+  credential: AuthProfileCredential | undefined,
+): unknown[] | undefined {
+  return credential?.type === "oauth"
+    ? credential.accountId?.trim() || credential.email?.trim()
+      ? [
+          "oauth",
+          credential.provider,
+          credential.accountId,
+          credential.email,
+          credential.clientId,
+          credential.enterpriseUrl,
+          credential.projectId,
+        ]
+      : undefined
+    : credential?.type === "api_key" && credential.key?.trim()
+      ? ["api_key", credential.provider, credential.key]
+      : credential?.type === "token" && credential.token?.trim()
+        ? ["token", credential.provider, credential.token]
+        : undefined;
+}
+
+/**
+ * A subscription CLI login has no resolvable account, so no history writer can
+ * ever be issued for it and its transcript was never owned by another account.
+ * Reseeding is safe only while the session has never carried a history boundary:
+ * any stored boundary (known or unknown) may record an account switch and keeps
+ * the refusal. A credential that resolves to an owner but failed the writer
+ * checks (moved tip, imported rows) also stays refused.
+ */
+export function canReseedCliHistoryWithoutOwner(
+  params: PreparedCliRunContext["params"],
+  identity: { credential?: AuthProfileCredential },
+): boolean {
+  const target = params.sessionTarget;
+  if (resolveCliHistoryOwner(identity.credential) || !target) {
+    return false;
+  }
+  const current: InternalSessionEntry | undefined = loadSessionEntryReadOnly(target);
+  return current?.sessionId === target.sessionId && current.cliHistoryBoundary === undefined;
+}
+
 async function planCliHistoryBoundary(
   params: PreparedCliRunContext["params"],
   identity: { credential?: AuthProfileCredential },
@@ -244,27 +289,7 @@ async function planCliHistoryBoundary(
   const currentUserIsLast = !admission || watermark.maxSeq === admission.rawSeq;
   const stored = snapshot.cliHistoryBoundary;
   const credential = identity.credential;
-  // Native reuse epochs intentionally tolerate identity-less OAuth and stable
-  // SecretRefs. History cannot: use the resolved static credential or a named
-  // OAuth account, never a profile name, reference, or opaque CLI login alone.
-  const owner =
-    credential?.type === "oauth"
-      ? credential.accountId?.trim() || credential.email?.trim()
-        ? [
-            "oauth",
-            credential.provider,
-            credential.accountId,
-            credential.email,
-            credential.clientId,
-            credential.enterpriseUrl,
-            credential.projectId,
-          ]
-        : undefined
-      : credential?.type === "api_key" && credential.key?.trim()
-        ? ["api_key", credential.provider, credential.key]
-        : credential?.type === "token" && credential.token?.trim()
-          ? ["token", credential.provider, credential.token]
-          : undefined;
+  const owner = resolveCliHistoryOwner(credential);
   const fingerprint = owner
     ? sha256Hex(JSON.stringify(["cli-history-v1", normalizeProviderId(params.provider), owner]))
     : undefined;
