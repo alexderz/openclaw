@@ -151,6 +151,77 @@ describe("rendered chat order (DER-615)", () => {
       "second answer",
     ]);
   });
+
+  const interruptedNotice =
+    "Interrupted before the agent started it. It will not run automatically; copy it and send again.";
+
+  function stoppedInput(text: string, acceptedAt: number, state: "interrupted" | "cancelled") {
+    return {
+      id: text,
+      runId: `run-${text}`,
+      acceptedAt,
+      state,
+      message: {
+        role: "user",
+        content: text,
+        timestamp: acceptedAt,
+        __openclaw: { id: `pending:${text}` },
+      },
+    };
+  }
+
+  it("places a stopped input that arrives after the transcript by its accepted time", () => {
+    const older = message("older", "user", "yesterday", 1_000, 1);
+    const today = message("today", "assistant", "today", 100_000, 2);
+    buildItems({ messages: [older, today] });
+    expect(
+      screen(
+        buildItems({
+          messages: [older, today],
+          pendingInputs: [stoppedInput("dropped earlier", 500, "cancelled")],
+        }),
+      ),
+    ).toEqual([
+      "dropped earlier",
+      "Cancelled before the agent started it. It will not run automatically; copy it and send again.",
+      "yesterday",
+      "today",
+    ]);
+    // Server order wins over reversed accepted times, and the block stays
+    // where the projection put it, not under today's reply.
+    expect(
+      screen(
+        buildItems({
+          messages: [older, today],
+          pendingInputs: [
+            stoppedInput("keep going", 30_000, "interrupted"),
+            stoppedInput("sent first", 20_000, "interrupted"),
+          ],
+        }),
+      ),
+    ).toEqual([
+      "yesterday",
+      "keep going",
+      interruptedNotice,
+      "sent first",
+      interruptedNotice,
+      "today",
+    ]);
+  });
+
+  it("keeps a stopped input that follows every shown row at the bottom", () => {
+    const older = message("older", "user", "yesterday", 1_000, 1);
+    const today = message("today", "assistant", "today", 100_000, 2);
+    buildItems({ messages: [older, today] });
+    expect(
+      screen(
+        buildItems({
+          messages: [older, today],
+          pendingInputs: [stoppedInput("just now", 200_000, "interrupted")],
+        }),
+      ),
+    ).toEqual(["yesterday", "today", "just now", interruptedNotice]);
+  });
 });
 
 function row(
@@ -505,5 +576,48 @@ describe("holdChatDisplayOrder with stored rows (DER-623)", () => {
       "n1",
       "n2",
     ]);
+  });
+
+  it("keeps a settled input that the projection placed before a shown row there", () => {
+    const state = createChatDisplayOrderState();
+    const older = storedRow("older", "user", "older", 1);
+    const today = storedRow("today", "assistant", "today", 2);
+    holdChatDisplayOrder([older, today], state);
+    const input = row("send:stale", "user", "keep going");
+    const notice: ChatItem = {
+      kind: "notice",
+      key: "pending-input:stale:state",
+      text: "interrupted",
+      timestamp: 1_500,
+    };
+    const settled = new Set([input.key, notice.key]);
+    expect(
+      keys(
+        holdChatDisplayOrder([older, input, notice, today], state, {
+          settledInputKeys: settled,
+        }),
+      ),
+    ).toEqual(["older", "send:stale", "pending-input:stale:state", "today"]);
+  });
+
+  it("still appends a settled input that follows every shown row", () => {
+    const state = createChatDisplayOrderState();
+    const older = storedRow("older", "user", "older", 1);
+    const today = storedRow("today", "assistant", "today", 2);
+    holdChatDisplayOrder([older, today], state);
+    const input = row("send:fresh", "user", "just now");
+    const notice: ChatItem = {
+      kind: "notice",
+      key: "pending-input:fresh:state",
+      text: "interrupted",
+      timestamp: 9_000,
+    };
+    expect(
+      keys(
+        holdChatDisplayOrder([older, today, input, notice], state, {
+          settledInputKeys: new Set([input.key, notice.key]),
+        }),
+      ),
+    ).toEqual(["older", "today", "send:fresh", "pending-input:fresh:state"]);
   });
 });
