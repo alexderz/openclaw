@@ -39,7 +39,9 @@ function ensureGcObserver(): void {
       }
     });
     gcObserver.observe({ entryTypes: ["gc"] });
-    gcObserver.unref?.();
+    // Node 24's PerformanceObserver type and runtime have no unref. Keep the
+    // optional call, with the observer as receiver, for a runtime that adds it.
+    (gcObserver as PerformanceObserver & { unref?: () => void }).unref?.();
   } catch {
     // Diagnostics are optional; a runtime without GC entries reports none.
     gcObserver = undefined;
