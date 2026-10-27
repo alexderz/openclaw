@@ -1,5 +1,10 @@
 import { captureChatSessionScrollPosition } from "../scroll.ts";
-import { revealComposerCaret } from "./composer-caret.ts";
+import {
+  captureComposerScrollHold,
+  installComposerCaretViewport,
+  restoreComposerScrollHold,
+  revealComposerCaret,
+} from "./composer-caret.ts";
 import { publishTranscriptScroll } from "./chat-transcript-scroll-events.ts";
 
 const COMPOSER_CHROME_INTERACTIVE_SELECTOR = [
@@ -381,9 +386,23 @@ export function observeTextareaOverflow(el: HTMLTextAreaElement) {
       // scrolling can move an ancestor. This signal performs no layout reads.
       invalidateNativeTextareaLayout(el, state);
     }
+    if (
+      event.type === "pointerdown" ||
+      event.type === "beforeinput" ||
+      event.type === "keydown"
+    ) {
+      captureComposerScrollHold(el);
+    }
     updateTextareaOverflow(el);
-    if (event.type === "input" || event.type === "keyup" || event.type === "compositionend") {
+    if (
+      event.type === "input" ||
+      event.type === "keyup" ||
+      event.type === "focus" ||
+      event.type === "compositionupdate" ||
+      event.type === "compositionend"
+    ) {
       revealComposerCaret(el);
+      restoreComposerScrollHold(el);
     }
   };
   const eventOptions = { passive: true, signal: state.events.signal };
@@ -391,15 +410,28 @@ export function observeTextareaOverflow(el: HTMLTextAreaElement) {
     "beforeinput",
     "input",
     "compositionstart",
+    "compositionupdate",
     "compositionend",
     "wheel",
     "pointerdown",
     "keydown",
     "keyup",
+    "focus",
     "blur",
   ]) {
     el.addEventListener(type, onInteraction, eventOptions);
   }
+  document.addEventListener(
+    "selectionchange",
+    () => {
+      if (document.activeElement === el) {
+        revealComposerCaret(el);
+        restoreComposerScrollHold(el);
+      }
+    },
+    eventOptions,
+  );
+  installComposerCaretViewport(el, state.events.signal);
   el.addEventListener("scroll", onScroll, eventOptions);
   composerTextareaResizeObservers.set(el, state);
   state.observer?.observe(el);
