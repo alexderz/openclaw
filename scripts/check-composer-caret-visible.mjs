@@ -151,14 +151,47 @@ Caret.revealComposerCaret(ta);
 Caret.restoreComposerScrollHold(ta);
 check("restore-hold-from-before", thread.scrollTop === 40, {});
 
-const viewport = new AbortController();
-ta.scrollTop = 0;
-ta.setSelectionRange(value.length, value.length, "forward");
+Caret.revealComposerCaretForEdit(ta);
+const pinned = ta.scrollTop;
 ta.focus();
+const viewport = new AbortController();
 Caret.installComposerCaretViewport(ta, viewport.signal);
+ta.scrollTop = 0;
+Caret.noteComposerDraftReading(ta);
+Caret.rememberComposerCaret(ta);
+const heldScroll = ta.scrollTop;
+document.dispatchEvent(new Event("selectionchange"));
+Caret.revealComposerCaretForCaretMove(ta);
+const afterSelection = ta.scrollTop;
+window.visualViewport.dispatchEvent(new Event("scroll"));
+const afterViewportScroll = ta.scrollTop;
+window.visualViewport.dispatchEvent(new Event("resize"));
+const afterReadingResize = ta.scrollTop;
+check(
+  "manual-scroll-stays",
+  heldScroll === 0 && afterSelection === 0 && afterViewportScroll === 0 && afterReadingResize === 0 && pinned > 20,
+  {
+    pinned,
+    afterSelection,
+    afterViewportScroll,
+    afterReadingResize,
+    viewportOffsetTop: window.visualViewport.offsetTop,
+    nonzeroViewportOffset: window.visualViewport.offsetTop === 0 ? "not simulated; headless offset stays 0" : "simulated",
+  },
+);
+ta.setSelectionRange(0, 0, "none");
+Caret.revealComposerCaretForCaretMove(ta);
+check("caret-move-after-manual-scroll", ta.scrollTop < 5 && inside(0), { scrollTop: ta.scrollTop });
+ta.setSelectionRange(value.length, value.length, "forward");
+Caret.revealComposerCaretForEdit(ta);
+check("typing-after-manual-scroll", ta.scrollTop > 20 && inside(value.length), { scrollTop: ta.scrollTop });
+viewport.abort();
+const cleanup = new AbortController();
+ta.scrollTop = 0;
+Caret.installComposerCaretViewport(ta, cleanup.signal);
 window.visualViewport.dispatchEvent(new Event("resize"));
 const afterResize = ta.scrollTop;
-viewport.abort();
+cleanup.abort();
 ta.scrollTop = 0;
 window.visualViewport.dispatchEvent(new Event("resize"));
 check("viewport-resize-cleans-up", afterResize > 20 && ta.scrollTop === 0, { afterResize, afterAbort: ta.scrollTop });

@@ -2,8 +2,9 @@ import { captureChatSessionScrollPosition } from "../scroll.ts";
 import {
   captureComposerScrollHold,
   installComposerCaretViewport,
-  restoreComposerScrollHold,
-  revealComposerCaret,
+  noteComposerDraftReading,
+  revealComposerCaretForCaretMove,
+  revealComposerCaretForEdit,
 } from "./composer-caret.ts";
 import { publishTranscriptScroll } from "./chat-transcript-scroll-events.ts";
 
@@ -346,7 +347,10 @@ export function observeTextareaOverflow(el: HTMLTextAreaElement) {
     events: new AbortController(),
   };
   let width = el.getBoundingClientRect().width;
-  const onScroll = () => updateTextareaOverflow(el, false);
+  const onScroll = () => {
+    noteComposerDraftReading(el);
+    updateTextareaOverflow(el, false);
+  };
   state.observer =
     typeof ResizeObserver === "function"
       ? new ResizeObserver(() => {
@@ -401,8 +405,7 @@ export function observeTextareaOverflow(el: HTMLTextAreaElement) {
       event.type === "compositionupdate" ||
       event.type === "compositionend"
     ) {
-      revealComposerCaret(el);
-      restoreComposerScrollHold(el);
+      revealComposerCaretForEdit(el);
     }
   };
   const eventOptions = { passive: true, signal: state.events.signal };
@@ -424,10 +427,7 @@ export function observeTextareaOverflow(el: HTMLTextAreaElement) {
   document.addEventListener(
     "selectionchange",
     () => {
-      if (document.activeElement === el) {
-        revealComposerCaret(el);
-        restoreComposerScrollHold(el);
-      }
+      revealComposerCaretForCaretMove(el);
     },
     eventOptions,
   );
