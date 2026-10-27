@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { activeCaretOffset, scrollTopForCaretLine } from "./composer-caret.ts";
+import {
+  activeCaretOffset,
+  scrollTopForCaretLine,
+  shouldFollowCaret,
+  shouldRevealOnViewportResize,
+  viewportPanDelta,
+} from "./composer-caret.ts";
 
 describe("activeCaretOffset", () => {
   it("uses the active end and does not imply the selection should be rewritten", () => {
@@ -15,6 +21,26 @@ describe("activeCaretOffset", () => {
     expect(activeCaretOffset({ start: null, end: null, direction: null, valueLength: 8 })).toBe(
       8,
     );
+  });
+});
+
+describe("passive caret events", () => {
+  it("does not follow an unchanged selection or a reading viewport resize", () => {
+    expect(shouldFollowCaret(20, 20)).toBe(false);
+    expect(shouldFollowCaret(20, 21)).toBe(true);
+    expect(shouldFollowCaret(null, 20)).toBe(true);
+    expect(shouldRevealOnViewportResize(true, false)).toBe(false);
+    expect(shouldRevealOnViewportResize(false, false)).toBe(true);
+    expect(shouldRevealOnViewportResize(true, true)).toBe(true);
+  });
+
+  it("restores a captured nonzero visual-viewport offset instead of forcing 0", () => {
+    expect(
+      viewportPanDelta({ offsetTop: 30, offsetLeft: 4 }, { offsetTop: 12, offsetLeft: 4 }),
+    ).toEqual({ dx: 0, dy: 18 });
+    expect(
+      viewportPanDelta({ offsetTop: 12, offsetLeft: 4 }, { offsetTop: 12, offsetLeft: 4 }),
+    ).toEqual({ dx: 0, dy: 0 });
   });
 });
 

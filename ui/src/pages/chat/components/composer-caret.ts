@@ -16,6 +16,30 @@ export function activeCaretOffset(selection: {
   return end;
 }
 
+/** Passive events follow the caret only when its active offset changed. */
+export function shouldFollowCaret(previousOffset: number | null, nextOffset: number): boolean {
+  return previousOffset === null || previousOffset !== nextOffset;
+}
+
+/**
+ * A viewport resize may show the caret again while the user is typing.
+ * A draft they scrolled on purpose stays put until the caret moves.
+ */
+export function shouldRevealOnViewportResize(reading: boolean, caretMoved: boolean): boolean {
+  return caretMoved || !reading;
+}
+
+/** How far the visual viewport moved from a captured hold. Never assumes 0. */
+export function viewportPanDelta(
+  current: { offsetTop: number; offsetLeft: number },
+  hold: { offsetTop: number; offsetLeft: number },
+): { dx: number; dy: number } {
+  return {
+    dx: current.offsetLeft - hold.offsetLeft,
+    dy: current.offsetTop - hold.offsetTop,
+  };
+}
+
 export function scrollTopForCaretLine(state: {
   scrollTop: number;
   scrollHeight: number;
@@ -76,7 +100,49 @@ export function restoreComposerScrollHold(textarea: HTMLTextAreaElement): void {
   undoComposerViewportPan(hold.offsetTop, hold.offsetLeft);
 }
 
+type CaretWatch = {
+  offset: number | null;
+  reading: boolean;
+};
+
+const caretWatches = new WeakMap<HTMLTextAreaElement, CaretWatch>();
+
+export function readActiveCaretOffset(textarea: HTMLTextAreaElement): number {
+  return activeCaretOffset({
+    start: textarea.selectionStart,
+    end: textarea.selectionEnd,
+    direction: textarea.selectionDirection,
+    valueLength: textarea.value.length,
+  });
+}
+
+function watchFor(textarea: HTMLTextAreaElement): CaretWatch {
+  const existing = caretWatches.get(textarea);
+  if (existing) {
+    return existing;
+  }
+  const created: CaretWatch = { offset: null, reading: false };
+  caretWatches.set(textarea, created);
+  return created;
+}
+
+export function rememberComposerCaret(textarea: HTMLTextAreaElement): void {
+  const watch = watchFor(textarea);
+  watch.offset = readActiveCaretOffset(textarea);
+}
+
+/** A finger scroll of the draft, not a scroll we just applied to show the caret. */
+export function noteComposerDraftReading(textarea: HTMLTextAreaElement): void {
+  if (revealDepth > 0) {
+    return;
+  }
+  const watch = watchFor(textarea);
+  watch.reading = true;
+  watch.offset = readActiveCaretOffset(textarea);
+}
+
 let undoingPan = false;
+let revealDepth = 0;
 
 function undoComposerViewportPan(fromTop: number, fromLeft: number): void {
   const viewport = window.visualViewport;
@@ -84,14 +150,13 @@ function undoComposerViewportPan(fromTop: number, fromLeft: number): void {
   if (!viewport || !scroller || undoingPan) {
     return;
   }
-  const dy = viewport.offsetTop - fromTop;
-  const dx = viewport.offsetLeft - fromLeft;
-  if (dy === 0 && dx === 0) {
+  const delta = viewportPanDelta(viewport, { offsetTop: fromTop, offsetLeft: fromLeft });
+  if (delta.dx === 0 && delta.dy === 0) {
     return;
   }
   undoingPan = true;
   try {
-    scroller.scrollTo(scroller.scrollLeft - dx, scroller.scrollTop - dy);
+    scroller.scrollTo(scroller.scrollLeft - delta.dx, scroller.scrollTop - delta.dy);
   } finally {
     undoingPan = false;
   }
@@ -148,25 +213,72 @@ export function revealComposerCaret(textarea: HTMLTextAreaElement): void {
     caretBottom: bounds.bottom,
   });
   if (Math.abs(next - textarea.scrollTop) > 1) {
-    textarea.scrollTop = next;
+    revealDepth += 1;
+    try {
+      textarea.scrollTop = next;
+    } finally {
+      revealDepth -= 1;
+    }
   }
+}
+
+/** Typing, navigation, focus, and composition. These may scroll even if the index matches. */
+export function revealComposerCaretForEdit(textarea: HTMLTextAreaElement): void {
+  revealComposerCaret(textarea);
+  const watch = watchFor(textarea);
+  watch.offset = readActiveCaretOffset(textarea);
+  watch.reading = false;
+  restoreComposerScrollHold(textarea);
+}
+
+/** selectionchange: follow only when the active caret index moved. */
+export function revealComposerCaretForCaretMove(textarea: HTMLTextAreaElement): boolean {
+  if (document.activeElement !== textarea) {
+    return false;
+  }
+  const watch = watchFor(textarea);
+  const next = readActiveCaretOffset(textarea);
+  if (!shouldFollowCaret(watch.offset, next)) {
+    return false;
+  }
+  watch.reading = false;
+  watch.offset = next;
+  revealComposerCaret(textarea);
+  restoreComposerScrollHold(textarea);
+  return true;
 }
 
 export function installComposerCaretViewport(
   textarea: HTMLTextAreaElement,
   signal: AbortSignal,
 ): void {
+  rememberComposerCaret(textarea);
   const viewport = window.visualViewport;
   if (!viewport) {
     return;
   }
-  const onViewport = () => {
+  const onScroll = () => {
     if (signal.aborted || undoingPan || document.activeElement !== textarea) {
       return;
     }
-    revealComposerCaret(textarea);
-    undoComposerViewportPan(0, 0);
+    // A viewport pan is not a caret move. Do not pull the draft back, and do
+    // not cancel the pan here: connectShellViewport already accounts for a
+    // nonzero offsetTop. Typing restores the captured hold instead.
+    revealComposerCaretForCaretMove(textarea);
   };
-  viewport.addEventListener("resize", onViewport, { signal });
-  viewport.addEventListener("scroll", onViewport, { signal });
+  const onResize = () => {
+    if (signal.aborted || undoingPan || document.activeElement !== textarea) {
+      return;
+    }
+    const watch = watchFor(textarea);
+    const moved = shouldFollowCaret(watch.offset, readActiveCaretOffset(textarea));
+    if (!shouldRevealOnViewportResize(watch.reading, moved)) {
+      return;
+    }
+    revealComposerCaret(textarea);
+    watch.offset = readActiveCaretOffset(textarea);
+    watch.reading = false;
+  };
+  viewport.addEventListener("resize", onResize, { signal });
+  viewport.addEventListener("scroll", onScroll, { signal });
 }
