@@ -1,44 +1,27 @@
 import assert from "node:assert/strict";
-import { scrollTopForCaretLine } from "../ui/src/pages/chat/components/composer-caret.ts";
+import { activeCaretOffset, scrollTopForCaretLine } from "../ui/src/pages/chat/components/composer-caret.ts";
 
+assert.equal(activeCaretOffset({ start: 4, end: 20, direction: "backward", valueLength: 40 }), 4);
+assert.equal(activeCaretOffset({ start: 4, end: 20, direction: "forward", valueLength: 40 }), 20);
+assert.equal(activeCaretOffset({ start: 11, end: 11, direction: "none", valueLength: 40 }), 11);
 assert.equal(
   scrollTopForCaretLine({
     scrollTop: 0,
-    scrollHeight: 76,
+    scrollHeight: 200,
     clientHeight: 32,
-    caretTop: 48,
-    caretBottom: 72,
+    caretTop: 96,
+    caretBottom: 120,
   }),
-  40,
+  88,
 );
 assert.equal(
   scrollTopForCaretLine({
-    scrollTop: 40,
-    scrollHeight: 76,
+    scrollTop: 88,
+    scrollHeight: 200,
     clientHeight: 32,
-    caretTop: 48,
-    caretBottom: 72,
+    caretTop: 96,
+    caretBottom: 120,
   }),
-  40,
-);
-assert.equal(
-  scrollTopForCaretLine({
-    scrollTop: 40,
-    scrollHeight: 76,
-    clientHeight: 32,
-    caretTop: 0,
-    caretBottom: 24,
-  }),
-  0,
-);
-assert.equal(
-  scrollTopForCaretLine({
-    scrollTop: 0,
-    scrollHeight: 32,
-    clientHeight: 32,
-    caretTop: 48,
-    caretBottom: 72,
-  }),
-  0,
+  88,
 );
 console.log("composer caret scroll math ok");

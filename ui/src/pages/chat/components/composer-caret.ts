@@ -1,8 +1,20 @@
-// Keep the active line inside the composer textarea. Keyboard-sized panes clip
-// a content-sized box below the conversation, and assigning scrollTop on that
-// box does not move the line back onto the screen. Callers size the textarea
-// as the scrollport; this only moves its scroll offset and puts the transcript
-// back if the browser followed the caret into the thread.
+// Keep the active composer caret inside the textarea. The transcript and the
+// layout viewport are not scrolled to do it. Callers that observed a browser
+// pan capture a hold before the pan and restore that hold afterwards.
+
+export function activeCaretOffset(selection: {
+  start: number | null;
+  end: number | null;
+  direction: string | null;
+  valueLength: number;
+}): number {
+  const start = selection.start ?? 0;
+  const end = selection.end ?? selection.valueLength;
+  if (selection.direction === "backward") {
+    return start;
+  }
+  return end;
+}
 
 export function scrollTopForCaretLine(state: {
   scrollTop: number;
@@ -21,44 +33,113 @@ export function scrollTopForCaretLine(state: {
   return Math.max(0, Math.min(maxScroll, Math.ceil(next)));
 }
 
+type ScrollHold = {
+  windowX: number;
+  windowY: number;
+  threadTop: number | null;
+  offsetTop: number;
+  offsetLeft: number;
+};
+
+const scrollHolds = new WeakMap<HTMLTextAreaElement, ScrollHold>();
+
+function composerThread(textarea: HTMLTextAreaElement): HTMLElement | null {
+  const scope = textarea.closest(".chat, .chat-main__conversation");
+  return scope?.querySelector<HTMLElement>(".chat-thread") ?? null;
+}
+
+export function captureComposerScrollHold(textarea: HTMLTextAreaElement): void {
+  const viewport = window.visualViewport;
+  const thread = composerThread(textarea);
+  scrollHolds.set(textarea, {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    threadTop: thread?.scrollTop ?? null,
+    offsetTop: viewport?.offsetTop ?? 0,
+    offsetLeft: viewport?.offsetLeft ?? 0,
+  });
+}
+
+export function restoreComposerScrollHold(textarea: HTMLTextAreaElement): void {
+  const hold = scrollHolds.get(textarea);
+  if (!hold) {
+    return;
+  }
+  scrollHolds.delete(textarea);
+  const thread = composerThread(textarea);
+  if (thread && hold.threadTop !== null && thread.scrollTop !== hold.threadTop) {
+    thread.scrollTop = hold.threadTop;
+  }
+  if (window.scrollX !== hold.windowX || window.scrollY !== hold.windowY) {
+    window.scrollTo(hold.windowX, hold.windowY);
+  }
+  undoComposerViewportPan(hold.offsetTop, hold.offsetLeft);
+}
+
+let undoingPan = false;
+
+function undoComposerViewportPan(fromTop: number, fromLeft: number): void {
+  const viewport = window.visualViewport;
+  const scroller = document.scrollingElement;
+  if (!viewport || !scroller || undoingPan) {
+    return;
+  }
+  const dy = viewport.offsetTop - fromTop;
+  const dx = viewport.offsetLeft - fromLeft;
+  if (dy === 0 && dx === 0) {
+    return;
+  }
+  undoingPan = true;
+  try {
+    scroller.scrollTo(scroller.scrollLeft - dx, scroller.scrollTop - dy);
+  } finally {
+    undoingPan = false;
+  }
+}
+
 function caretContentBounds(textarea: HTMLTextAreaElement): { top: number; bottom: number } | null {
   if (textarea.clientWidth <= 0) {
     return null;
   }
   const style = getComputedStyle(textarea);
-  const line = Number.parseFloat(style.lineHeight);
-  const lineHeight = Number.isFinite(line) && line > 0 ? line : 24;
+  const parsedLine = Number.parseFloat(style.lineHeight);
+  const lineHeight = Number.isFinite(parsedLine) && parsedLine > 0 ? parsedLine : 24;
   const mirror = document.createElement("div");
-  mirror.style.cssText = [
-    "position:absolute",
-    "left:-9999px",
-    "top:0",
-    "visibility:hidden",
-    "white-space:pre-wrap",
-    "overflow-wrap:break-word",
-    `width:${textarea.clientWidth}px`,
-    `font:${style.font}`,
-    `line-height:${style.lineHeight}`,
-    `padding:${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`,
-    "border:0",
-    `box-sizing:${style.boxSizing}`,
-  ].join(";");
-  const end = textarea.selectionEnd ?? textarea.value.length;
-  mirror.textContent = textarea.value.slice(0, end) || " ";
+  mirror.style.position = "absolute";
+  mirror.style.left = "-9999px";
+  mirror.style.top = "0";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = "break-word";
+  mirror.style.boxSizing = "border-box";
+  mirror.style.width = `${textarea.clientWidth}px`;
+  mirror.style.font = style.font;
+  mirror.style.lineHeight = style.lineHeight;
+  mirror.style.padding = `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`;
+  mirror.style.border = "0";
+  const offset = activeCaretOffset({
+    start: textarea.selectionStart,
+    end: textarea.selectionEnd,
+    direction: textarea.selectionDirection,
+    valueLength: textarea.value.length,
+  });
+  mirror.append(document.createTextNode(textarea.value.slice(0, offset)));
+  const marker = document.createElement("span");
+  marker.textContent = "\u200b";
+  mirror.append(marker);
   document.body.appendChild(mirror);
-  const bottom = mirror.scrollHeight - Number.parseFloat(style.paddingBottom);
+  const top = marker.offsetTop;
+  const height = marker.offsetHeight || lineHeight;
   mirror.remove();
-  return { top: bottom - lineHeight, bottom };
+  return { top, bottom: top + height };
 }
 
-/** Scroll the textarea, not the transcript, so the caret line is inside the box. */
+/** Scroll the textarea only. Does not move the transcript or the window. */
 export function revealComposerCaret(textarea: HTMLTextAreaElement): void {
   const bounds = caretContentBounds(textarea);
   if (!bounds) {
     return;
   }
-  const thread = textarea.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
-  const held = thread?.scrollTop;
   const next = scrollTopForCaretLine({
     scrollTop: textarea.scrollTop,
     scrollHeight: textarea.scrollHeight,
@@ -69,7 +150,23 @@ export function revealComposerCaret(textarea: HTMLTextAreaElement): void {
   if (Math.abs(next - textarea.scrollTop) > 1) {
     textarea.scrollTop = next;
   }
-  if (thread && held !== undefined && thread.scrollTop !== held) {
-    thread.scrollTop = held;
+}
+
+export function installComposerCaretViewport(
+  textarea: HTMLTextAreaElement,
+  signal: AbortSignal,
+): void {
+  const viewport = window.visualViewport;
+  if (!viewport) {
+    return;
   }
+  const onViewport = () => {
+    if (signal.aborted || undoingPan || document.activeElement !== textarea) {
+      return;
+    }
+    revealComposerCaret(textarea);
+    undoComposerViewportPan(0, 0);
+  };
+  viewport.addEventListener("resize", onViewport, { signal });
+  viewport.addEventListener("scroll", onViewport, { signal });
 }

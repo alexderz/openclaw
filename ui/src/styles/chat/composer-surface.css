@@ -1258,51 +1258,75 @@
   }
 }
 
-/* An attached image must not push the draft under the keyboard. A long
-   transcript must not crush the footer (min-height:0 on .chat-footer), or the
-   wrapped line paints below the pane. Keyboard-sized panes then take a definite
-   slice so the textarea can scroll inside it. A content-sized max-height leaves
-   scrollTop at 0 because the box itself is not the scrollport. The custom
-   property is the marker that survives minification. */
+/* Typing stays inside the composer on a keyboard-sized conversation, with or
+   without an attachment. min-height:0 on .chat-footer would let the transcript
+   crush the draft, and a content-sized textarea then paints the wrapped line
+   below the pane with scrollTop still 0. This slot keeps a transcript reserve
+   and makes the textarea the scrollport. The custom property survives
+   minification. A taller pane only refuses to crush an attached draft. */
 .chat-footer:has(.chat-attachments-preview) {
   flex-shrink: 0;
   min-height: min-content;
 }
 
 @container chat-conversation (height <= 520px) {
-  .chat-footer:has(.chat-attachments-preview) {
-    --openclaw-composer-attachment-visible: 1;
+  .chat-main__conversation > .chat-footer {
+    --openclaw-composer-caret-visible: 1;
     --chat-footer-max-height: calc(100cqh - clamp(56px, 28cqh, 120px));
 
     flex-shrink: 0;
     height: var(--chat-footer-max-height);
     min-height: 0;
-    justify-content: flex-end;
     overflow: hidden;
   }
 
-  .chat-footer:has(.chat-attachments-preview) .agent-chat__composer-shell {
+  .chat-main__conversation > .chat-footer .agent-chat__composer-shell {
     flex: 1 1 auto;
     height: 100%;
     min-height: 0;
     max-height: 100%;
     overflow: hidden;
-    justify-content: flex-end;
   }
 
-  .chat-footer:has(.chat-attachments-preview) .agent-chat__composer-shell > .agent-chat__input {
+  .chat-main__conversation > .chat-footer .agent-chat__composer-shell > .agent-chat__input {
     flex: 1 1 auto;
-    flex-shrink: 1;
     height: 100%;
     min-height: 0;
     max-height: 100%;
     overflow: hidden;
   }
 
-  .agent-chat__input:has(.chat-attachments-preview) {
+  .chat-main__conversation > .chat-footer .agent-chat__input .agent-chat__composer-input-row {
+    flex: 1 1 auto;
+    align-items: stretch;
     min-height: 0;
-    flex-shrink: 1;
+  }
+
+  .chat-main__conversation > .chat-footer .agent-chat__composer-combobox {
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
+  }
+
+  /* Beats the short-pane one-line lock and the installed six-line grow cap,
+     both of which can otherwise spend the whole pane on the footer. */
+  .chat-main__conversation > .chat-footer .agent-chat__composer-combobox > textarea {
+    height: 100% !important;
+    min-height: 0 !important;
+    max-height: 100% !important;
+    overflow-y: auto !important;
+    field-sizing: fixed !important;
+  }
+
+  .chat-main__conversation > .chat-footer .agent-chat__composer-footer {
+    flex: none;
+  }
+
+  .chat-footer:has(.chat-attachments-preview) {
+    --openclaw-composer-attachment-visible: 1;
+
+    justify-content: flex-end;
   }
 
   .agent-chat__input:has(.chat-attachments-preview) .chat-attachments-preview {
@@ -1313,33 +1337,5 @@
   .agent-chat__input:has(.chat-attachments-preview) .chat-attachment-thumb {
     width: 36px;
     height: 36px;
-  }
-
-  .agent-chat__input:has(.chat-attachments-preview) .agent-chat__composer-input-row {
-    flex: 1 1 auto;
-    align-items: stretch;
-    min-height: 0;
-  }
-
-  .agent-chat__input:has(.chat-attachments-preview) .agent-chat__composer-combobox {
-    flex: 1 1 auto;
-    height: 100%;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  /* 100% of the definite footer beats the short-pane and six-line caps, which
-     are also !important. field-sizing:fixed keeps the box from growing out of
-     that slot; the caret scroll owner moves the wrapped line into it. */
-  .agent-chat__input:has(.chat-attachments-preview) .agent-chat__composer-combobox > textarea {
-    height: 100% !important;
-    min-height: 0 !important;
-    max-height: 100% !important;
-    overflow-y: auto !important;
-    field-sizing: fixed !important;
-  }
-
-  .agent-chat__input:has(.chat-attachments-preview) .agent-chat__composer-footer {
-    flex: none;
   }
 }
