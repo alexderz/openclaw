@@ -507,7 +507,9 @@ describe("Claude native stdio boundary", () => {
       const input = notificationReplay
         ? "<task-notification><task-id>background-agent</task-id></task-notification>"
         : "steering input";
-      await injection!.queueMessage(input, withCurrent);
+      const hook = scenario.startsWith("steer-hook-");
+      const steering = { promptContext: { prependContext: "STEERING_PRIVATE_CONTEXT" } };
+      await injection!.queueMessage(input, withCurrent, hook ? steering : undefined);
       expect(withCurrent).toHaveBeenCalledOnce();
       const records = await running;
       const resultRecords = records.filter((record) => record.type === "result");
@@ -529,10 +531,12 @@ describe("Claude native stdio boundary", () => {
         expect(detail.finalBackgroundAnswer).toBe(true);
       }
       expect(detail.privateContext).toBe("current private context");
-      expect(detail.injectedContext).toEqual({});
-      expect(detail.injectedRerunContext).toEqual(
-        scenario.startsWith("steer-hook-") ? {} : undefined,
-      );
+      const additionalContext = steering.promptContext.prependContext;
+      const expected = hook
+        ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } }
+        : {};
+      expect(detail.injectedContext).toEqual(expected);
+      expect(detail.injectedRerunContext).toEqual(hook ? expected : undefined);
       expect(injection!.isAvailable()).toBe(false);
     },
   );

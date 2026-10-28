@@ -9,8 +9,12 @@ import type {
 } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { formatErrorMessage, toErrorObject } from "../../infra/errors.js";
+import { labelRuntimeContextText } from "../../llm/types.js";
 import type { CliBackendMessageInjection } from "../../plugins/cli-backend.types.js";
+import { isHostGeneratedInputProvenance } from "../../sessions/input-provenance.js";
+import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
+import { projectRuntimeContextFragments } from "../internal-runtime-context.js";
 import { cliBackendLog } from "./log.js";
 
 /** One host adapter owns final input admission and accepted transcript custody. */
@@ -31,27 +35,31 @@ export function createSteeredCliMessageInjection(params: {
       throw new Error("CLI plugin runtime does not accept input during its turn.");
     }
     return await queueSteeredCliUserTurn(
-      () =>
-        injection.queueMessage(text, async (submit) => {
-          let submitted = false;
-          try {
-            await runWithAgentToolSourceExecutionScope(params.assertCurrent, async () => {
-              await withMessageInjectionAdmission(prepareCurrent, () => {
-                // The same worker-backed admission owns source checks and native stdin.
-                assertInjectionCurrent();
-                params.assertCurrent();
-                submit();
-                submitted = true;
+      (message) =>
+        injection.queueMessage(
+          text,
+          async (submit) => {
+            let submitted = false;
+            try {
+              await runWithAgentToolSourceExecutionScope(params.assertCurrent, async () => {
+                await withMessageInjectionAdmission(prepareCurrent, () => {
+                  // The same worker-backed admission owns source checks and native stdin.
+                  assertInjectionCurrent();
+                  params.assertCurrent();
+                  submit();
+                  submitted = true;
+                });
               });
-            });
-          } catch (cause) {
-            // Outer source cleanup can fail after native owns input, just like admission cleanup.
-            if (submitted) {
-              throw new MessageInjectionAcceptedUnconfirmedError({ cause });
+            } catch (cause) {
+              // Outer source cleanup can fail after native owns input, just like admission cleanup.
+              if (submitted) {
+                throw new MessageInjectionAcceptedUnconfirmedError({ cause });
+              }
+              throw cause;
             }
-            throw cause;
-          }
-        }),
+          },
+          steeredInputOptions(message, options),
+        ),
       options,
       params.cwd,
     );
@@ -66,20 +74,45 @@ export function createSteeredCliMessageInjection(params: {
   };
 }
 
+/** Each steered input carries its own origin and private context, never the running turn's. */
+function steeredInputOptions(
+  message: PersistedUserTurnMessage | undefined,
+  options: ReplyBackendQueueMessageOptions | undefined,
+): Parameters<CliBackendMessageInjection["queueMessage"]>[2] {
+  const context = options?.currentInboundContext;
+  return {
+    ...(isHostGeneratedInputProvenance(message?.provenance)
+      ? { promptOrigin: "host" as const }
+      : {}),
+    ...(context
+      ? {
+          promptContext: {
+            prependContext: labelRuntimeContextText(
+              projectRuntimeContextFragments(
+                context.fragments ?? [{ kind: "conversation-data", text: context.text }],
+              ),
+            ),
+          },
+        }
+      : {}),
+  };
+}
+
 /** Native acceptance owns replay safety; transcript settlement releases input custody. */
 async function queueSteeredCliUserTurn(
-  inject: () => Promise<void>,
+  inject: (message: PersistedUserTurnMessage | undefined) => Promise<void>,
   options: ReplyBackendQueueMessageOptions | undefined,
   cwd: string,
 ): Promise<ReplyBackendQueueMessageResult | undefined> {
   let accepted = false;
   let failure: Error | undefined;
   let result: ReplyBackendQueueMessageResult | undefined;
+  const recorder = options?.userTurnTranscriptRecorder;
   try {
-    await inject();
+    // Resolve before the native write: a recorder failure must reject, not lose, the input.
+    await inject(await recorder?.resolveMessage());
     accepted = true;
     options?.onQueueAccepted?.(true);
-    const recorder = options?.userTurnTranscriptRecorder;
     if (recorder && !recorder.hasPersisted() && !recorder.isBlocked()) {
       const persisted = await recorder.persistApproved({ cwd });
       if (!persisted && !recorder.hasPersisted() && (await recorder.resolveMessage())) {
