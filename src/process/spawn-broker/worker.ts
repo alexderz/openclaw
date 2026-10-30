@@ -28,11 +28,21 @@ type Owned = {
   announced: boolean;
   events: BrokerResponse[];
   exited: boolean;
+  disconnected: boolean;
   resultSettled: boolean;
   openPipes: Set<number>;
 };
 type Admission = { type: "started"; entry: Owned } | { type: "failed"; execa: BrokerExecaProcess };
 const owned = new Map<number, Owned>();
+
+/** Read-only custody observation for source-worker integration tests. */
+export function snapshotWorkerCustodyForTest() {
+  return Array.from(owned, ([id, entry]) => ({
+    id, pid: entry.child.pid, announced: entry.announced, exited: entry.exited,
+    disconnected: entry.disconnected, resultSettled: entry.resultSettled,
+    openPipes: [...entry.openPipes],
+  }));
+}
 const receiver = createBrokerReceiver();
 let stopping = false;
 const starting = new Map<number, { canceled?: boolean; signal?: NodeJS.Signals | number }>();
@@ -59,7 +69,13 @@ function report(
 }
 
 function forget(id: number, entry: Owned): void {
-  if (entry.announced && entry.exited && entry.resultSettled && entry.openPipes.size === 0) {
+  if (
+    entry.announced &&
+    entry.exited &&
+    entry.disconnected &&
+    entry.resultSettled &&
+    entry.openPipes.size === 0
+  ) {
     owned.delete(id);
   }
 }
@@ -246,6 +262,7 @@ async function launch(
         announced: false,
         events: [],
         exited: false,
+        disconnected: !child.connected,
         resultSettled: !execa,
         openPipes: new Set(
           (execa?.stdio ?? child.stdio).flatMap((stream, fd) =>
@@ -276,12 +293,18 @@ async function launch(
       child.on("message", (payload: object) =>
         event({ type: "ipc", id: message.id, message: payload }),
       );
-      child.once("disconnect", () => event({ type: "disconnect", id: message.id }));
-      child.once("exit", (code, signal) => event({ type: "exit", id: message.id, code, signal }));
-      child.once("close", () => {
-        event({ type: "closed", id: message.id });
+      child.once("disconnect", () => {
+        event({ type: "disconnect", id: message.id });
+        current.disconnected = true;
+        forget(message.id, current);
+      });
+      child.once("exit", (code, signal) => {
+        event({ type: "exit", id: message.id, code, signal });
         current.exited = true;
         forget(message.id, current);
+      });
+      child.once("close", () => {
+        event({ type: "closed", id: message.id });
       });
       if (execa) {
         void execa.result
