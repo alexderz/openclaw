@@ -15,6 +15,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareCliSessionHistoryReader } from "./cli-session-history.js";
 import { withClaudeProjectsDir } from "./cli-session-history.test-support.js";
 import { readChatHistoryPageKernel } from "./server-methods/chat-history-page-kernel.js";
+import { readChatHistoryPage } from "./server-methods/chat-history-pages.js";
 import { prepareChatHistoryResponsePage } from "./server-methods/chat-history-response-page.js";
 import { createReadonlySessionHistoryReader } from "./session-history-readonly-reader.js";
 import { readChatHistoryMessageId } from "./session-history-tail.js";
@@ -576,6 +577,45 @@ it("resolves a retired display anchor only within its unchanged admitted sources
           } finally { foreignReader.dispose(); }
         });
       } finally { owner.close(); }
+    });
+  });
+});
+
+
+it("projects forwarded cron history through the real native reader worker", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    await withClaudeProjectsDir(async ({ sessionId: nativeId, filePath }) => {
+      const scope = { agentId: "main", sessionId: "cron-worker",
+        sessionKey: "agent:main:cron-worker", storePath: path.join(state.sessionsDir(), "sessions.json") };
+      const entry = { sessionId: scope.sessionId, updatedAt: 1,
+        cliSessionBindings: { "claude-cli": { sessionId: nativeId } } };
+      const provenance = { kind: "internal_system",
+        sourceSessionKey: "agent:main:cron:job-cli:run:cron-worker", sourceTool: "cron",
+        sourcePromptPrefix: "[cron:job-cli Harness]", jobId: "job-cli", runId: "cron-worker" };
+      await replaceSessionEntry(scope, entry);
+      await replaceTranscriptEvents(scope, [
+        { type: "session", version: 3, id: scope.sessionId },
+        { type: "message", id: "cron-local", parentId: null,
+          message: { role: "user", content: "[cron:job-cli Harness] Run the bounded task.",
+            timestamp: 1000, provenance } },
+      ]);
+      await waitForSessionTranscriptProjection(scope);
+      await fs.writeFile(filePath, JSON.stringify({ type: "assistant", uuid: "native-answer",
+        timestamp: new Date(2000).toISOString(),
+        message: { role: "assistant", content: "Native answer" } }) + "\n");
+      const page = await readChatHistoryPage({ entry, provider: "claude-cli",
+        sessionId: scope.sessionId, storePath: scope.storePath, sessionAgentId: scope.agentId,
+        canonicalKey: scope.sessionKey, max: 10, maxHistoryBytes: 64 * 1024,
+        effectiveMaxChars: 4096, offset: undefined, messageId: undefined });
+      expect(page.messages).toContainEqual(expect.objectContaining({
+        role: "assistant", content: "Run the bounded task.", provenance,
+        senderLabel: "Forwarded from Automation",
+        senderSession: expect.objectContaining({ sessionKey: provenance.sourceSessionKey, label: "Automation" }),
+        __openclaw: expect.objectContaining({ id: "cron-local", turnBoundary: true }),
+      }));
+      expect(page.messages).toContainEqual(expect.objectContaining({
+        content: "Native answer", __openclaw: expect.objectContaining({ cliSessionId: nativeId }),
+      }));
     });
   });
 });
