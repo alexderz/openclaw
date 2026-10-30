@@ -50,11 +50,12 @@ export const handleSubagentsCommand: CommandHandler = defineAuthorizedTextComman
       params.cfg,
     );
 
-    return await actionHandler({
-      params,
-      requesterKey,
-      readContext,
-      restTokens,
-    });
+    try {
+      for (let pending = readContext.prepareRead(); pending; pending = readContext.prepareRead())
+        await pending;
+      return await actionHandler({ params, requesterKey, readContext, restTokens });
+    } finally {
+      readContext.release();
+    }
   },
 );

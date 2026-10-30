@@ -6,7 +6,10 @@ import {
 } from "../../agents/subagents/completion/session-followup-completion.js";
 import type { FollowupRequest } from "../../agents/subagents/completion/session-followup-completion.types.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
-import { bindInProcessSubagentResume } from "../in-process-subagent-resume.js";
+import {
+  bindInProcessSubagentResume,
+  releaseParentSubagentResumeOnDispose,
+} from "../in-process-subagent-resume.js";
 import { prepareGatewaySubagentRun } from "./agent-run-subagent.js";
 import type { AgentTurnPrincipal } from "./types.js";
 
@@ -132,6 +135,22 @@ describe("Gateway native subagent admission", () => {
 
   it("preserves an explicit parent resume without creating a sibling owner", async () => {
     const client = pluginClient();
+    let released = false;
+    const assertChildRootCurrent = vi.fn(() => {
+      if (released) {
+        throw new Error("child root proof released");
+      }
+      return {
+        proved: true as const,
+        missing: false as const,
+        promotedFrom: undefined,
+        sessionId: "child-session",
+        lifecycleRevision: null,
+      };
+    });
+    const releaseChildRootProof = vi.fn(() => {
+      released = true;
+    });
     const resume = {
       caller: { agentId: "main", sessionKey: "agent:main:main" },
       childSessionKey,
@@ -140,16 +159,32 @@ describe("Gateway native subagent admission", () => {
       taskRunId: "canonical-run",
       generation: 1,
       createdAt: 1,
+      assertChildRootCurrent,
+      releaseChildRootProof,
     };
     client.internal = bindInProcessSubagentResume({}, resume);
     const adoptParentResume = vi.fn(async () => "previous-run");
-    mocks.prepareParentSubagentResume.mockResolvedValue(adoptParentResume);
+    mocks.prepareParentSubagentResume.mockImplementation(async ({ resume: admitted }) => {
+      expect(admitted).toBe(resume);
+      expect(admitted.assertChildRootCurrent()).toMatchObject({
+        proved: true,
+        missing: false,
+        sessionId: resume.childSessionId,
+      });
+      return adoptParentResume;
+    });
     await expect(prepareGatewaySubagentRun(parameters({ client }))).resolves.toEqual({
       pluginSubagent: false,
       reactivateSubagent: false,
       adoptParentResume,
     });
     expect(adoptParentResume).not.toHaveBeenCalled();
+    expect(mocks.prepareParentSubagentResume).toHaveBeenCalledOnce();
+    expect(assertChildRootCurrent).toHaveBeenCalledOnce();
+    expect(releaseChildRootProof).not.toHaveBeenCalled();
+    releaseParentSubagentResumeOnDispose(resume)[Symbol.dispose]();
+    expect(releaseChildRootProof).toHaveBeenCalledOnce();
+    expect(() => assertChildRootCurrent()).toThrow("child root proof released");
     expect(mocks.registerSubagentRun).not.toHaveBeenCalled();
   });
 

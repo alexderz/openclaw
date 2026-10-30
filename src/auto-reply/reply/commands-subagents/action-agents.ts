@@ -24,7 +24,7 @@ export async function handleSubagentsAgentsAction(
   const channel = resolveCommandSurfaceChannel(params);
   const accountId = resolveChannelAccountId(params);
   const currentConversationBindingsSupported = supportsConversationBindings(channel);
-  const { latest, active, recent } = readContext.list.view;
+  const { latest } = readContext.candidateContext.list.view;
   const bindingsBySession = await listSessionBindingsBySessionsAsync([
     requesterKey,
     ...latest.map((entry) => entry.childSessionKey),
@@ -38,43 +38,48 @@ export async function handleSubagentsAgentsAction(
         entry.conversation.accountId === accountId,
     );
 
-  const indexByChildSessionKey = new Map(
-    [...active, ...recent].map((entry, idx) => [entry.childSessionKey, idx + 1] as const),
-  );
-  const activeRuns = new Set(active);
-  const visibleRuns = latest.filter(
-    (entry) => activeRuns.has(entry) || resolveSessionBindings(entry.childSessionKey).length > 0,
-  );
+  for (let pending = readContext.prepareRead(); pending; pending = readContext.prepareRead())
+    await pending;
+  return readContext.commitSync((current) => {
+    const { latest, active, recent } = current.list.view;
+    const indexByChildSessionKey = new Map(
+      [...active, ...recent].map((entry, idx) => [entry.childSessionKey, idx + 1] as const),
+    );
+    const activeRuns = new Set(active);
+    const visibleRuns = latest.filter(
+      (entry) => activeRuns.has(entry) || resolveSessionBindings(entry.childSessionKey).length > 0,
+    );
 
-  const lines = ["agents:", "-----"];
-  if (visibleRuns.length === 0) {
-    lines.push("(none)");
-  } else {
-    for (const entry of visibleRuns) {
-      const binding = resolveSessionBindings(entry.childSessionKey)[0];
-      const bindingText = binding
-        ? `binding:${binding.conversation.conversationId}`
-        : currentConversationBindingsSupported
-          ? "unbound"
-          : "bindings unavailable";
-      const resolvedIndex = indexByChildSessionKey.get(entry.childSessionKey);
-      const prefix = resolvedIndex ? `${resolvedIndex}.` : "-";
-      lines.push(`${prefix} ${formatRunLabel(entry)} (${bindingText})`);
+    const lines = ["agents:", "-----"];
+    if (visibleRuns.length === 0) {
+      lines.push("(none)");
+    } else {
+      for (const entry of visibleRuns) {
+        const binding = resolveSessionBindings(entry.childSessionKey)[0];
+        const bindingText = binding
+          ? `binding:${binding.conversation.conversationId}`
+          : currentConversationBindingsSupported
+            ? "unbound"
+            : "bindings unavailable";
+        const resolvedIndex = indexByChildSessionKey.get(entry.childSessionKey);
+        const prefix = resolvedIndex ? `${resolvedIndex}.` : "-";
+        lines.push(`${prefix} ${formatRunLabel(entry)} (${bindingText})`);
+      }
     }
-  }
 
-  const requesterBindings = resolveSessionBindings(requesterKey).filter(
-    (entry) => entry.targetKind === "session",
-  );
-  if (requesterBindings.length > 0) {
-    lines.push("", "acp/session bindings:", "-----");
-    for (const binding of requesterBindings) {
-      const label = normalizeOptionalString(binding.metadata?.label) ?? binding.targetSessionKey;
-      lines.push(
-        `- ${label} (binding:${binding.conversation.conversationId}, session:${binding.targetSessionKey})`,
-      );
+    const requesterBindings = resolveSessionBindings(requesterKey).filter(
+      (entry) => entry.targetKind === "session",
+    );
+    if (requesterBindings.length > 0) {
+      lines.push("", "acp/session bindings:", "-----");
+      for (const binding of requesterBindings) {
+        const label = normalizeOptionalString(binding.metadata?.label) ?? binding.targetSessionKey;
+        lines.push(
+          `- ${label} (binding:${binding.conversation.conversationId}, session:${binding.targetSessionKey})`,
+        );
+      }
     }
-  }
 
-  return commandReply(lines.join("\n"));
+    return commandReply(lines.join("\n"));
+  });
 }

@@ -1,3 +1,4 @@
+import type { ChildRootAuthorization } from "../agents/subagents/registry/subagent-control-root-authority.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { TrustedAgentToolCaller } from "./server-methods/types.js";
 
@@ -10,7 +11,21 @@ export type TrustedSubagentResume = Readonly<{
   taskRunId: string;
   generation: number | undefined;
   createdAt: number;
+  /** Sync revalidation of the child root retained at bind. Not a cached DTO. */
+  assertChildRootCurrent: () => ChildRootAuthorization;
+  releaseChildRootProof: () => void;
 }>;
+
+/** Releases the child-root proof when the admission function returns, including early exits. */
+export function releaseParentSubagentResumeOnDispose(
+  resume: TrustedSubagentResume | undefined,
+): Disposable {
+  return {
+    [Symbol.dispose]() {
+      resume?.releaseChildRootProof();
+    },
+  };
+}
 
 // Published host runtime and source tools must redeem the same process-owned binding.
 const resumes = resolveGlobalSingleton<WeakMap<object, TrustedSubagentResume>>(

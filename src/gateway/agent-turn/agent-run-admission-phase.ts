@@ -38,7 +38,10 @@ import {
   registerChatAbortController,
   resolveAgentRunExpiresAtMs,
 } from "../chat-abort.js";
-import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
+import {
+  readInProcessSubagentResume,
+  releaseParentSubagentResumeOnDispose,
+} from "../in-process-subagent-resume.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { resolveGatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { assertParentSubagentResumeSuccessorCurrent } from "../session-subagent-resume.js";
@@ -88,6 +91,7 @@ export async function prepareAgentRunDispatch(
   const coordination = isSubagentCoordinationInputProvenance(params.inputProvenance);
   const controlUiVisible = !params.suppressVisibleSessionEffects && !coordination;
   const parentResume = readInProcessSubagentResume(params.client?.internal);
+  using _releaseChildRootProof = releaseParentSubagentResumeOnDispose(parentResume);
   const preRegistrationAbort = readGatewayDedupeEntry({
     dedupe: params.context.dedupe,
     keys: params.agentDedupeKeys,

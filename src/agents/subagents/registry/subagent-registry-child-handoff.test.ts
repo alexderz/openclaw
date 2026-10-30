@@ -184,8 +184,17 @@ describe("promoted child handoff in the subagent registry", () => {
     });
     const controller = { controllerSessionKey: PARENT, controllerAgentId: "main" };
     const cfg = {} as never;
-    expect(ensureSubagentControllerOwnsRun({ cfg, controller, entry: live })).toBeUndefined();
-    expect(isSubagentRunVisibleToSession(live, PARENT, "main")).toBe(true);
+    const liveFacts = {
+      proved: true as const,
+      missing: false as const,
+      promotedFrom: undefined,
+      sessionId: null,
+      lifecycleRevision: null,
+    };
+    expect(
+      ensureSubagentControllerOwnsRun({ cfg, controller, entry: live, rootFacts: liveFacts }),
+    ).toBeUndefined();
+    expect(isSubagentRunVisibleToSession(live, PARENT, "main", cfg, liveFacts)).toBe(true);
     expect(ensureSubagentControllerOwnsRun({ cfg, controller, entry: handedOff })).toMatch(
       /promoted/,
     );

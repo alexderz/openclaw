@@ -64,8 +64,14 @@ export function registerQueuedStopControlTests({
       const duringLookup = kind === "channel ACP lookup";
       const channelStop = kind === "channel stop" || duringLookup;
       const controllerSessionKey = "agent:main:main";
+      const runningIdentity = {
+        sessionId: "running-session",
+        lifecycleRevision: "running-revision",
+      };
+      const queuedIdentity = { sessionId: "queued-session", lifecycleRevision: "queued-revision" };
       const runningFixture = createSubagentRunRecord({
         runId: "running-collector",
+        childSessionIdentity: runningIdentity,
         childSessionKey: "agent:main:subagent:running-collector",
         controllerSessionKey,
         requesterSessionKey: controllerSessionKey,
@@ -77,6 +83,7 @@ export function registerQueuedStopControlTests({
       const queuedFixture = createSubagentRunRecord({
         ...runningFixture,
         runId: "queued-collector",
+        childSessionIdentity: queuedIdentity,
         childSessionKey: "agent:main:subagent:queued-collector",
         controllerSessionKey: kind.endsWith("tree")
           ? runningFixture.childSessionKey
@@ -90,7 +97,8 @@ export function registerQueuedStopControlTests({
       const running = await addRun(runningFixture);
       const queued = await addRun(queuedFixture);
       const storePath = await writeSessionStoreFixture("abort-dispatch", {
-        [running.childSessionKey]: { sessionId: "running-session", updatedAt: 1 },
+        [running.childSessionKey]: { ...runningIdentity, updatedAt: 1 },
+        [queued.childSessionKey]: { ...queuedIdentity, updatedAt: 1 },
         ...(duringLookup
           ? {
               [controllerSessionKey]: {
@@ -117,9 +125,12 @@ export function registerQueuedStopControlTests({
         });
       }
       setSubagentControlDepsForTest({
-        isEmbeddedAgentRunActive: () => true,
+        isEmbeddedAgentRunActive: (sessionId) => sessionId === runningIdentity.sessionId,
         abortEmbeddedAgentRun: (sessionId) => {
-          expect(sessionId).toBe("running-session");
+          if (sessionId === queuedIdentity.sessionId) {
+            return false;
+          }
+          expect(sessionId).toBe(runningIdentity.sessionId);
           if (!channelStop && kind !== "first cancellation await") {
             expect(releaseSwarmRun(running.runId)).toBe(true);
           }
@@ -316,6 +327,7 @@ export function registerRequestFrontierControlTests(fixture: { readonly stateDir
           sessionKey: key,
           agentId: "main",
           defaultSessionId: `session-${key}`,
+          lifecycleRevision: `revision-${key}`,
         });
       }
       const cfg = getRuntimeConfig();
@@ -422,6 +434,10 @@ export function registerRequestFrontierControlTests(fixture: { readonly stateDir
             {
               runId: childRunId,
               childSessionKey,
+              sessionEntry: {
+                sessionId: `session-${childSessionKey}`,
+                lifecycleRevision: `revision-${childSessionKey}`,
+              },
               requesterSessionKey: identity.sessionKey,
               requesterAgentId: "main",
               requesterTurnRunId,

@@ -21,13 +21,14 @@ import * as executionOwner from "../../../state/openclaw-agent-execution.js";
 import { SQLITE_SESSION_WRITER_QUEUES } from "../../../state/openclaw-agent-write-admission-state.js";
 import {
   prepareSubagentKillSession,
+  SUBAGENT_KILL_INCARNATION_REQUIRED,
   type SubagentKillSession,
 } from "./subagent-control-session.js";
 import { writeSubagentSessionEntry } from "./subagent-registry.persistence.test-support.js";
 
 const fixture = useSubagentControlFixture();
 
-it("rejects a stale lifecycle revision even when a legacy target lacks a session id", async () => {
+it("rejects a lifecycle revision when the legacy target lacks a session id", async () => {
   const childKey = "agent:main:subagent:revision-only-target";
   const storePath = await writeSubagentSessionEntry({
     stateDir: fixture.stateDir,
@@ -42,10 +43,10 @@ it("rejects a stale lifecycle revision even when a legacy target lacks a session
       storePath,
       expectedLifecycleRevision: "stale-revision",
     }),
-  ).rejects.toThrow("Subagent session changed during cancellation preparation");
+  ).rejects.toThrow(SUBAGENT_KILL_INCARNATION_REQUIRED);
 });
 
-it("prepares an ordinary child when the lifecycle revision matches and session id is absent", async () => {
+it("rejects an ordinary child when the lifecycle revision matches and session id is absent", async () => {
   const childKey = "agent:main:subagent:revision-match-target";
   const storePath = await writeSubagentSessionEntry({
     stateDir: fixture.stateDir,
@@ -54,19 +55,16 @@ it("prepares an ordinary child when the lifecycle revision matches and session i
     defaultSessionId: "revision-match-session",
     lifecycleRevision: "current-revision",
   });
-  const prepared = await prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
-    sessionKey: childKey,
-    storePath,
-    expectedLifecycleRevision: "current-revision",
-  });
-  try {
-    expect(prepared.entry?.lifecycleRevision).toBe("current-revision");
-  } finally {
-    await prepared.release();
-  }
+  await expect(
+    prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
+      sessionKey: childKey,
+      storePath,
+      expectedLifecycleRevision: "current-revision",
+    }),
+  ).rejects.toThrow(SUBAGENT_KILL_INCARNATION_REQUIRED);
 });
 
-it("prepares an ordinary child when no lifecycle revision is supplied", async () => {
+it("rejects an ordinary child when no lifecycle revision is supplied", async () => {
   const childKey = "agent:main:subagent:revision-absent-target";
   await writeSubagentSessionEntry({
     stateDir: fixture.stateDir,
@@ -75,12 +73,9 @@ it("prepares an ordinary child when no lifecycle revision is supplied", async ()
     defaultSessionId: "revision-absent-session",
     lifecycleRevision: "current-revision",
   });
-  const prepared = await prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {});
-  try {
-    expect(prepared.entry?.sessionId).toBe("revision-absent-session");
-  } finally {
-    await prepared.release();
-  }
+  await expect(
+    prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}),
+  ).rejects.toThrow(SUBAGENT_KILL_INCARNATION_REQUIRED);
 });
 
 it("rejects a replaced session id when the caller supplies one", async () => {
@@ -97,6 +92,174 @@ it("rejects a replaced session id when the caller supplies one", async () => {
       storePath,
       sessionId: "replacement-session",
     }),
+  ).rejects.toThrow(SUBAGENT_KILL_INCARNATION_REQUIRED);
+});
+
+
+it("rejects a stale lifecycle revision when the session id is supplied", async () => {
+  const childKey = "agent:main:subagent:stale-revision-both";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "stale-revision-session",
+    lifecycleRevision: "current-revision",
+  });
+  await expect(
+    prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
+      sessionKey: childKey,
+      storePath,
+      sessionId: "stale-revision-session",
+      expectedLifecycleRevision: "stale-revision",
+    }),
+  ).rejects.toThrow("Subagent session changed during cancellation preparation");
+});
+
+it("rejects a replaced session id when the lifecycle revision is supplied", async () => {
+  const childKey = "agent:main:subagent:replaced-session-both";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "current-session",
+    lifecycleRevision: "current-revision",
+  });
+  await expect(
+    prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
+      sessionKey: childKey,
+      storePath,
+      sessionId: "replacement-session",
+      expectedLifecycleRevision: "current-revision",
+    }),
+  ).rejects.toThrow("Subagent session changed during cancellation preparation");
+});
+
+it("rejects a mismatched target key, a partial target, and a missing target", async () => {
+  const childKey = "agent:main:subagent:incarnation-required";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "incarnation-session",
+    lifecycleRevision: "incarnation-revision",
+  });
+  const cfg = getRuntimeConfig();
+  await expect(
+    prepareSubagentKillSession(cfg, childKey, () => {}, {
+      sessionKey: "agent:main:subagent:other-key",
+      sessionId: "incarnation-session",
+      expectedLifecycleRevision: "incarnation-revision",
+    }),
+  ).rejects.toThrow(SUBAGENT_KILL_INCARNATION_REQUIRED);
+  await expect(
+    prepareSubagentKillSession(cfg, childKey, () => {}, { sessionKey: childKey, storePath }),
+  ).rejects.toThrow(SUBAGENT_KILL_INCARNATION_REQUIRED);
+  await expect(prepareSubagentKillSession(cfg, childKey, () => {})).rejects.toThrow(
+    SUBAGENT_KILL_INCARNATION_REQUIRED,
+  );
+});
+
+it("prepares an ordinary child when the bound session id and lifecycle revision match", async () => {
+  const childKey = "agent:main:subagent:bound-incarnation";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "bound-session",
+    lifecycleRevision: "bound-revision",
+  });
+  const prepared = await prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
+    sessionKey: childKey,
+    storePath,
+    sessionId: "bound-session",
+    expectedLifecycleRevision: "bound-revision",
+  });
+  try {
+    expect(prepared.entry).toMatchObject({
+      sessionId: "bound-session",
+      lifecycleRevision: "bound-revision",
+    });
+  } finally {
+    await prepared.release();
+  }
+});
+
+it("does not adopt a same-key replacement or a root-own row without a bound incarnation", async () => {
+  const childKey = "agent:main:dashboard:same-key-replacement";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "original-session",
+    lifecycleRevision: "original-revision",
+  });
+  const { replaceSessionEntry } = await import("../../../config/sessions/session-accessor.js");
+  await replaceSessionEntry(
+    { storePath, sessionKey: childKey },
+    { sessionId: "replacement-session", updatedAt: Date.now(), lifecycleRevision: "replacement-revision" },
+  );
+  const cfg = getRuntimeConfig();
+  await expect(
+    prepareSubagentKillSession(cfg, childKey, () => {}, {
+      sessionKey: childKey,
+      storePath,
+      sessionId: "original-session",
+      expectedLifecycleRevision: "original-revision",
+    }),
+  ).rejects.toThrow("Subagent session changed during cancellation preparation");
+  await expect(prepareSubagentKillSession(cfg, childKey, () => {})).rejects.toThrow(
+    SUBAGENT_KILL_INCARNATION_REQUIRED,
+  );
+  const rootKey = "agent:main:dashboard:root-own-work";
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: rootKey,
+    defaultSessionId: "root-own-session",
+    lifecycleRevision: "root-own-revision",
+  });
+  await expect(prepareSubagentKillSession(cfg, rootKey, () => {})).rejects.toThrow(
+    SUBAGENT_KILL_INCARNATION_REQUIRED,
+  );
+});
+
+it("lets administrative cancellation prepare the current row and still rejects a stale session id", async () => {
+  const childKey = "agent:main:subagent:admin-cancellation";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "admin-session",
+    lifecycleRevision: "admin-revision",
+  });
+  const cfg = getRuntimeConfig();
+  const prepared = await prepareSubagentKillSession(
+    cfg,
+    childKey,
+    () => {},
+    undefined,
+    undefined,
+    { authority: "administrative" },
+  );
+  try {
+    expect(prepared.entry?.sessionId).toBe("admin-session");
+  } finally {
+    await prepared.release();
+  }
+  await expect(
+    prepareSubagentKillSession(
+      cfg,
+      childKey,
+      () => {},
+      {
+        sessionKey: childKey,
+        storePath,
+        sessionId: "stale-admin-session",
+        expectedLifecycleRevision: "admin-revision",
+      },
+      undefined,
+      { authority: "administrative" },
+    ),
   ).rejects.toThrow("Subagent session changed during cancellation preparation");
 });
 
@@ -144,7 +307,12 @@ it.for(["unrelated", "same session"] as const)(
       const cfg = getRuntimeConfig();
       const writerKey = writerTarget === "unrelated" ? peerKey : childKey;
       const writerSessionId = writerTarget === "unrelated" ? peerId : childId;
-      initial = await prepareSubagentKillSession(cfg, childKey, () => {});
+      initial = await prepareSubagentKillSession(cfg, childKey, () => {}, {
+        sessionKey: childKey,
+        storePath,
+        sessionId: childId,
+        expectedLifecycleRevision: revision,
+      });
       execution = executionOwner.captureOpenClawAgentDatabaseExecution({
         agentId: "main",
         env: process.env,
@@ -278,7 +446,12 @@ it.for(["unrelated", "same session"] as const)(
         generationFacts.assertCurrent();
       }
       preparation = operationScope.run("preparation", () =>
-        prepareSubagentKillSession(cfg, childKey, () => nativeClaim.assertCurrent()),
+        prepareSubagentKillSession(cfg, childKey, () => nativeClaim.assertCurrent(), {
+          sessionKey: childKey,
+          storePath,
+          sessionId: childId,
+          expectedLifecycleRevision: revision,
+        }),
       );
       if (writerTarget === "same session") {
         await withinTest(

@@ -445,10 +445,19 @@ export async function buildStatusReplyParts(
       cfg,
     );
     const verboseEnabled = resolvedVerboseLevel && resolvedVerboseLevel !== "off";
-    subagentsLine = buildSubagentsStatusLine({
-      context: subagentReadContext,
-      verboseEnabled,
-    });
+    try {
+      for (
+        let pending = subagentReadContext.prepareRead();
+        pending;
+        pending = subagentReadContext.prepareRead()
+      )
+        await pending;
+      subagentsLine = subagentReadContext.commitSync((context) =>
+        buildSubagentsStatusLine({ context, verboseEnabled }),
+      );
+    } finally {
+      subagentReadContext.release();
+    }
   }
   const groupActivation = isGroup
     ? (normalizeGroupActivation(sessionEntry?.groupActivation) ?? defaultGroupActivation())

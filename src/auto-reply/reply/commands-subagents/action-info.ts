@@ -29,7 +29,10 @@ export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): Command
     return commandReply("ℹ️ Usage: /subagents info <id|#>");
   }
 
-  const targetResolution = resolveSubagentEntryForToken(readContext.list.view, target);
+  const targetResolution = resolveSubagentEntryForToken(
+    readContext.candidateContext.list.view,
+    target,
+  );
   if ("reply" in targetResolution) {
     return targetResolution.reply;
   }
@@ -42,47 +45,55 @@ export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): Command
     sessionKey: run.childSessionKey,
     clone: false,
   });
-  const runtime =
-    run.execution.startedAt && Number.isFinite(run.execution.startedAt)
-      ? (formatDurationCompact((run.execution.endedAt ?? Date.now()) - run.execution.startedAt) ??
-        "n/a")
+  return readContext.commitSync((current) => {
+    if (!current.runs.some((entry) => entry.runId === run.runId))
+      return commandReply("⚠️ Unknown subagent.");
+    const runtime =
+      run.execution.startedAt && Number.isFinite(run.execution.startedAt)
+        ? (formatDurationCompact((run.execution.endedAt ?? Date.now()) - run.execution.startedAt) ??
+          "n/a")
+        : "n/a";
+    const outcomeError = sanitizeRunStatusText(run.execution.outcome?.error, {
+      errorContext: true,
+    });
+    const outcome = run.execution.outcome
+      ? `${run.execution.outcome.status}${outcomeError ? ` (${outcomeError})` : ""}`
       : "n/a";
-  const outcomeError = sanitizeRunStatusText(run.execution.outcome?.error, { errorContext: true });
-  const outcome = run.execution.outcome
-    ? `${run.execution.outcome.status}${outcomeError ? ` (${outcomeError})` : ""}`
-    : "n/a";
-  const taskText = sanitizeRunStatusText(run.task) || "n/a";
-  const progressText = sanitizeRunStatusText(run.completion?.resultText);
-  const taskSummaryText = sanitizeRunStatusText(
-    run.delivery?.lastError ?? run.delivery?.discardedPayloadSummary?.lastError,
-    { errorContext: true },
-  );
+    const taskText = sanitizeRunStatusText(run.task) || "n/a";
+    const progressText = sanitizeRunStatusText(run.completion?.resultText);
+    const taskSummaryText = sanitizeRunStatusText(
+      run.delivery?.lastError ?? run.delivery?.discardedPayloadSummary?.lastError,
+      { errorContext: true },
+    );
 
-  const lines = [
-    "ℹ️ Subagent info",
-    `Status: ${resolveSubagentDisplayStatus(run, readContext.list.pendingDescendants.get(run.childSessionKey) ?? 0)}`,
-    `Label: ${formatRunLabel(run)}`,
-    `Task: ${taskText}`,
-    `Run: ${run.runId}`,
-    `Session: ${run.childSessionKey}`,
-    `SessionId: ${sessionEntry?.sessionId ?? "n/a"}`,
-    `Runtime: ${runtime}`,
-    `Created: ${formatTimestampWithAge(run.createdAt)}`,
-    `Started: ${formatTimestampWithAge(run.execution.startedAt)}`,
-    `Ended: ${formatTimestampWithAge(run.execution.endedAt)}`,
-    `Cleanup: ${run.cleanup}`,
-    run.archiveAtMs ? `Archive: ${formatTimestampWithAge(run.archiveAtMs)}` : undefined,
-    run.cleanupHandled ? "Cleanup handled: yes" : undefined,
-    `Outcome: ${outcome}`,
-    progressText ? `Progress: ${progressText}` : undefined,
-    taskSummaryText ? `Task summary: ${taskSummaryText}` : undefined,
-    outcomeError ? `Task error: ${outcomeError}` : undefined,
-    run.delivery ? `Delivery: ${run.delivery.status}` : undefined,
-    run.delivery?.discardReason ? `Delivery disposition: ${run.delivery.discardReason}` : undefined,
-    run.delivery?.discardedAt
-      ? `Delivery retired: ${formatTimestampWithAge(run.delivery.discardedAt)}`
-      : undefined,
-  ].filter(Boolean);
+    const lines = [
+      "ℹ️ Subagent info",
+      `Status: ${resolveSubagentDisplayStatus(run, current.list.pendingDescendants.get(run.childSessionKey) ?? 0)}`,
+      `Label: ${formatRunLabel(run)}`,
+      `Task: ${taskText}`,
+      `Run: ${run.runId}`,
+      `Session: ${run.childSessionKey}`,
+      `SessionId: ${sessionEntry?.sessionId ?? "n/a"}`,
+      `Runtime: ${runtime}`,
+      `Created: ${formatTimestampWithAge(run.createdAt)}`,
+      `Started: ${formatTimestampWithAge(run.execution.startedAt)}`,
+      `Ended: ${formatTimestampWithAge(run.execution.endedAt)}`,
+      `Cleanup: ${run.cleanup}`,
+      run.archiveAtMs ? `Archive: ${formatTimestampWithAge(run.archiveAtMs)}` : undefined,
+      run.cleanupHandled ? "Cleanup handled: yes" : undefined,
+      `Outcome: ${outcome}`,
+      progressText ? `Progress: ${progressText}` : undefined,
+      taskSummaryText ? `Task summary: ${taskSummaryText}` : undefined,
+      outcomeError ? `Task error: ${outcomeError}` : undefined,
+      run.delivery ? `Delivery: ${run.delivery.status}` : undefined,
+      run.delivery?.discardReason
+        ? `Delivery disposition: ${run.delivery.discardReason}`
+        : undefined,
+      run.delivery?.discardedAt
+        ? `Delivery retired: ${formatTimestampWithAge(run.delivery.discardedAt)}`
+        : undefined,
+    ].filter(Boolean);
 
-  return commandReply(lines.join("\n"));
+    return commandReply(lines.join("\n"));
+  });
 }

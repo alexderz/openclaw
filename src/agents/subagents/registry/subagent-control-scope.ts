@@ -18,8 +18,9 @@ import type { SessionCapabilityLookup } from "../spawn/subagent-session-store.js
 import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import {
   detachedRootAuthorizationError,
-  readChildRootAuthorization,
+  selectEntriesWithCurrentChildRoot,
   type ChildRootAuthorization,
+  type SyncOnly,
 } from "./subagent-control-root-authority.js";
 import type { ResolvedSubagentController } from "./subagent-control.types.js";
 import {
@@ -107,7 +108,7 @@ function listControlledSubagentRunsForTurn(
   const controlledRuns = listRunsForControllerFromRuns(
     subagentRuns,
     controller.controllerSessionKey,
-  ).filter((entry) => !ensureSubagentControllerOwnsRun({ cfg, controller, entry }));
+  ).filter((entry) => !subagentControllerCandidateError({ cfg, controller, entry }));
   if (requesterTurnRunId === undefined) {
     return controlledRuns;
   }
@@ -248,7 +249,8 @@ export function captureExecRequestSubagentSelection(params: {
             entry,
             (owner) => captured.requestOwners?.has(owner) === true,
           )) &&
-        !ensureSubagentControllerOwnsRun({
+        // Candidate only. Kill preparation is the incarnation and root fence.
+        !subagentControllerCandidateError({
           cfg: params.cfg,
           controller: captured.controller,
           entry,
@@ -272,6 +274,19 @@ function resolveRunRequesterAgentId(
   return resolveSubagentRequesterAgentId(cfg, entry);
 }
 
+/** Registry candidate. Not a child-root proof; publication must pass root facts. */
+export function isSubagentRunCandidateForSession(
+  entry: SubagentRunReadRecord,
+  sessionKey: string,
+  agentId: string,
+  cfg?: OpenClawConfig,
+): boolean {
+  if (entry.childHandoff) {
+    return false;
+  }
+  return sessionMatchesRunOwner(entry, sessionKey, agentId, cfg);
+}
+
 export function isSubagentRunVisibleToSession(
   entry: SubagentRunReadRecord,
   sessionKey: string,
@@ -283,9 +298,19 @@ export function isSubagentRunVisibleToSession(
     // The child was promoted to a standard session; its former parent no longer sees it.
     return false;
   }
-  if (rootFacts && detachedRootAuthorizationError(entry, rootFacts)) {
+  // Omitted facts are not visibility. Callers fence with a current child-root proof.
+  if (!rootFacts || detachedRootAuthorizationError(entry, rootFacts)) {
     return false;
   }
+  return sessionMatchesRunOwner(entry, sessionKey, agentId, cfg);
+}
+
+function sessionMatchesRunOwner(
+  entry: SubagentRunReadRecord,
+  sessionKey: string,
+  agentId: string,
+  cfg?: OpenClawConfig,
+): boolean {
   const controllerKey = entry.controllerSessionKey?.trim();
   const requesterKey = entry.requesterSessionKey.trim();
   // Completion routing can target a different session than control ownership.
@@ -306,6 +331,17 @@ export type ControlledSubagentRunsReadContext = {
   getExecutionObservation(entry: SubagentRunRecord): ReturnType<typeof observeSubagentExecution>;
 };
 
+export type ControlledSubagentRead = {
+  readonly candidateContext: ControlledSubagentRunsReadContext;
+  prepareRead(): Promise<void> | undefined;
+  commitSync<R>(
+    render: (current: ControlledSubagentRunsReadContext) => R,
+    ...forbidPromise: SyncOnly<R>
+  ): R;
+  assertTargetCurrentSync(runId: string): void;
+  release(): void;
+};
+
 function selectControlledSubagentRunFacts(
   index: SubagentRunReadIndex<SubagentRunReadRecord>,
   sessionKey: string,
@@ -315,7 +351,7 @@ function selectControlledSubagentRunFacts(
   return [...index.runsByChildSessionKey.values()].flatMap((runs) =>
     runs.filter(
       (entry) =>
-        isSubagentRunVisibleToSession(entry, sessionKey, agentId, cfg) &&
+        isSubagentRunCandidateForSession(entry, sessionKey, agentId, cfg) &&
         (entry.childAgentId === undefined
           ? index.latestRunsByChildSessionKey.get(entry.childSessionKey.trim())
           : latestSubagentRun(runs, (candidate) =>
@@ -335,11 +371,11 @@ export async function buildControlledSubagentRunsReadContext(
   controllerAgentId?: string,
   cfg?: OpenClawConfig,
   recentMinutes = DEFAULT_RECENT_MINUTES,
-): Promise<ControlledSubagentRunsReadContext> {
+): Promise<ControlledSubagentRead> {
   const key = controllerSessionKey.trim();
   const agentId = controllerAgentId ?? parseAgentSessionKey(key)?.agentId;
   if (!key || !agentId) {
-    return {
+    const empty: ControlledSubagentRunsReadContext = {
       runs: [],
       list: captureSubagentListReadContext(
         [],
@@ -348,6 +384,34 @@ export async function buildControlledSubagentRunsReadContext(
         recentMinutes,
       ),
       getExecutionObservation: () => ({ state: "unknown" }),
+    };
+    let released = false;
+    const active = () => {
+      if (released) throw new Error("Controlled read released.");
+    };
+    return {
+      candidateContext: empty,
+      prepareRead: () => {
+        active();
+        return undefined;
+      },
+      commitSync: <R>(
+        render: (current: ControlledSubagentRunsReadContext) => R,
+        ..._forbidPromise: SyncOnly<R>
+      ) => {
+        active();
+        const result = render(empty);
+        if (result != null && typeof (result as { then?: unknown }).then === "function")
+          throw new TypeError("Renderer must be synchronous.");
+        return result;
+      },
+      assertTargetCurrentSync: () => {
+        active();
+        throw new Error("Subagent target is no longer authorized.");
+      },
+      release: () => {
+        released = true;
+      },
     };
   }
 
@@ -378,39 +442,85 @@ export async function buildControlledSubagentRunsReadContext(
     },
     { sessionKeys: [key], descendants: true },
   );
-  const allowed: SubagentRunRecord[] = [];
-  const deniedSessionKeys = new Set<string>();
-  for (const entry of captured.candidates) {
-    if (!cfg) {
-      allowed.push(entry);
-      continue;
+  const selection = cfg
+    ? await selectEntriesWithCurrentChildRoot(cfg, captured.candidates)
+    : undefined;
+  let released = false;
+  const active = () => {
+    if (released) throw new Error("Controlled read released.");
+  };
+  const makeContext = (
+    allowed: readonly SubagentRunRecord[],
+  ): ControlledSubagentRunsReadContext => {
+    const allowedIds = new Set(allowed.map((entry) => entry.runId));
+    const denied = new Set<string>(
+      captured.candidates
+        .filter((entry) => !allowedIds.has(entry.runId))
+        .map((entry) => entry.childSessionKey),
+    );
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const entry of allowed) {
+        if (denied.has(entry.requesterSessionKey) && !denied.has(entry.childSessionKey)) {
+          denied.add(entry.childSessionKey);
+          changed = true;
+        }
+      }
     }
-    // Recheck the durable root after the registry snapshot await.
-    const rootFacts = await readChildRootAuthorization(cfg, entry);
-    if (isSubagentRunVisibleToSession(entry, key, agentId, cfg, rootFacts)) {
-      allowed.push(entry);
-    } else {
-      deniedSessionKeys.add(entry.childSessionKey);
+    const filtered = allowed.filter((entry) => !denied.has(entry.childSessionKey));
+    const list = hideDeniedChildSessionKeys(
+      captureSubagentListReadContext(filtered, captured.index, captured.snapshot, recentMinutes),
+      denied,
+    );
+    return {
+      runs: list.view.latest,
+      list,
+      getExecutionObservation: (entry: SubagentRunRecord) =>
+        observeSubagentExecution(entry, getSubagentRunsForRequesterSession(entry.childSessionKey)),
+    };
+  };
+  const candidateContext = makeContext(captured.candidates);
+  const withCurrent = <R>(render: (current: ControlledSubagentRunsReadContext) => R): R => {
+    active();
+    if (!selection || !cfg) {
+      const result = render(candidateContext);
+      if (result != null && typeof (result as { then?: unknown }).then === "function")
+        throw new TypeError("Renderer must be synchronous.");
+      return result;
     }
-  }
-  const list = hideDeniedChildSessionKeys(
-    captureSubagentListReadContext(
-      allowed,
-      captured.index,
-      captured.snapshot,
-      recentMinutes,
-    ),
-    deniedSessionKeys,
-  );
+    return selection.commitSync(
+      (entry, facts) => isSubagentRunVisibleToSession(entry, key, agentId, cfg, facts),
+      (accepted) => {
+        const result = render(makeContext(accepted));
+        if (result != null && typeof (result as { then?: unknown }).then === "function")
+          throw new TypeError("Renderer must be synchronous.");
+        return result;
+      },
+      ...([] as unknown as SyncOnly<R>),
+    );
+  };
   return {
-    runs: list.view.latest,
-    list,
-    getExecutionObservation: (entry: SubagentRunRecord) =>
-      observeSubagentExecution(entry, getSubagentRunsForRequesterSession(entry.childSessionKey)),
+    candidateContext,
+    prepareRead: () => {
+      active();
+      return selection?.prepareRead();
+    },
+    commitSync: withCurrent as ControlledSubagentRead["commitSync"],
+    assertTargetCurrentSync: (runId) => {
+      const found = withCurrent((current) => current.runs.some((entry) => entry.runId === runId));
+      if (!found) throw new Error("Subagent target is no longer authorized.");
+    },
+    release: () => {
+      if (!released) {
+        released = true;
+        selection?.release();
+      }
+    },
   };
 }
 
-function hideDeniedChildSessionKeys(
+export function hideDeniedChildSessionKeys(
   list: SubagentListReadContext,
   deniedSessionKeys: ReadonlySet<string>,
 ): SubagentListReadContext {
@@ -419,6 +529,14 @@ function hideDeniedChildSessionKeys(
   }
   return {
     ...list,
+    // Graph-derived aggregates may include a denied branch; do not disclose stale counts.
+    pendingDescendants: new Map(),
+    execution: new Map(
+      [...list.execution].map(([runId, observation]) => [
+        runId,
+        observation.wait ? { ...observation, wait: { kind: observation.wait.kind } } : observation,
+      ]),
+    ),
     childSessionsByController: new Map(
       [...list.childSessionsByController].map(([controllerKey, children]) => [
         controllerKey,
@@ -443,11 +561,23 @@ export function listControlledSubagentRunFacts(
   return selectControlledSubagentRunFacts(index, controllerSessionKey, controllerAgentId, cfg);
 }
 
+/** Sync selector. Kill preparation still has to prove the child incarnation. */
+export function subagentControllerCandidateError(params: {
+  cfg: OpenClawConfig;
+  controller: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
+  entry: SubagentRunReadRecord;
+}) {
+  if (params.entry.childHandoff) {
+    return "This session was promoted to a standard session; its former parent no longer controls it.";
+  }
+  return controllerMatchError(params);
+}
+
 export function ensureSubagentControllerOwnsRun(params: {
   cfg: OpenClawConfig;
   controller: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
   entry: SubagentRunReadRecord;
-  /** Fresh worker read. Omitting it preserves callers that have not asked for root proof. */
+  /** Current child-root proof. Omitting it denies; it is not the legacy allow path. */
   rootFacts?: ChildRootAuthorization;
 }) {
   if (params.entry.childHandoff) {
@@ -455,12 +585,21 @@ export function ensureSubagentControllerOwnsRun(params: {
     // resumes or cancels it, or reaches the work it started itself.
     return "This session was promoted to a standard session; its former parent no longer controls it.";
   }
-  if (params.rootFacts) {
-    const detachedRootError = detachedRootAuthorizationError(params.entry, params.rootFacts);
-    if (detachedRootError) {
-      return detachedRootError;
-    }
+  if (!params.rootFacts) {
+    return "Session ownership could not be proved; former-parent control is refused.";
   }
+  const detachedRootError = detachedRootAuthorizationError(params.entry, params.rootFacts);
+  if (detachedRootError) {
+    return detachedRootError;
+  }
+  return controllerMatchError(params);
+}
+
+function controllerMatchError(params: {
+  cfg: OpenClawConfig;
+  controller: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
+  entry: SubagentRunReadRecord;
+}) {
   const controllerKey = params.entry.controllerSessionKey?.trim();
   const owner = controllerKey || params.entry.requesterSessionKey;
   const ownerStorePath = controllerKey

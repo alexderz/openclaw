@@ -408,7 +408,7 @@ describe("gateway agent handler", () => {
         const client = requireValue(backendGatewayClient(), "backend client");
         client.internal = bindInProcessSubagentResume(
           { syntheticClient: true as const },
-          bindParentSubagentResume({
+          await bindParentSubagentResume({
             cfg: {},
             caller: { agentId: "main", sessionKey: "agent:main:main", assertCurrent: vi.fn() },
             childSessionKey,

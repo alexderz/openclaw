@@ -60,7 +60,7 @@ describe("gateway agent handler yielded orchestrator follow-ups", () => {
         const client = requireValue(backendGatewayClient(), "backend client");
         client.internal = bindInProcessSubagentResume(
           { syntheticClient: true as const },
-          bindParentSubagentResume({
+          await bindParentSubagentResume({
             cfg: {},
             caller: { agentId: "main", sessionKey: "agent:main:main", assertCurrent: vi.fn() },
             childSessionKey,
@@ -202,7 +202,7 @@ describe("gateway agent handler yielded orchestrator follow-ups", () => {
           if (resume) {
             client.internal = bindInProcessSubagentResume(
               { syntheticClient: true as const },
-              bindParentSubagentResume({
+              await bindParentSubagentResume({
                 cfg: {},
                 caller: {
                   agentId: "main",

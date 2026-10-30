@@ -46,8 +46,22 @@ function requireReplyText(reply: ReplyPayload | undefined): string {
 function commandReadContext(runs: SubagentRunRecord[]) {
   const snapshot = new Map(runs.map((run) => [run.runId, run]));
   const index = buildSubagentRunReadIndexFromRuns({ runs: snapshot });
-  return {
+  const context = {
+    runs,
     list: captureSubagentListReadContext(runs, index, snapshot, 30),
+    getExecutionObservation: () => ({ state: "unknown" as const }),
+  };
+  return {
+    candidateContext: context,
+    prepareRead: () => undefined,
+    commitSync: <R>(
+      render: (current: typeof context) => R,
+      ..._forbid: import("../../agents/subagents/registry/subagent-control-root-authority.js").SyncOnly<R>
+    ) => render(context),
+    assertTargetCurrentSync: (runId: string) => {
+      if (!runs.some((run) => run.runId === runId)) throw new Error("unknown target");
+    },
+    release: () => {},
   };
 }
 
@@ -77,7 +91,7 @@ describe("subagents status", () => {
     }
 
     const text = buildSubagentsStatusLine({
-      context: await controlScope.buildControlledSubagentRunsReadContext("agent:main:main"),
+      context: await buildControlledReadSnapshotForTest("agent:main:main"),
       verboseEnabled: true,
       now,
     });
@@ -138,7 +152,7 @@ describe("subagents status", () => {
     seedRuns();
     const text =
       buildSubagentsStatusLine({
-        context: await controlScope.buildControlledSubagentRunsReadContext("agent:main:main"),
+        context: await buildControlledReadSnapshotForTest("agent:main:main"),
         verboseEnabled: verboseLevel === "on",
         now: 5000,
       }) ?? "";
@@ -190,7 +204,7 @@ describe("subagents status", () => {
       }
 
       const text = buildSubagentsStatusLine({
-        context: await controlScope.buildControlledSubagentRunsReadContext("agent:main:main"),
+        context: await buildControlledReadSnapshotForTest("agent:main:main"),
         verboseEnabled: true,
         now,
       });
@@ -225,7 +239,7 @@ describe("subagents status", () => {
     };
     seedSubagentRunForReadTest(run);
     const text = buildSubagentsStatusLine({
-      context: await controlScope.buildControlledSubagentRunsReadContext("agent:main:main"),
+      context: await buildControlledReadSnapshotForTest("agent:main:main"),
       verboseEnabled: false,
       now: 5_000,
     });
@@ -879,6 +893,41 @@ describe("subagents log", () => {
     expect(text).not.toContain(unexpectedText);
   });
 
+  it("withholds paused history when the selected run is revoked, without retargeting its ordinal", async () => {
+    const first = makeRun({ runId: "first", childSessionKey: "agent:main:subagent:first" });
+    const second = makeRun({ runId: "second", childSessionKey: "agent:main:subagent:second" });
+    const ctx = buildLogContext(["1"], [first, second]);
+    let revoke = false;
+    const original = ctx.readContext.candidateContext;
+    ctx.readContext.commitSync = ((render: (current: typeof original) => unknown) =>
+      render(
+        revoke ? { ...original, runs: [second] } : original,
+      )) as typeof ctx.readContext.commitSync;
+    let finish!: (value: { messages: Array<{ role: string; content: string }> }) => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    callGatewayMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+          signalStarted();
+        }),
+    );
+    const pending = handleSubagentsLogAction(ctx);
+    await started;
+    expect(callGatewayMock).toHaveBeenCalledWith({
+      method: "chat.history",
+      params: { sessionKey: first.childSessionKey, limit: 20 },
+    });
+    revoke = true;
+    finish({ messages: [{ role: "assistant", content: "SECRET_HISTORY_MARKER" }] });
+    const result = await pending;
+    expect(requireReplyText(result.reply)).not.toContain("SECRET_HISTORY_MARKER");
+    expect(requireReplyText(result.reply)).toContain("Unknown subagent");
+  });
+
   it("uses the numeric token after the target as the history limit", async () => {
     await handleSubagentsLogAction(buildLogContext(["1", "5"], [makeRun()]));
 
@@ -906,3 +955,14 @@ describe("subagents log", () => {
     });
   });
 });
+
+async function buildControlledReadSnapshotForTest(
+  ...args: Parameters<typeof controlScope.buildControlledSubagentRunsReadContext>
+) {
+  const held = await controlScope.buildControlledSubagentRunsReadContext(...args);
+  try {
+    return held.commitSync((current) => current);
+  } finally {
+    held.release();
+  }
+}

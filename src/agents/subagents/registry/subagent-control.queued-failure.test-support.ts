@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { replaceSessionEntrySync } from "../../../config/sessions/session-accessor.js";
+import { clearRuntimeConfigSnapshot, getRuntimeConfigSnapshot, getRuntimeConfigSourceSnapshot, setRuntimeConfigSnapshot } from "../../../config/config.js";
+import { loadSessionEntry, replaceSessionEntrySync } from "../../../config/sessions/session-accessor.js";
 import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import { runOpenClawStateWorkerOperation } from "../../../state/openclaw-state-worker-store.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
@@ -34,8 +35,10 @@ export function registerQueuedReservationFailureTests({
     "parent persistence",
   ])("releases or withdraws the exact queued reservation after %s failure", async (failure) => {
     const controllerSessionKey = "agent:main:main";
+    const identity = { sessionId: "queued-session", lifecycleRevision: "queued-revision" };
     let entry = createSubagentRunRecord({
       runId: "failure-queued",
+      childSessionIdentity: identity,
       childSessionKey: "agent:main:subagent:failure-queued",
       controllerSessionKey,
       requesterSessionKey: controllerSessionKey,
@@ -49,7 +52,7 @@ export function registerQueuedReservationFailureTests({
     await addSubagentRunForTests(entry);
     entry = subagentRuns.get(entry.runId)!;
     const storePath = await writeSessionStoreFixture("queue-failure", {
-      [entry.childSessionKey]: { sessionId: "queued-session", updatedAt: 1 },
+      [entry.childSessionKey]: { ...identity, updatedAt: 1 },
     });
     const dispatch = vi.fn(async () => {});
     const reserve = () =>
@@ -182,10 +185,31 @@ export function registerQueuedReservationFailureTests({
         });
         await vi.waitFor(() => expect(survivor).toHaveBeenCalledOnce());
         expect(dispatch).not.toHaveBeenCalled();
-        expect(await markSubagentRunTerminated({ runId: entry.runId })).toBe(1);
-        expect(subagentRuns.get(entry.runId)?.collectorCompletion).toMatchObject({
-          status: "killed",
-        });
+        const previousRuntime = getRuntimeConfigSnapshot();
+        const previousSource = getRuntimeConfigSourceSnapshot();
+        setRuntimeConfigSnapshot(cfgWithSessionStore(storePath));
+        try {
+          if (failure === "session replacement release") {
+            await expect(markSubagentRunTerminated({ runId: entry.runId })).rejects.toThrow(
+              "Subagent session changed during cancellation preparation",
+            );
+            expect(loadSessionEntry({ storePath, sessionKey: entry.childSessionKey })?.sessionId).toBe(
+              "new-session",
+            );
+            expect(subagentRuns.get(entry.runId)?.killIntent).toMatchObject({ reason: "killed" });
+          } else {
+            expect(await markSubagentRunTerminated({ runId: entry.runId })).toBe(1);
+            expect(subagentRuns.get(entry.runId)?.collectorCompletion).toMatchObject({
+              status: "killed",
+            });
+          }
+        } finally {
+          if (previousRuntime) {
+            setRuntimeConfigSnapshot(previousRuntime, previousSource ?? undefined);
+          } else {
+            clearRuntimeConfigSnapshot();
+          }
+        }
         expect(dispatch).not.toHaveBeenCalled();
       } else {
         expect(subagentRuns.get(entry.runId)?.killIntent).toBeUndefined();

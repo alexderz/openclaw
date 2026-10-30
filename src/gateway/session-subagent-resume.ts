@@ -1,6 +1,8 @@
 /** Exact parent-owned paused-task binding for explicit model-tool resume admission. */
 import {
-  readChildRootAuthorization,
+  detachedRootAuthorizationError,
+  retainChildRootProof,
+  UNPROVED_ROOT_CONTROL_DENIED,
   type ChildRootAuthorization,
 } from "../agents/subagents/registry/subagent-control-root-authority.js";
 import {
@@ -10,6 +12,7 @@ import {
 import { getLatestLiveSubagentRunByChildSessionKey } from "../agents/subagents/registry/subagent-registry-read.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 import type { TrustedSubagentResume } from "./in-process-subagent-resume.js";
 import type { GatewayContextResolver, TrustedAgentToolCaller } from "./server-methods/types.js";
 
@@ -33,6 +36,10 @@ export function shouldResumeParentSubagent(params: {
   if (controllerStorePath === undefined) {
     return false;
   }
+  // Omitted facts are not authority. Callers pass a current child-root proof.
+  if (!params.rootFacts) {
+    return false;
+  }
   const controller = resolveSubagentController({
     cfg: params.cfg,
     agentId: params.caller.agentId,
@@ -49,7 +56,7 @@ export function shouldResumeParentSubagent(params: {
   );
 }
 
-/** Re-reads the child root before implicit resume so a missing handoff still fails closed. */
+/** Re-reads and asserts the child root before implicit resume so a missing handoff fails closed. */
 export async function shouldResumeParentSubagentNow(
   params: Parameters<typeof shouldResumeParentSubagent>[0],
 ): Promise<boolean> {
@@ -60,10 +67,20 @@ export async function shouldResumeParentSubagentNow(
   if (!entry) {
     return false;
   }
-  const rootFacts = await readChildRootAuthorization(params.cfg, entry, () => {
+  const proof = await retainChildRootProof(params.cfg, entry, () => {
     params.caller.assertCurrent?.();
   });
-  return shouldResumeParentSubagent({ ...params, rootFacts });
+  try {
+    const rootFacts = proof.assertCurrent();
+    return shouldResumeParentSubagent({ ...params, rootFacts });
+  } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
+    return false;
+  } finally {
+    proof.release();
+  }
 }
 
 // Control ownership comes from the registry, not the child's key shape or message provenance.
@@ -100,6 +117,13 @@ function requirePausedChild(
       "Task resume requires a currently paused native child; inspect subagents first.",
     );
   }
+  if (!rootFacts) {
+    throw new Error(UNPROVED_ROOT_CONTROL_DENIED);
+  }
+  const detachedRootError = detachedRootAuthorizationError(entry, rootFacts);
+  if (detachedRootError) {
+    throw new Error(detachedRootError);
+  }
   if (
     controller.controlScope !== "children" ||
     ensureSubagentControllerOwnsRun({ cfg, controller, entry, rootFacts })
@@ -112,42 +136,63 @@ function requirePausedChild(
   return entry;
 }
 
-/** Captures the exact paused generation after ordinary session visibility checks. */
-export function bindParentSubagentResume(params: {
+/** Captures the exact paused generation and a revocable child-root proof. */
+export async function bindParentSubagentResume(params: {
   cfg: OpenClawConfig;
   caller: TrustedAgentToolCaller;
   childSessionKey: string;
   childSessionId: string;
-}): TrustedSubagentResume {
+}): Promise<TrustedSubagentResume> {
   if (!params.childSessionId) {
     throw new Error("Task resume requires an existing child session.");
   }
-  const entry = requirePausedChild(params.cfg, params.caller, params.childSessionKey);
-  return Object.freeze({
-    caller: params.caller,
-    childSessionKey: params.childSessionKey,
-    childSessionId: params.childSessionId,
-    previousRunId: entry.runId,
-    taskRunId: entry.taskRunId ?? entry.runId,
-    generation: entry.generation,
-    createdAt: entry.createdAt,
-  });
+  const proof = await retainChildRootProof(
+    params.cfg,
+    { childSessionKey: params.childSessionKey },
+    () => {
+      params.caller.assertCurrent?.();
+    },
+  );
+  try {
+    const entry = requirePausedChild(
+      params.cfg,
+      params.caller,
+      params.childSessionKey,
+      proof.assertCurrent(),
+    );
+    return Object.freeze({
+      caller: params.caller,
+      childSessionKey: params.childSessionKey,
+      childSessionId: params.childSessionId,
+      previousRunId: entry.runId,
+      taskRunId: entry.taskRunId ?? entry.runId,
+      generation: entry.generation,
+      createdAt: entry.createdAt,
+      assertChildRootCurrent: () => proof.assertCurrent(),
+      releaseChildRootProof: () => {
+        proof.release();
+      },
+    });
+  } catch (error) {
+    proof.release();
+    throw error;
+  }
 }
 
-/** Revalidates caller ownership and the exact paused generation at admission. */
+/** Revalidates caller ownership and the retained child root at admission. */
 export function assertParentSubagentResumeCurrent(params: {
   cfg: OpenClawConfig;
   resume: TrustedSubagentResume;
   sessionKey: string | undefined;
   sessionId: string;
-  rootFacts?: ChildRootAuthorization;
 }): SubagentRunRecord {
   const { resume } = params;
+  const rootFacts = resume.assertChildRootCurrent();
   const entry = requirePausedChild(
     params.cfg,
     resume.caller,
     resume.childSessionKey,
-    params.rootFacts,
+    rootFacts,
   );
   if (
     params.sessionKey !== resume.childSessionKey ||
@@ -198,15 +243,9 @@ export async function prepareParentSubagentResume(params: {
   const runtime = await import("../agents/subagents/registry/subagent-registry.js");
   return async () => {
     params.assertAdmissionCurrent();
-    const rootFacts = await readChildRootAuthorization(
-      params.cfg,
-      { childSessionKey: params.resume.childSessionKey },
-      params.assertAdmissionCurrent,
-    );
     const expected = assertParentSubagentResumeCurrent({
       ...params,
       sessionId: params.getSessionId(),
-      rootFacts,
     });
     const adopted = await runtime.adoptPausedSubagentRunForFollowUp({
       childSessionKey: params.resume.childSessionKey,
@@ -220,7 +259,6 @@ export async function prepareParentSubagentResume(params: {
         assertParentSubagentResumeCurrent({
           ...params,
           sessionId: params.getSessionId(),
-          rootFacts,
         });
       },
     });

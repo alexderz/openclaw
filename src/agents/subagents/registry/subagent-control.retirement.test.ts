@@ -94,6 +94,7 @@ it("does not cancel a durable promoted root when registry handoff is absent", as
     task: "old task",
     cleanup: "keep",
     expectsCompletionMessage: false,
+    sessionEntry: { sessionId, lifecycleRevision: "promoted-revision" },
   });
   const run = subagentRuns.get("stale-spawner")!;
   expect(run.childHandoff).toBeUndefined();
@@ -156,6 +157,7 @@ it("does not cancel a grandchild of a detached root when registry handoff is abs
     task: "old task",
     cleanup: "keep",
     expectsCompletionMessage: false,
+    sessionEntry: { sessionId: childSessionId, lifecycleRevision: "promoted-revision" },
   });
   await registerSubagentRun({
     runId: "captured-grandchild",
@@ -252,6 +254,7 @@ it("still cancels an ordinary delegated child", async () => {
     agentId: "main",
     sessionKey: child,
     defaultSessionId: sessionId,
+    lifecycleRevision: "ordinary-revision",
   });
   await registerSubagentRun({
     runId: "ordinary-delegated",
@@ -263,6 +266,7 @@ it("still cancels an ordinary delegated child", async () => {
     task: "still mine",
     cleanup: "keep",
     expectsCompletionMessage: false,
+    sessionEntry: { sessionId, lifecycleRevision: "ordinary-revision" },
   });
   const run = subagentRuns.get("ordinary-delegated")!;
   const abort = vi.fn();
@@ -339,9 +343,7 @@ it("hides a detached root from its former parent and still lists a delegated chi
   const cfg = getRuntimeConfig();
   const detachedFacts = await readChildRootAuthorization(cfg, detached);
   const delegatedFacts = await readChildRootAuthorization(cfg, delegated);
-  expect(
-    isSubagentRunVisibleToSession(detached, parent, "main", cfg, detachedFacts),
-  ).toBe(false);
+  expect(isSubagentRunVisibleToSession(detached, parent, "main", cfg, detachedFacts)).toBe(false);
   expect(isSubagentRunVisibleToSession(delegated, parent, "main", cfg, delegatedFacts)).toBe(true);
   expect(
     ensureSubagentControllerOwnsRun({
@@ -359,7 +361,7 @@ it("hides a detached root from its former parent and still lists a delegated chi
       rootFacts: delegatedFacts,
     }),
   ).toBeUndefined();
-  const listed = await buildControlledSubagentRunsReadContext(parent, "main", cfg);
+  const listed = await buildControlledReadSnapshotForTest(parent, "main", cfg);
   const listedIds = listed.runs.map((entry) => entry.runId);
   expect(listedIds).not.toContain("hidden-promoted");
   expect(listedIds).toContain("listed-delegated");
@@ -368,6 +370,49 @@ it("hides a detached root from its former parent and still lists a delegated chi
   );
   expect(viewIds).not.toContain("hidden-promoted");
 });
+
+it.each(["unbound", "replacement"] as const)(
+  "denies parent retirement cancellation for %s incarnation",
+  async (caseName) => {
+    const parent = "agent:main:main";
+    const child = `agent:main:subagent:retirement-denial-${caseName}`;
+    const original = { sessionId: `original-${caseName}`, lifecycleRevision: `original-revision-${caseName}` };
+    const storePath = await writeSubagentSessionEntry({
+      stateDir: fixture.stateDir, agentId: "main", sessionKey: child,
+      defaultSessionId: original.sessionId, lifecycleRevision: original.lifecycleRevision,
+    });
+    await registerSubagentRun({
+      runId: `retirement-denial-${caseName}`, childSessionKey: child,
+      requesterSessionKey: parent, controllerSessionKey: parent, requesterAgentId: "main",
+      requesterDisplayKey: "main", task: "denial", cleanup: "keep", expectsCompletionMessage: false,
+      ...(caseName === "replacement" ? { sessionEntry: original } : {}),
+    });
+    if (caseName === "replacement") {
+      await replaceSessionEntry({ storePath, sessionKey: child }, {
+        sessionId: "replacement-session", lifecycleRevision: "replacement-revision", updatedAt: Date.now(),
+      });
+    }
+    const before = loadSessionEntry({ storePath, sessionKey: child })!;
+    const abort = vi.fn();
+    const run = subagentRuns.get(`retirement-denial-${caseName}`)!;
+    const handle = createEmbeddedRunHandle({ abort, runId: run.runId });
+    setActiveEmbeddedRun(before.sessionId, handle, child);
+    try {
+      const result = await killAllControlledSubagentRuns({
+        cfg: getRuntimeConfig(),
+        controller: { controllerSessionKey: parent, controllerAgentId: "main", callerSessionKey: parent,
+          callerIsSubagent: false, controlScope: "children" },
+        runs: [run],
+      });
+      expect(result).toMatchObject({ status: "error", killed: 0 });
+      expect(abort).not.toHaveBeenCalled();
+      expect(loadSessionEntry({ storePath, sessionKey: child })).toEqual(before);
+      expect(subagentRuns.get(run.runId)?.collectorCompletion).toBeUndefined();
+    } finally {
+      clearActiveEmbeddedRun(before.sessionId, handle, child);
+    }
+  },
+);
 
 it.each([
   { transition: "normal retirement", cancel: true },
@@ -391,12 +436,14 @@ it.each([
       agentId: "main",
       sessionKey: ancestorKey,
       defaultSessionId: "ancestor-session",
+      lifecycleRevision: "ancestor-revision",
     });
     await writeSubagentSessionEntry({
       stateDir: fixture.stateDir,
       agentId: "main",
       sessionKey: childKey,
       defaultSessionId: "child-session",
+      lifecycleRevision: "child-revision",
     });
     if (transition === "retirement with retained predecessor") {
       await registerSubagentRun({
@@ -428,6 +475,9 @@ it.each([
         expectsCompletionMessage: false,
         collect,
         queued: collect,
+        sessionEntry: runId === "ancestor"
+          ? { sessionId: "ancestor-session", lifecycleRevision: "ancestor-revision" }
+          : { sessionId: "child-session", lifecycleRevision: "child-revision" },
       });
     }
     const child = subagentRuns.get("child")!;
@@ -638,12 +688,14 @@ it.each([
     agentId: "main",
     sessionKey: ancestorKey,
     defaultSessionId: "draining-ancestor-session",
+    lifecycleRevision: "draining-ancestor-revision",
   });
   await writeSubagentSessionEntry({
     stateDir: fixture.stateDir,
     agentId: "main",
     sessionKey: childKey,
     defaultSessionId: "draining-child-session",
+    lifecycleRevision: "draining-child-revision",
   });
   for (const [runId, childSessionKey, owner, collect] of [
     ["draining-ancestor", ancestorKey, controllerSessionKey, false],
@@ -661,6 +713,9 @@ it.each([
       expectsCompletionMessage: false,
       collect,
       queued: collect,
+      sessionEntry: runId === "draining-ancestor"
+        ? { sessionId: "draining-ancestor-session", lifecycleRevision: "draining-ancestor-revision" }
+        : { sessionId: "draining-child-session", lifecycleRevision: "draining-child-revision" },
     });
   }
   const ancestor = subagentRuns.get("draining-ancestor")!;
@@ -700,7 +755,11 @@ it.each([
           expectedOwnerKey: controllerSessionKey,
         });
   try {
-    await entered.promise;
+    const drain = await Promise.race([
+      entered.promise.then(() => ({ entered: true as const })),
+      pending.then((result) => ({ entered: false as const, result })),
+    ]);
+    expect(drain, JSON.stringify(drain)).toMatchObject({ entered: true });
     // Independent canonical termination during the drain, followed by modeled
     // reconciliation ageing. A fresh provisional kill must still retain its row.
     expect(
@@ -778,7 +837,7 @@ it("signals the non-main runtime owner in a template session store", async () =>
   );
   await replaceSessionEntry(
     { storePath, sessionKey: childSessionKey },
-    { sessionId, updatedAt: Date.now() },
+    { sessionId, lifecycleRevision: "fixed-store-child-revision", updatedAt: Date.now() },
   );
   await registerSubagentRun({
     runId: "fixed-store-child",
@@ -787,6 +846,7 @@ it("signals the non-main runtime owner in a template session store", async () =>
     requesterAgentId: "main",
     requesterDisplayKey: "main",
     task: "cross-agent child",
+    sessionEntry: { sessionId, lifecycleRevision: "fixed-store-child-revision" },
     cleanup: "keep",
     expectsCompletionMessage: false,
   });
@@ -1141,3 +1201,15 @@ describe("restored historical cancellation ownership", () => {
     },
   );
 });
+
+async function buildControlledReadSnapshotForTest(
+  ...args: Parameters<typeof buildControlledSubagentRunsReadContext>
+) {
+  const held = await buildControlledSubagentRunsReadContext(...args);
+  try {
+    for (let pending = held.prepareRead(); pending; pending = held.prepareRead()) await pending;
+    return held.commitSync((current) => current);
+  } finally {
+    held.release();
+  }
+}

@@ -13,7 +13,8 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
-import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
+import { createSubagentRunRecord, isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
+import { prepareSubagentKillSession } from "./subagent-control-session.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import {
   mutateSubagentRuns,
@@ -43,7 +44,7 @@ vi.mock("../../../config/sessions/session-accessor.sqlite-replacement-projection
   applySessionEntryExactReplacements: vi.fn(async () => undefined),
 }));
 vi.mock("./subagent-control-session.js", () => ({
-  prepareSubagentKillSession: async (
+  prepareSubagentKillSession: vi.fn(async (
     _config: unknown,
     _sessionKey: string,
     assertOwner: () => void,
@@ -61,7 +62,7 @@ vi.mock("./subagent-control-session.js", () => ({
       return await run();
     },
     release: () => {},
-  }),
+  })),
 }));
 vi.mock("../../../gateway/call.js", () => ({ callGateway: vi.fn() }));
 vi.mock("./subagent-session-reconciliation.js", async (importOriginal) => ({
@@ -140,7 +141,7 @@ function createRegistrationFixture() {
     completeSubagentRun: async () => {},
   };
   const manager = createSubagentRunManager(options);
-  return { refusal, manager };
+  return { refusal, manager, options };
 }
 
 type RestoreOptions = Parameters<typeof createSubagentRegistryRestorer>[0];
@@ -649,3 +650,55 @@ it("retries retirement when registration supersedes another restored child durin
     vi.useRealTimers();
   }
 });
+
+
+it.each(["split", "conflict", "key", "identity", "transcript"] as const)(
+  "manager queued collector uses whole-record incarnation provenance: %s",
+  async (scenario) => {
+    const { refusal, manager, options } = createRegistrationFixture();
+    refusal.descriptor = false;
+    const runId = `manager-fence-${scenario}`;
+    const key = `agent:main:subagent:${runId}`;
+    const identity = { sessionId: fixture.sessionId, lifecycleRevision: fixture.lifecycleRevision };
+    const target = { sessionKey: key, sessionId: fixture.sessionId, expectedLifecycleRevision: fixture.lifecycleRevision };
+    const row = createSubagentRunRecord({
+      runId, childSessionKey: key, collect: true,
+      childSessionIdentity: scenario === "transcript" ? undefined :
+        scenario === "split" ? { sessionId: fixture.sessionId } : identity,
+      execution: { status: "queued", transcriptTarget:
+        scenario === "identity" ? undefined : scenario === "split" ?
+          { sessionKey: key, expectedLifecycleRevision: fixture.lifecycleRevision } :
+          scenario === "conflict" ? { ...target, sessionId: "different" } :
+          scenario === "key" ? { ...target, sessionKey: `${key}-other` } : target },
+    });
+    await mutateSubagentRuns([runId], () => ({ value: undefined, postimages: new Map([[runId, row]]) }));
+    const releasedLock = vi.fn();
+    options.acquireTerminalCompletionLock = async () => releasedLock;
+    const releasedSession = vi.fn();
+    const prepare = vi.mocked(prepareSubagentKillSession);
+    if (scenario !== "conflict" && scenario !== "key") {
+      prepare.mockImplementationOnce(async (_config, actualKey, assertOwner, expected, _agent, ownership) => {
+      expect(ownership).toEqual({ authority: "run" });
+      if (!expected?.sessionId || !expected.expectedLifecycleRevision) {
+        throw new Error("missing whole incarnation");
+      }
+      expect(expected).toMatchObject(target);
+      expect(actualKey).toBe(key);
+      return { agentId: "main", storePath: "/synthetic-retained-session/sessions.json",
+        entry: { ...identity, updatedAt: 1 }, assertCurrent: assertOwner,
+        prepareRead: () => undefined, withPublication: async (run) => await run(), release: releasedSession };
+      });
+    }
+    const negative = scenario === "split" || scenario === "conflict" || scenario === "key";
+    if (negative) {
+      await expect(manager.markSubagentRunTerminated({ runId })).rejects.toThrow();
+      expect(subagentRuns.get(runId)?.execution.status).toBe("queued");
+      expect(applySessionEntryExactReplacements).not.toHaveBeenCalled();
+      expect(releasedSession).not.toHaveBeenCalled();
+    } else {
+      expect(await manager.markSubagentRunTerminated({ runId })).toBe(1);
+      expect(releasedSession).toHaveBeenCalledOnce();
+    }
+    expect(releasedLock).toHaveBeenCalledOnce();
+  },
+);

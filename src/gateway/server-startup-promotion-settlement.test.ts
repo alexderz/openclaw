@@ -44,7 +44,11 @@ describe("Gateway promotion settlement wiring", () => {
       });
       await server.startupSettled;
       expect(start).toHaveBeenCalledOnce();
-      const [context, log] = start.mock.calls[0];
+      const firstCall = start.mock.calls[0];
+      if (!firstCall) {
+        throw new Error("promotion settlement was not started");
+      }
+      const [context, log] = firstCall;
       expect(typeof context.getRuntimeConfig).toBe("function");
       expect(typeof log.warn).toBe("function");
       expect(stop).not.toHaveBeenCalled();

@@ -5,3 +5,8 @@ export {
   MAX_RECENT_MINUTES,
   resolveSubagentController,
 } from "./subagent-control-scope.js";
+
+export type {
+  ControlledSubagentRead,
+  ControlledSubagentRunsReadContext,
+} from "./subagent-control-scope.js";

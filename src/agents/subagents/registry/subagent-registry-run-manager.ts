@@ -14,6 +14,7 @@ import {
 } from "../swarm/swarm-collector.js";
 import { holdQueuedSwarmRun, isSwarmRunActive } from "../swarm/swarm-scheduler.js";
 import { matchesSubagentKillIntent } from "./subagent-control-kill-intent.js";
+import { resolveRunOwnedKillTarget } from "./subagent-control-kill-target.js";
 import {
   persistSubagentAbortedLastRun,
   prepareSubagentKillSession,
@@ -258,12 +259,14 @@ class SubagentRunManager extends SubagentLaunchManager {
         if (markParams.runId === entry.runId && markParams.session) {
           sessions.set(entry.runId, markParams.session);
         } else if (entry.collect && entry.execution.status === "queued") {
+          const target = resolveRunOwnedKillTarget(entry);
           const session = await prepareSubagentKillSession(
             this.options.getRuntimeConfig(),
             entry.childSessionKey,
             assertCurrent,
-            entry.execution.transcriptTarget,
+            target,
             entry.childAgentId,
+            { authority: "run" },
           );
           sessions.set(entry.runId, session);
         }

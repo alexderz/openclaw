@@ -9,6 +9,7 @@ import {
 import {
   bindInProcessSubagentResume,
   readInProcessSubagentResume,
+  releaseParentSubagentResumeOnDispose,
 } from "../../gateway/in-process-subagent-resume.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import {
@@ -58,12 +59,31 @@ describe("trusted in-process Gateway session creation", () => {
     requesterSessionKey: "agent:main:main",
   };
   beforeEach(() => {
+    childRootReleased = false;
+    assertChildRootCurrent.mockClear();
+    releaseChildRootProof.mockClear();
     mocks.hasContext = true;
     mocks.dispatch.mockReset().mockResolvedValue({ key: "agent:main:dashboard:child" });
     mocks.callGateway.mockReset().mockResolvedValue({ status: "ok" });
     mocks.callGatewayTool.mockReset().mockResolvedValue({ key: "agent:main:dashboard:child" });
   });
 
+  let childRootReleased = false;
+  const assertChildRootCurrent = vi.fn(() => {
+    if (childRootReleased) {
+      throw new Error("child root proof released");
+    }
+    return {
+      proved: true as const,
+      missing: false as const,
+      promotedFrom: undefined,
+      sessionId: "child-session",
+      lifecycleRevision: null,
+    };
+  });
+  const releaseChildRootProof = vi.fn(() => {
+    childRootReleased = true;
+  });
   const subagentResume = {
     caller: { agentId: "main", sessionKey: "agent:main:main", assertCurrent: vi.fn() },
     childSessionKey: "agent:main:dashboard:child",
@@ -72,6 +92,8 @@ describe("trusted in-process Gateway session creation", () => {
     taskRunId: "original-task",
     generation: 1,
     createdAt: 100,
+    assertChildRootCurrent,
+    releaseChildRootProof,
   };
   const generation = {
     agentId: "main",
@@ -160,6 +182,23 @@ describe("trusted in-process Gateway session creation", () => {
       expect(mocks.callGateway).not.toHaveBeenCalled();
     },
   );
+
+  it("retains and releases the bound child-root proof", () => {
+    const carrier = bindInProcessSubagentResume({}, subagentResume);
+    const retained = readInProcessSubagentResume(carrier);
+    expect(retained).toBe(subagentResume);
+    expect(retained?.assertChildRootCurrent()).toEqual({
+      proved: true,
+      missing: false,
+      promotedFrom: undefined,
+      sessionId: subagentResume.childSessionId,
+      lifecycleRevision: null,
+    });
+    expect(assertChildRootCurrent).toHaveBeenCalledOnce();
+    releaseParentSubagentResumeOnDispose(retained)[Symbol.dispose]();
+    expect(releaseChildRootProof).toHaveBeenCalledOnce();
+    expect(() => retained?.assertChildRootCurrent()).toThrow("child root proof released");
+  });
 
   it("uses an explicitly bound Gateway when worker creation has no ambient request scope", async () => {
     mocks.hasContext = false;

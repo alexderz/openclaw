@@ -203,8 +203,8 @@ describe("pending promotion activation transaction", () => {
       label: "Keep me",
     });
     const liveAdmin = {
-      version: 1,
-      actor: { kind: "operator", profileId: "someone-else" },
+      version: 1 as const,
+      actor: { kind: "operator" as const, profileId: "someone-else" },
       scopes: ["operator.admin"],
       grant: null,
     };

@@ -8,8 +8,12 @@ import {
   resolveMainSessionAlias,
 } from "../../tools/sessions-helpers.js";
 import { resolveSubagentCompletionResultText } from "../completion/subagent-completion-result.js";
-import { isSubagentRunVisibleToSession } from "./subagent-control-scope.js";
-import { readChildRootAuthorization } from "./subagent-control-root-authority.js";
+import { selectEntriesWithCurrentChildRoot } from "./subagent-control-root-authority.js";
+import {
+  hideDeniedChildSessionKeys,
+  isSubagentRunCandidateForSession,
+  isSubagentRunVisibleToSession,
+} from "./subagent-control-scope.js";
 import { buildSubagentList, captureSubagentListReadContext } from "./subagent-list.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { buildSubagentRunReadIndexFromRuns } from "./subagent-registry-queries.js";
@@ -90,8 +94,9 @@ export async function buildActiveSubagentRuntimeContext(params: {
     { sessionKey: controllerSessionKey, agentId },
     params.cfg,
   );
-  const isVisible = (entry: SubagentRunReadRecord) =>
-    isSubagentRunVisibleToSession(entry, controllerSessionKey, agentId, params.cfg) &&
+  // Candidate only. The publication fence below supplies current child-root facts.
+  const matchesControllerStore = (entry: SubagentRunReadRecord) =>
+    isSubagentRunCandidateForSession(entry, controllerSessionKey, agentId, params.cfg) &&
     ((entry.controllerSessionKey?.trim() === controllerSessionKey &&
       entry.controllerStorePath === storePath) ||
       (entry.requesterSessionKey.trim() === controllerSessionKey &&
@@ -104,7 +109,7 @@ export async function buildActiveSubagentRuntimeContext(params: {
         inMemoryRuns: [...snapshot.keys()].flatMap((id) => subagentRuns.get(id) ?? []),
       });
       const yielded = [...index.latestRunsByChildSessionKey.values()].filter(
-        (entry) => isVisible(entry) && entry.pauseReason === "sessions_yield",
+        (entry) => matchesControllerStore(entry) && entry.pauseReason === "sessions_yield",
       );
       return {
         index,
@@ -115,102 +120,124 @@ export async function buildActiveSubagentRuntimeContext(params: {
     ({ index }, snapshot) => ({
       index,
       snapshot,
-      candidates: [...snapshot.values()].filter(isVisible),
+      candidates: [...snapshot.values()].filter(matchesControllerStore),
     }),
     { sessionKeys: [controllerSessionKey], descendants: true },
   );
-  const visible: SubagentRunRecord[] = [];
-  for (const entry of captured.candidates) {
-    const rootFacts = await readChildRootAuthorization(params.cfg, entry);
-    if (isSubagentRunVisibleToSession(entry, controllerSessionKey, agentId, params.cfg, rootFacts)) {
-      visible.push(entry);
+  const selection = await selectEntriesWithCurrentChildRoot(params.cfg, captured.candidates);
+  try {
+    for (let pending = selection.prepareRead(); pending; pending = selection.prepareRead()) {
+      await pending;
     }
-  }
-  const { index, snapshot } = captured;
-  const latest = index.latestRunsByChildSessionKey;
-  const runs = visible.filter(
-    (entry) => latest.get(entry.childSessionKey.trim())?.runId === entry.runId,
-  );
-  // Read every retained generation through the same visibility policy. A newer
-  // execution or a recent-history cutoff cannot acknowledge an older result.
-  const pending = visible
-    .filter(hasOutstandingCompletion)
-    .toSorted(
-      (left, right) =>
-        (left.execution.endedAt ?? 0) - (right.execution.endedAt ?? 0) ||
-        (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0),
+    return selection.commitSync(
+      (entry, rootFacts) =>
+        isSubagentRunVisibleToSession(
+          entry,
+          controllerSessionKey,
+          agentId,
+          params.cfg,
+          rootFacts,
+        ) && matchesControllerStore(entry),
+      (visible) => {
+        const { index, snapshot } = captured;
+        const latest = index.latestRunsByChildSessionKey;
+        const runs = visible.filter(
+          (entry) => latest.get(entry.childSessionKey.trim())?.runId === entry.runId,
+        );
+        // Read every retained generation through the same visibility policy. A newer
+        // execution or a recent-history cutoff cannot acknowledge an older result.
+        const pending = visible
+          .filter(hasOutstandingCompletion)
+          .toSorted(
+            (left, right) =>
+              (left.execution.endedAt ?? 0) - (right.execution.endedAt ?? 0) ||
+              (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0),
+          );
+        if (runs.length === 0 && pending.length === 0) {
+          return undefined;
+        }
+        const recentMinutes = params.recentMinutes ?? 30;
+        const allowedIds = new Set(visible.map((entry) => entry.runId));
+        const deniedKeys = new Set(
+          captured.candidates
+            .filter((entry) => !allowedIds.has(entry.runId))
+            .map((entry) => entry.childSessionKey),
+        );
+        const context = hideDeniedChildSessionKeys(
+          captureSubagentListReadContext(runs, index, snapshot, recentMinutes),
+          deniedKeys,
+        );
+        const list = buildSubagentList({
+          context,
+          // Prompt fields are registry-owned; model and usage enrichment belongs to visible lists.
+          sessionEntries: new Map(),
+          taskMaxChars: 96,
+        });
+        // buildSubagentList returns recent runs in registry order, so sort before
+        // capping to keep the prompt block deterministic across turns.
+        const pendingIds = new Set(pending.map((entry) => entry.runId));
+        const recentForPrompt = list.recent
+          .filter((entry) => !pendingIds.has(entry.runId))
+          .toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+          .slice(0, RECENT_PROMPT_MAX_ENTRIES);
+        if (
+          pending.length === 0 &&
+          (params.includeSpawnContext === false ||
+            (list.active.length === 0 && recentForPrompt.length === 0))
+        ) {
+          return undefined;
+        }
+        const formatEntry = (entry: (typeof list.active)[number]) =>
+          [
+            "-",
+            entry.taskName
+              ? `taskName_json=${quotePromptData(truncateUtf16Safe(entry.taskName, 64))};`
+              : undefined,
+            `session=${entry.sessionKey};`,
+            `run=${entry.runId};`,
+            `status=${entry.status};`,
+            `execution=${entry.execution.state};`,
+            entry.execution.wait ? `wait=${entry.execution.wait.kind};` : undefined,
+            entry.execution.wait?.dependencies
+              ? `wait_runs=${JSON.stringify(entry.execution.wait.dependencies.map((child) => child.runId))};`
+              : undefined,
+            entry.deliveryStatus ? `delivery=${entry.deliveryStatus};` : undefined,
+            `label_json=${quotePromptData(entry.label)};`,
+            `task_json=${quotePromptData(entry.task)}`,
+          ]
+            .filter(Boolean)
+            .join(" ");
+        const sections: string[][] = [];
+        if (params.includeSpawnContext !== false && list.active.length > 0) {
+          sections.push([
+            "## Active Subagents",
+            ...list.active
+              .toSorted((a, b) => (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0))
+              .slice(0, 16)
+              .map(formatEntry),
+            ...(list.active.length > 16 ? [`- additional_runs=${list.active.length - 16}`] : []),
+          ]);
+        }
+        if (params.includeSpawnContext !== false && recentForPrompt.length > 0) {
+          sections.push([
+            "## Recently Completed Subagents",
+            `Children that ended in the last ${recentMinutes}m, newest first:`,
+            ...recentForPrompt.map(formatEntry),
+          ]);
+        }
+        if (pending.length > 0) {
+          sections.push([
+            "## Child results awaiting delivery",
+            ...pending.slice(0, PENDING_RESULT_MAX_ENTRIES).map(formatPendingResult),
+            ...(pending.length > PENDING_RESULT_MAX_ENTRIES
+              ? [`- additional_results=${pending.length - PENDING_RESULT_MAX_ENTRIES}`]
+              : []),
+          ]);
+        }
+        return sections.map((lines) => lines.join("\n")).join("\n\n");
+      },
     );
-  if (runs.length === 0 && pending.length === 0) {
-    return undefined;
+  } finally {
+    selection.release();
   }
-  const recentMinutes = params.recentMinutes ?? 30;
-  const context = captureSubagentListReadContext(runs, index, snapshot, recentMinutes);
-  const list = buildSubagentList({
-    context,
-    // Prompt fields are registry-owned; model and usage enrichment belongs to visible lists.
-    sessionEntries: new Map(),
-    taskMaxChars: 96,
-  });
-  // buildSubagentList returns recent runs in registry order, so sort before
-  // capping to keep the prompt block deterministic across turns.
-  const pendingIds = new Set(pending.map((entry) => entry.runId));
-  const recentForPrompt = list.recent
-    .filter((entry) => !pendingIds.has(entry.runId))
-    .toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
-    .slice(0, RECENT_PROMPT_MAX_ENTRIES);
-  if (
-    pending.length === 0 &&
-    (params.includeSpawnContext === false ||
-      (list.active.length === 0 && recentForPrompt.length === 0))
-  ) {
-    return undefined;
-  }
-  const formatEntry = (entry: (typeof list.active)[number]) =>
-    [
-      "-",
-      entry.taskName
-        ? `taskName_json=${quotePromptData(truncateUtf16Safe(entry.taskName, 64))};`
-        : undefined,
-      `session=${entry.sessionKey};`,
-      `run=${entry.runId};`,
-      `status=${entry.status};`,
-      `execution=${entry.execution.state};`,
-      entry.execution.wait ? `wait=${entry.execution.wait.kind};` : undefined,
-      entry.execution.wait?.dependencies
-        ? `wait_runs=${JSON.stringify(entry.execution.wait.dependencies.map((child) => child.runId))};`
-        : undefined,
-      entry.deliveryStatus ? `delivery=${entry.deliveryStatus};` : undefined,
-      `label_json=${quotePromptData(entry.label)};`,
-      `task_json=${quotePromptData(entry.task)}`,
-    ]
-      .filter(Boolean)
-      .join(" ");
-  const sections: string[][] = [];
-  if (params.includeSpawnContext !== false && list.active.length > 0) {
-    sections.push([
-      "## Active Subagents",
-      ...list.active
-        .toSorted((a, b) => (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0))
-        .slice(0, 16)
-        .map(formatEntry),
-      ...(list.active.length > 16 ? [`- additional_runs=${list.active.length - 16}`] : []),
-    ]);
-  }
-  if (params.includeSpawnContext !== false && recentForPrompt.length > 0) {
-    sections.push([
-      "## Recently Completed Subagents",
-      `Children that ended in the last ${recentMinutes}m, newest first:`,
-      ...recentForPrompt.map(formatEntry),
-    ]);
-  }
-  if (pending.length > 0) {
-    sections.push([
-      "## Child results awaiting delivery",
-      ...pending.slice(0, PENDING_RESULT_MAX_ENTRIES).map(formatPendingResult),
-      ...(pending.length > PENDING_RESULT_MAX_ENTRIES
-        ? [`- additional_results=${pending.length - PENDING_RESULT_MAX_ENTRIES}`]
-        : []),
-    ]);
-  }
-  return sections.map((lines) => lines.join("\n")).join("\n\n");
 }

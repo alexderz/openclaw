@@ -24,6 +24,11 @@ import { runOpenClawAgentWriteAdmission } from "../../../state/openclaw-agent-wr
 import type { AgentRunSessionTarget } from "../../run-session-target.types.js";
 import { resolveSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
 
+export const SUBAGENT_KILL_INCARNATION_REQUIRED =
+  "Subagent cancellation requires the bound session incarnation.";
+
+export type SubagentKillAuthority = "run" | "administrative";
+
 export type SubagentKillSession = {
   agentId: string;
   storePath: string;
@@ -41,6 +46,7 @@ export async function prepareSubagentKillSession(
   assertOwner: () => void,
   expected?: AgentRunSessionTarget,
   childAgentId?: string,
+  ownership?: { authority?: SubagentKillAuthority },
 ): Promise<SubagentKillSession> {
   const childOwner = resolveSubagentChildSessionOwner(
     { childSessionKey: sessionKey, childAgentId },
@@ -70,6 +76,17 @@ export async function prepareSubagentKillSession(
           throw read.error;
         }
         const entry = read.value;
+        const authority = ownership?.authority ?? "run";
+        if (expected?.sessionKey !== undefined && expected.sessionKey !== sessionKey) {
+          throw new Error(SUBAGENT_KILL_INCARNATION_REQUIRED);
+        }
+        if (authority === "run") {
+          // A supplied partial target is not a fence, and a missing target must not
+          // adopt whatever session now occupies the key.
+          if (!selected?.sessionId || !selected.expectedLifecycleRevision) {
+            throw new Error(SUBAGENT_KILL_INCARNATION_REQUIRED);
+          }
+        }
         if (
           (selected?.sessionId !== undefined && entry?.sessionId !== selected.sessionId) ||
           (selected?.expectedLifecycleRevision !== undefined &&

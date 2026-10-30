@@ -198,12 +198,15 @@ export async function completeSubagentRunAttempt(
     assertCurrent();
     assertSessionBinding();
     if (selected.collect && !selected.collectorCompletion) {
+      // Terminal capture is admitted lifecycle bookkeeping, not former-parent cancellation.
+      // It may prepare the current row. Run-owned cancellation cannot.
       collectorSession = await prepareSubagentKillSession(
         params.getRuntimeConfig(),
         selected.childSessionKey,
         assertCurrent,
         selected.execution.transcriptTarget,
         selected.childAgentId,
+        { authority: "administrative" },
       );
     }
     const now = Date.now();

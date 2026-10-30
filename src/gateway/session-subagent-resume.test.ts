@@ -5,6 +5,9 @@ import { useSubagentControlFixture } from "../agents/subagents/registry/subagent
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { AgentWaitResult } from "../agents/run-wait.js";
+import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "../agents/embedded-agent-runner/runs.js";
+import { createEmbeddedRunHandle } from "../agents/embedded-agent-runner/runs.test-support.js";
+import { resolveRunOwnedKillTarget } from "../agents/subagents/registry/subagent-control-kill-target.js";
 import { resolveSubagentController } from "../agents/subagents/registry/subagent-control-scope.js";
 import { killAllControlledSubagentRuns } from "../agents/subagents/registry/subagent-control.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
@@ -19,6 +22,7 @@ import { writeSubagentSessionEntry } from "../agents/subagents/registry/subagent
 import { bindSubagentRunRecord } from "../agents/subagents/registry/subagent-registry.store.codec.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
+import { loadExactSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { publishSystemEventStoreResolver } from "../infra/system-event-ownership.js";
@@ -34,9 +38,22 @@ import {
 const fixture = useSubagentControlFixture();
 const parent = "agent:main:main";
 const sessionId = "resume-child-session";
+const childLifecycleRevision = "resume-child-original-revision";
 const previousRunId = "resume-previous";
 const nextRunId = "resume-successor";
+const retainedResumes: Array<{ releaseChildRootProof: () => void }> = [];
+const delegatedRootFacts = {
+  proved: true as const,
+  missing: false as const,
+  promotedFrom: undefined,
+  sessionId,
+  lifecycleRevision: null,
+};
 afterEach(() => {
+  for (const resume of retainedResumes) {
+    resume.releaseChildRootProof();
+  }
+  retainedResumes.length = 0;
   publishSystemEventStoreResolver(undefined);
   vi.useRealTimers();
 });
@@ -57,6 +74,7 @@ async function arrangePausedChild(childSessionKey = "agent:main:subagent:resume-
     agentId: "main",
     sessionKey: childSessionKey,
     defaultSessionId: sessionId,
+    lifecycleRevision: childLifecycleRevision,
   });
   await writeSubagentSessionEntry({
     stateDir: fixture.stateDir,
@@ -74,18 +92,20 @@ async function arrangePausedChild(childSessionKey = "agent:main:subagent:resume-
     cleanup: "keep",
     expectsCompletionMessage: true,
     queued: true,
+    sessionEntry: { sessionId, lifecycleRevision: childLifecycleRevision },
   });
   const entry = await updateRun(previousRunId, (draft) => {
     expect(markSubagentRunPausedAfterYield({ entry: draft })).toBe(true);
   });
   const caller = { agentId: "main", sessionKey: parent, assertCurrent: vi.fn() };
   const cfg = getRuntimeConfig();
-  const resume = bindParentSubagentResume({
+  const resume = await bindParentSubagentResume({
     cfg,
     caller,
     childSessionKey,
     childSessionId: sessionId,
   });
+  retainedResumes.push(resume);
   const prepare = (overrides: Partial<Parameters<typeof prepareParentSubagentResume>[0]> = {}) =>
     prepareParentSubagentResume({
       cfg,
@@ -159,14 +179,14 @@ it.each(["selection", "admission"] as const)(
       throw new Error("The registered task must retain its controller store");
     }
     publishSystemEventStoreResolver(() => originalStorePath);
-    expect(shouldResumeParentSubagent(state)).toBe(true);
+    expect(shouldResumeParentSubagent({ ...state, rootFacts: delegatedRootFacts })).toBe(true);
     const adopt = await state.prepare();
     publishSystemEventStoreResolver(() => `${originalStorePath}.replacement`);
     if (stage === "selection") {
-      expect(shouldResumeParentSubagent(state)).toBe(false);
-      expect(() => bindParentSubagentResume({ ...state, childSessionId: sessionId })).toThrow(
-        /controlled/,
-      );
+      expect(shouldResumeParentSubagent({ ...state, rootFacts: delegatedRootFacts })).toBe(false);
+      await expect(
+        bindParentSubagentResume({ ...state, childSessionId: sessionId }),
+      ).rejects.toThrow(/controlled/);
     } else {
       await expect(adopt()).rejects.toThrow(/controlled/);
     }
@@ -188,10 +208,14 @@ it.each(["resume", "cancel"] as const)(
     await restoreSubagentRunsFromDisk({ runs: subagentRuns });
     state.entry = subagentRuns.get(previousRunId)!;
     publishSystemEventStoreResolver(() => storePath);
+    expect(resolveRunOwnedKillTarget(state.entry)).toMatchObject({
+      sessionKey: state.childSessionKey, sessionId, expectedLifecycleRevision: childLifecycleRevision,
+    });
     await fixture.settle();
-    expect(shouldResumeParentSubagent(state)).toBe(false);
+    expect(shouldResumeParentSubagent({ ...state, rootFacts: delegatedRootFacts })).toBe(false);
     if (action === "resume") {
-      const resume = bindParentSubagentResume({ ...state, childSessionId: sessionId });
+      const resume = await bindParentSubagentResume({ ...state, childSessionId: sessionId });
+      retainedResumes.push(resume);
       const adopt = await state.prepare({ resume });
       await expect(adopt()).resolves.toBe(previousRunId);
       expect(subagentRuns.get(nextRunId)?.taskRunId).toBe(previousRunId);
@@ -208,6 +232,56 @@ it.each(["resume", "cancel"] as const)(
       });
       expect(result).toMatchObject({ killed: 1 });
       expect(subagentRuns.get(previousRunId)?.endedReason).toBe("subagent-killed");
+    }
+  },
+);
+
+it.each(["unbound", "replacement"] as const)(
+  "does not cancel a %s retained release-era child without store provenance",
+  async (scenario) => {
+    const state = await arrangePausedChild();
+    const storePath = state.entry.controllerStorePath!;
+    await updateRun(previousRunId, (draft) => {
+      delete draft.controllerStorePath;
+      delete draft.requesterStorePath;
+      if (scenario === "unbound") {
+        delete draft.childSessionIdentity;
+        delete draft.execution.transcriptTarget;
+      }
+    });
+    await restoreSubagentRunsFromDisk({ runs: subagentRuns });
+    publishSystemEventStoreResolver(() => storePath);
+    if (scenario === "replacement") {
+      await writeSubagentSessionEntry({
+        stateDir: fixture.stateDir, agentId: "main", sessionKey: state.childSessionKey,
+        defaultSessionId: sessionId, lifecycleRevision: "replacement-revision",
+      });
+    }
+    await fixture.settle();
+    const before = structuredClone(loadExactSessionEntryReadOnly({
+      agentId: "main", sessionKey: state.childSessionKey,
+    })?.entry);
+    const abort = vi.fn();
+    const handle = createEmbeddedRunHandle({ runId: previousRunId, abort });
+    setActiveEmbeddedRun(sessionId, handle, state.childSessionKey);
+    try {
+      const result = await killAllControlledSubagentRuns({
+        cfg: state.cfg,
+        controller: resolveSubagentController({
+          cfg: state.cfg, agentId: state.caller.agentId, agentSessionKey: state.caller.sessionKey,
+        }),
+        runs: [subagentRuns.get(previousRunId)!], suppressTaskDelivery: true,
+      });
+      await fixture.settle();
+      expect(result.killed).toBe(0);
+      expect(subagentRuns.get(previousRunId)?.endedReason).not.toBe("subagent-killed");
+      expect(abort).not.toHaveBeenCalled();
+      expect(loadExactSessionEntryReadOnly({
+        agentId: "main", sessionKey: state.childSessionKey,
+      })?.entry).toEqual(before);
+      expect(fixture.capture).not.toHaveBeenCalled();
+    } finally {
+      clearActiveEmbeddedRun(sessionId, handle, state.childSessionKey);
     }
   },
 );
@@ -336,23 +410,23 @@ it("does not grant control to a separate completion recipient", async () => {
   publishSystemEventStoreResolver((key) =>
     key === state.entry.controllerSessionKey ? "controller-store" : "completion-store",
   );
-  expect(() =>
+  await expect(
     bindParentSubagentResume({
       cfg: state.cfg,
       caller: state.caller,
       childSessionKey: state.childSessionKey,
       childSessionId: sessionId,
     }),
-  ).toThrow(/controlled/);
+  ).rejects.toThrow(/controlled/);
   const controller = { ...state.caller, sessionKey: "agent:main:dashboard:actual-controller" };
-  expect(
-    bindParentSubagentResume({
-      cfg: state.cfg,
-      caller: controller,
-      childSessionKey: state.childSessionKey,
-      childSessionId: sessionId,
-    }).taskRunId,
-  ).toBe(previousRunId);
+  const resumed = await bindParentSubagentResume({
+    cfg: state.cfg,
+    caller: controller,
+    childSessionKey: state.childSessionKey,
+    childSessionId: sessionId,
+  });
+  retainedResumes.push(resumed);
+  expect(resumed.taskRunId).toBe(previousRunId);
 });
 
 it("retires queued resume execution when the successor is cancelled", async () => {

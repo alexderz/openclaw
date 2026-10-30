@@ -237,8 +237,8 @@ describe("typed turn authority follows the tool class", () => {
           runId,
           sessionKey: row.sessionKey,
           state: "final",
-        }).authorityClass,
-      ).toBe(authorityClass);
+        }),
+      ).toMatchObject({ authorityClass });
     } finally {
       clearAgentRunContext(runId);
     }

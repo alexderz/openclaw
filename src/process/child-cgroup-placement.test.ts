@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   createChildCgroupPlacement,
   enableGatewayChildCgroupPlacement,
@@ -19,7 +19,7 @@ let root: string;
 let procRoot: string;
 let cgroupRoot: string;
 let unitDir: string;
-let log: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
+let log: { info: Mock<(message: string) => void>; warn: Mock<(message: string) => void> };
 
 function writeSelfCgroup(cgroupPath: string): void {
   fs.mkdirSync(path.join(procRoot, "self"), { recursive: true });
@@ -54,7 +54,7 @@ beforeEach(() => {
   procRoot = path.join(root, "proc");
   cgroupRoot = path.join(root, "cgroup");
   unitDir = path.join(cgroupRoot, UNIT);
-  log = { info: vi.fn(), warn: vi.fn() };
+  log = { info: vi.fn<(message: string) => void>(), warn: vi.fn<(message: string) => void>() };
 });
 
 afterEach(() => {

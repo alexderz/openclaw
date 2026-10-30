@@ -14,7 +14,7 @@ const me = "alice";
 // The root is an operator-created dashboard session that Alice owns.
 const root = {
   sessionId: "root-session",
-  createdActor: { type: "profile", id: me },
+  createdActor: { type: "human", source: "profile", id: me },
 } as never;
 
 function ownership(child: Record<string, unknown>, parent: Record<string, unknown> = root) {
@@ -23,7 +23,7 @@ function ownership(child: Record<string, unknown>, parent: Record<string, unknow
     cfg,
     profileId: me,
     scopes: ["operator.sessions.write"],
-    isCreator: (actor) => actor?.type === "profile" && actor.id === me,
+    isCreator: (actor) => actor?.type === "human" && actor.source === "profile" && actor.id === me,
     target: {
       canonicalKey: childKey,
       entry: {

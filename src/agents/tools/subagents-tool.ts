@@ -3,10 +3,16 @@ import { Type } from "typebox";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createAbortError } from "../../infra/abort-signal.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { sanitizeRunStatusText } from "../run-status-text.js";
 import { optionalPositiveIntegerSchema, optionalStringEnum } from "../schema/typebox.js";
-import { readChildRootAuthorization } from "../subagents/registry/subagent-control-root-authority.js";
+import {
+  detachedRootAuthorizationError,
+  retainChildRootProof,
+  type RetainedChildRootProof,
+  type SyncOnly,
+} from "../subagents/registry/subagent-control-root-authority.js";
 import {
   ensureSubagentControllerOwnsRun,
   isSubagentRunVisibleToSession,
@@ -239,53 +245,160 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
     }
     const readable = new Map<string, SubagentRunReadRecord>();
     const controlled = new Set<string>();
+    const held: Array<{ entry: SubagentRunReadRecord; proof: RetainedChildRootProof }> = [];
     const pending: Array<
       Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">
     > = [controller];
     const visited = new Set<string>();
-    while (pending.length) {
-      const current = pending.shift()!;
-      const identity = current.controllerAgentId + "\0" + current.controllerSessionKey;
-      if (visited.has(identity)) {
-        continue;
-      }
-      visited.add(identity);
-      const entries = listControlledSubagentRunFacts(
-        current.controllerSessionKey,
-        current.controllerAgentId,
-        cfg,
-      );
-      for (const entry of entries) {
-        const rootFacts = await readChildRootAuthorization(cfg, entry);
-        if (
-          !isSubagentRunVisibleToSession(
-            entry,
-            current.controllerSessionKey,
-            current.controllerAgentId,
-            cfg,
-            rootFacts,
-          )
-        ) {
+    let transferred = false;
+    try {
+      while (pending.length) {
+        const current = pending.shift()!;
+        const controllerAgentId = current.controllerAgentId;
+        if (!controllerAgentId) {
+          throw new ToolInputError("Subagent controller agent required");
+        }
+        const identity = controllerAgentId + "\0" + current.controllerSessionKey;
+        if (visited.has(identity)) {
           continue;
         }
-        readable.set(entry.runId, entry);
-        if (
-          controller.controlScope !== "children" ||
-          ensureSubagentControllerOwnsRun({ cfg, controller: current, entry, rootFacts })
-        ) {
-          continue;
-        }
-        controlled.add(entry.runId);
-        pending.push(
-          resolveSubagentControllerIdentity({
-            cfg,
-            agentSessionKey: entry.childSessionKey,
-            agentId: entry.childAgentId,
-          }),
+        visited.add(identity);
+        const entries = listControlledSubagentRunFacts(
+          current.controllerSessionKey,
+          controllerAgentId,
+          cfg,
         );
+        const level: Array<{ entry: SubagentRunReadRecord; proof: RetainedChildRootProof }> = [];
+        for (const entry of entries) {
+          if (readable.has(entry.runId) || held.some((item) => item.entry.runId === entry.runId)) {
+            continue;
+          }
+          const item = { entry, proof: await retainChildRootProof(cfg, entry) };
+          level.push(item);
+          held.push(item);
+        }
+        // Fence this controller's reads before queueing its children, then again before return.
+        for (const item of level) {
+          let rootFacts;
+          try {
+            rootFacts = item.proof.assertCurrent();
+          } catch (error) {
+            if (hasSqliteWorkerOutcomeUnknown(error)) {
+              throw error;
+            }
+            item.proof.release();
+            continue;
+          }
+          if (
+            !isSubagentRunVisibleToSession(
+              item.entry,
+              current.controllerSessionKey,
+              controllerAgentId,
+              cfg,
+              rootFacts,
+            )
+          ) {
+            item.proof.release();
+            continue;
+          }
+          readable.set(item.entry.runId, item.entry);
+          if (
+            controller.controlScope !== "children" ||
+            ensureSubagentControllerOwnsRun({
+              cfg,
+              controller: current,
+              entry: item.entry,
+              rootFacts,
+            })
+          ) {
+            continue;
+          }
+          controlled.add(item.entry.runId);
+          pending.push(
+            resolveSubagentControllerIdentity({
+              cfg,
+              agentSessionKey: item.entry.childSessionKey,
+              agentId: item.entry.childAgentId,
+            }),
+          );
+        }
+      }
+      const denied = new Set<string>();
+      for (const item of held) {
+        if (!readable.has(item.entry.runId)) {
+          continue;
+        }
+        try {
+          const rootFacts = item.proof.assertCurrent();
+          // Re-prove the child itself. Do not re-apply the top controller's visibility
+          // to a descendant discovered under a child controller.
+          if (item.entry.childHandoff || detachedRootAuthorizationError(item.entry, rootFacts)) {
+            denied.add(item.entry.runId);
+          }
+        } catch (error) {
+          if (hasSqliteWorkerOutcomeUnknown(error)) {
+            throw error;
+          }
+          denied.add(item.entry.runId);
+        }
+      }
+      // A denied ancestor invalidates descendant selections too. Fail closed.
+      if (denied.size) {
+        throw new Error("Subagent scope changed during preparation.");
+      }
+      const selected = [...readable.values()];
+      let released = false;
+      const assertCurrent = () => {
+        if (released) throw new Error("Subagent scope has been released.");
+        for (const item of held) {
+          if (!readable.has(item.entry.runId)) {
+            continue;
+          }
+          const facts = item.proof.assertCurrent();
+          if (item.entry.childHandoff || detachedRootAuthorizationError(item.entry, facts)) {
+            throw new Error("Subagent scope changed before publication or control.");
+          }
+        }
+      };
+      const prepareScopeRead = () => {
+        if (released) throw new Error("Subagent scope has been released.");
+        const pending = held
+          .filter((item) => readable.has(item.entry.runId))
+          .flatMap((item) => item.proof.prepareRead() ?? []);
+        return pending.length ? Promise.all(pending).then(() => {}) : undefined;
+      };
+      const commitSync = <R>(render: () => R, ..._forbidPromise: SyncOnly<R>): R => {
+        assertCurrent();
+        const result = render();
+        if (result != null && typeof (result as { then?: unknown }).then === "function")
+          throw new TypeError("Scope renderer must be synchronous.");
+        return result;
+      };
+      const release = () => {
+        if (released) return;
+        released = true;
+        for (const item of held) {
+          item.proof.release();
+        }
+      };
+      transferred = true;
+      return {
+        cfg,
+        controller,
+        readable: selected,
+        controlled,
+        assertCurrent,
+        prepareRead: prepareScopeRead,
+        commitSync,
+        release,
+      };
+    } finally {
+      if (!transferred) {
+        for (const item of held) {
+          item.proof.release();
+        }
       }
     }
-    return { cfg, controller, readable: [...readable.values()], controlled };
   };
   return {
     label: "Subagents",
@@ -349,10 +462,12 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
             })
           : undefined;
       let provedScope: Awaited<ReturnType<typeof readScope>> | undefined;
+      let cancelProof: RetainedChildRootProof | undefined;
       const readCurrentScope = () => {
         if (!provedScope) {
           throw new Error("Subagent ownership was not proved before control.");
         }
+        provedScope.assertCurrent();
         return provedScope;
       };
       const prepareRead = () => {
@@ -374,22 +489,47 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
           }
           const proved = await readScope();
           provedScope = proved;
-          const visible = new Set(proved.readable.map((entry) => entry.runId));
-          return jsonResult({
-            status: "ok",
-            action,
-            ...(await waitForSelectedRuns({
+          proved.assertCurrent();
+          const proofs = new Map<string, RetainedChildRootProof>();
+          try {
+            for (const entry of proved.readable) {
+              proofs.set(entry.runId, await retainChildRootProof(proved.cfg, entry));
+            }
+            const waited = await waitForSelectedRuns({
               runIds,
-              readRuns: (snapshot) =>
-                [...snapshot.values()].filter((entry) => visible.has(entry.runId)),
+              readRuns: (snapshot) => {
+                proved.assertCurrent();
+                return [...snapshot.values()].filter((entry) => {
+                  const proof = proofs.get(entry.runId);
+                  if (!proof || entry.childHandoff) {
+                    return false;
+                  }
+                  try {
+                    const facts = proof.assertCurrent();
+                    return detachedRootAuthorizationError(entry, facts) === undefined;
+                  } catch (error) {
+                    if (hasSqliteWorkerOutcomeUnknown(error)) {
+                      throw error;
+                    }
+                    return false;
+                  }
+                });
+              },
               timeoutMs:
                 Math.min(60, readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30) * 1000,
               signal,
-            })),
-          });
+            });
+            for (let pending = proved.prepareRead(); pending; pending = proved.prepareRead())
+              await pending;
+            return proved.commitSync(() => jsonResult({ status: "ok", action, ...waited }));
+          } finally {
+            for (const proof of proofs.values()) {
+              proof.release();
+            }
+          }
         }
         provedScope = await readScope(controllerRead?.read);
-        const { cfg, controller, readable, controlled } = provedScope;
+        const { cfg, controller, readable, controlled } = readCurrentScope();
         if (action === "list") {
           const readContext = await buildControlledSubagentRunsReadContext(
             controller.controllerSessionKey,
@@ -400,21 +540,41 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
               readPositiveIntegerParam(params, "recentMinutes") ?? DEFAULT_RECENT_MINUTES,
             ),
           );
-          const list = buildSubagentList({
-            context: readContext.list,
-            sessionEntries: await readSubagentListSessionEntries(cfg, readContext.list),
-          });
-          return jsonResult({
-            status: "ok",
-            action,
-            requesterSessionKey: controller.controllerSessionKey,
-            callerSessionKey: controller.callerSessionKey,
-            callerIsSubagent: controller.callerIsSubagent,
-            total: list.total,
-            active: list.active.map(({ line: _line, ...view }) => view),
-            recent: list.recent.map(({ line: _line, ...view }) => view),
-            text: list.text,
-          });
+          try {
+            const sessionEntries = await readSubagentListSessionEntries(
+              cfg,
+              readContext.candidateContext.list,
+            );
+            for (
+              let pending = readContext.prepareRead();
+              pending;
+              pending = readContext.prepareRead()
+            )
+              await pending;
+            for (
+              let pending = provedScope.prepareRead();
+              pending;
+              pending = provedScope.prepareRead()
+            )
+              await pending;
+            return readContext.commitSync((current) => {
+              readCurrentScope();
+              const list = buildSubagentList({ context: current.list, sessionEntries });
+              return jsonResult({
+                status: "ok",
+                action,
+                requesterSessionKey: controller.controllerSessionKey,
+                callerSessionKey: controller.callerSessionKey,
+                callerIsSubagent: controller.callerIsSubagent,
+                total: list.total,
+                active: list.active.map(({ line: _line, ...view }) => view),
+                recent: list.recent.map(({ line: _line, ...view }) => view),
+                text: list.text,
+              });
+            });
+          } finally {
+            readContext.release();
+          }
         }
         if (action === "cancel") {
           const runId = requestedRunId;
@@ -428,6 +588,8 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
               error: "Run outside the controlled session tree.",
             });
           }
+          cancelProof = await retainChildRootProof(cfg, target);
+          const targetProof = cancelProof;
           const result = await killSubagentRunAdmin(
             {
               cfg,
@@ -439,17 +601,38 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
               expectedOwnerKey: target.requesterSessionKey,
             },
             {
+              incarnationAuthority: "run",
               prepareRead: () => {
                 const pending = prepareRead();
                 if (!pending) {
                   return undefined;
                 }
                 return pending.then(async () => {
-                  provedScope = await readScope(controllerRead?.read);
+                  const nextScope = await readScope(controllerRead?.read);
+                  provedScope?.release();
+                  provedScope = nextScope;
                 });
               },
               assertCurrent: () => {
                 signal?.throwIfAborted();
+                let facts;
+                try {
+                  facts = targetProof.assertCurrent();
+                } catch (error) {
+                  if (hasSqliteWorkerOutcomeUnknown(error)) {
+                    throw error;
+                  }
+                  throw new Error(
+                    "Session ownership could not be proved; former-parent control is refused.",
+                  );
+                }
+                const detached = detachedRootAuthorizationError(target, facts);
+                if (target.childHandoff || detached) {
+                  throw new Error(
+                    detached ??
+                      "This session was promoted to a standard session; its former parent no longer controls it.",
+                  );
+                }
                 const current = readCurrentScope();
                 if (
                   current.controller.controllerSessionKey !== controller.controllerSessionKey ||
@@ -464,10 +647,13 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
               },
             },
           );
+          targetProof.release();
           return jsonResult({ ...result, action, runId });
         }
         throw new ToolInputError("Unsupported subagents action");
       } finally {
+        provedScope?.release();
+        cancelProof?.release();
         controllerRead?.release();
         selection?.ownership.release();
       }

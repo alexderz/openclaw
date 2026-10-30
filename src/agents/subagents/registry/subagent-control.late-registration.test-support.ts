@@ -35,9 +35,13 @@ export function registerLateDescendantControlTests({
     "captures descendants registered during %s before releasing capacity (replacement=%s)",
     async (phase, replaceChild) => {
       const owner = "agent:main:main";
+      const parentIdentity = { sessionId: "late-parent-session", lifecycleRevision: "late-parent-revision" };
+      const activeIdentity = { sessionId: "live-child-session", lifecycleRevision: "live-child-revision" };
+      const lateIdentity = { sessionId: "late-child-session", lifecycleRevision: "late-child-revision" };
       let parent = createSubagentRunRecord({
         runId: "late-parent",
         childSessionKey: "agent:main:subagent:late-parent",
+        childSessionIdentity: parentIdentity,
         requesterSessionKey: owner,
         requesterDisplayKey: owner,
         task: "orchestrator",
@@ -49,6 +53,7 @@ export function registerLateDescendantControlTests({
         ...parent,
         runId: "live-child",
         childSessionKey: "agent:main:subagent:live-child",
+        childSessionIdentity: activeIdentity,
         controllerSessionKey: parent.childSessionKey,
       });
       await addSubagentRunForTests(parent);
@@ -58,7 +63,9 @@ export function registerLateDescendantControlTests({
         activeChild = subagentRuns.get(activeChild.runId)!;
       }
       const storePath = await writeSessionStoreFixture("late-descendant", {
-        [parent.childSessionKey]: { sessionId: "late-parent-session", updatedAt: 1 },
+        [parent.childSessionKey]: { ...parentIdentity, updatedAt: 1 },
+        [activeChild.childSessionKey]: { ...activeIdentity, updatedAt: 1 },
+        ["agent:main:subagent:late-child"]: { ...lateIdentity, updatedAt: 1 },
       });
       const reached = createDeferred();
       const proceed = createDeferred();
@@ -90,6 +97,7 @@ export function registerLateDescendantControlTests({
         return registerSubagentRun({
           runId: "late-child",
           childSessionKey: childKey,
+          sessionEntry: lateIdentity,
           requesterSessionKey: requester.childSessionKey,
           requesterAgentId: "main",
           requesterDisplayKey: requester.childSessionKey,
@@ -99,11 +107,13 @@ export function registerLateDescendantControlTests({
           queued: true,
         });
       };
+      let capacityReleasedByAbort = false;
       setSubagentControlDepsForTest({
         isEmbeddedAgentRunActive: () => true,
         abortEmbeddedAgentRun: () => {
-          if (phase === "admission drain") {
+          if (phase === "admission drain" && !capacityReleasedByAbort) {
             expect(releaseSwarmRun(parent.runId)).toBe(true);
+            capacityReleasedByAbort = true;
           }
           return true;
         },
@@ -179,7 +189,11 @@ export function registerLateDescendantControlTests({
         if (phase === "admission drain") {
           admission.release();
         }
-        await pending;
+        const killResult = await pending;
+        if (phase === "admission drain") {
+          expect(killResult, JSON.stringify(killResult)).toMatchObject({ status: "ok", killed: 3 });
+          expect(capacityReleasedByAbort).toBe(true);
+        }
         if (replaceChild) {
           expect(
             start,

@@ -30,9 +30,11 @@ export function registerAdmissionDrainControlTests({
     const controllerSessionKey = "agent:main:main";
     const childSessionKey = "agent:main:subagent:kill-admission-timeout";
     const sessionId = "sess-kill-admission-timeout";
+    const lifecycleRevision = "revision-kill-admission-timeout";
     let entry = createSubagentRunRecord({
       runId: "run-kill-admission-timeout",
       childSessionKey,
+      childSessionIdentity: { sessionId, lifecycleRevision },
       controllerSessionKey,
       requesterSessionKey: controllerSessionKey,
       task: "hold admission during kill",
@@ -43,7 +45,7 @@ export function registerAdmissionDrainControlTests({
     await addSubagentRunForTests(entry);
     entry = subagentRuns.get(entry.runId)!;
     const storePath = await writeSessionStoreFixture("kill-admission-timeout", {
-      [childSessionKey]: { sessionId, updatedAt: Date.now() },
+      [childSessionKey]: { sessionId, lifecycleRevision, updatedAt: Date.now() },
     });
     const interrupted = createDeferred();
     const admission = await beginSessionWorkAdmission({

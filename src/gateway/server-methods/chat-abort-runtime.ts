@@ -9,8 +9,11 @@ import {
 import { captureExecRequestCancellation } from "../../agents/bash-process-control.js";
 import { killSubagentRunAdmin } from "../../agents/subagents/registry/subagent-control-kill.js";
 import {
-  readChildRootAuthorization,
+  detachedRootAuthorizationError,
+  retainChildRootProof,
+  UNPROVED_ROOT_CONTROL_DENIED,
   type ChildRootAuthorization,
+  type RetainedChildRootProof,
 } from "../../agents/subagents/registry/subagent-control-root-authority.js";
 import { ensureSubagentControllerOwnsRun } from "../../agents/subagents/registry/subagent-control-scope.js";
 import type { SubagentRequestSessionOrigin } from "../../agents/subagents/registry/subagent-exec-request-ownership.js";
@@ -23,6 +26,7 @@ import {
   isSubagentRunQueued,
 } from "../../agents/subagents/registry/subagent-registry-read.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
 import {
   abortChatRunById,
@@ -93,18 +97,34 @@ export function abortQueuedCollectorSession(
   };
   // Preserve the actual parent admission's authority through awaited kill work;
   // visibility and operator.write alone do not own an unstarted child.
-  let rootFacts: ChildRootAuthorization | undefined;
+  let proof: RetainedChildRootProof | undefined;
   const assertCurrent = () => {
     params.assertCurrent?.();
     const current = getCurrentSubagentRunOwner(subagentRuns, entry);
     if (!current || (current.execution.status === "queued" && !isSubagentRunQueued(current))) {
       throw new Error("Queued collector reservation changed; retry Stop.");
     }
+    let rootFacts: ChildRootAuthorization;
+    try {
+      if (!proof) {
+        throw new Error(UNPROVED_ROOT_CONTROL_DENIED);
+      }
+      rootFacts = proof.assertCurrent();
+    } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
+      throw error instanceof Error ? error : new Error(UNPROVED_ROOT_CONTROL_DENIED);
+    }
+    const detached = detachedRootAuthorizationError(current, rootFacts);
+    if (detached) {
+      throw new Error(detached);
+    }
     const ownershipError = ensureSubagentControllerOwnsRun({
       cfg,
       controller,
       entry: current,
-      ...(rootFacts ? { rootFacts } : {}),
+      rootFacts,
     });
     if (ownershipError) {
       throw new Error(ownershipError);
@@ -137,6 +157,7 @@ export function abortQueuedCollectorSession(
     }
   };
   return (async () => {
+    try {
     let sessionAbort: Result<ReturnType<typeof prepareChatSessionAbort>, ErrorShape> | undefined;
     let outcome: QueuedCollectorAbortOutcome = {
       ok: false,
@@ -147,7 +168,7 @@ export function abortQueuedCollectorSession(
     };
     let failure: { error: unknown } | undefined;
     try {
-      rootFacts = await readChildRootAuthorization(cfg, entry, () => {
+      proof = await retainChildRootProof(cfg, entry, () => {
         params.assertCurrent?.();
       });
       assertCurrent();
@@ -171,10 +192,7 @@ export function abortQueuedCollectorSession(
             !sessionAbort.value.result.unauthorized &&
             sessionAbort.value.canCascade),
       });
-      const currentEntry = getCurrentSubagentRunOwner(subagentRuns, entry) ?? entry;
-      rootFacts = await readChildRootAuthorization(cfg, currentEntry, () => {
-        params.assertCurrent?.();
-      });
+      // The retained proof is re-asserted after the projection await. A second snapshot is not authority.
       assertCurrent();
       await killSubagentRunAdmin(
         {
@@ -228,6 +246,7 @@ export function abortQueuedCollectorSession(
           },
         },
         {
+          incarnationAuthority: params.requester.isAdmin ? "administrative" : "run",
           assertCurrent,
           preparePublication: publication,
           beforeSessionKill: () => {
@@ -289,6 +308,9 @@ export function abortQueuedCollectorSession(
       }
     }
     return outcome;
+    } finally {
+      proof?.release();
+    }
   })();
 }
 

@@ -18,8 +18,9 @@ import {
 } from "./subagent-control-kill-scope.js";
 import {
   detachedRootAuthorizationError,
-  readChildRootAuthorization,
+  retainChildRootProof,
   type ChildRootAuthorization,
+  type RetainedChildRootProof,
 } from "./subagent-control-root-authority.js";
 import {
   ensureSubagentControllerOwnsRun,
@@ -538,42 +539,61 @@ export async function killSessionSubagentRuns(params: {
     ...listSubagentRunsForRequester(params.sessionKey, { requesterAgentId: params.agentId }),
     ...listRunsForControllerFromRuns(subagentRuns, params.sessionKey, params.agentId),
   ];
-  const rootFacts = new Map<string, ChildRootAuthorization>();
-  for (const entry of runs) {
-    if (rootFacts.has(entry.runId)) {
-      continue;
-    }
-    rootFacts.set(
-      entry.runId,
-      await readChildRootAuthorization(params.cfg, entry, params.assertCurrent ?? (() => {})),
-    );
-  }
-  return killSelectedSubagentRuns({
-    cfg: params.cfg,
-    assertCurrent: params.assertCurrent,
-    runs,
-    // Ordinary controller mutations retain their narrower authority. Only an admitted
-    // lifecycle boundary can retire work whose completion belongs to this session.
-    // A promoted child is no longer this session's to retire, by any boundary.
-    ownsRoot: (entry) => {
-      const facts = rootFacts.get(entry.runId);
-      if (!facts || detachedRootAuthorizationError(entry, facts)) {
-        return false;
+  const proofs = new Map<string, RetainedChildRootProof>();
+  try {
+    for (const entry of runs) {
+      if (proofs.has(entry.runId)) {
+        continue;
       }
-      return (
-        !entry.childHandoff &&
-        (!ensureSubagentControllerOwnsRun({
-          cfg: params.cfg,
-          controller,
-          entry,
-          rootFacts: facts,
-        }) ||
-          (entry.requesterSessionKey === params.sessionKey &&
-            resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId))
+      proofs.set(
+        entry.runId,
+        await retainChildRootProof(params.cfg, entry, params.assertCurrent ?? (() => {})),
       );
-    },
-    suppressTaskDelivery: true,
-  });
+    }
+    return await killSelectedSubagentRuns({
+      cfg: params.cfg,
+      assertCurrent: params.assertCurrent,
+      runs,
+      // Ordinary controller mutations retain their narrower authority. Only an admitted
+      // lifecycle boundary can retire work whose completion belongs to this session.
+      // A promoted child is no longer this session's to retire, by any boundary.
+      // The retained proof is revalidated here; the map is not a fresh authority claim.
+      ownsRoot: (entry) => {
+        const proof = proofs.get(entry.runId);
+        if (!proof) {
+          return false;
+        }
+        let facts: ChildRootAuthorization;
+        try {
+          facts = proof.assertCurrent();
+        } catch (error) {
+          if (hasSqliteWorkerOutcomeUnknown(error)) {
+            throw error;
+          }
+          return false;
+        }
+        if (detachedRootAuthorizationError(entry, facts)) {
+          return false;
+        }
+        return (
+          !entry.childHandoff &&
+          (!ensureSubagentControllerOwnsRun({
+            cfg: params.cfg,
+            controller,
+            entry,
+            rootFacts: facts,
+          }) ||
+            (entry.requesterSessionKey === params.sessionKey &&
+              resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId))
+        );
+      },
+      suppressTaskDelivery: true,
+    });
+  } finally {
+    for (const proof of proofs.values()) {
+      proof.release();
+    }
+  }
 }
 
 async function killSelectedSubagentRuns(
@@ -625,6 +645,7 @@ export async function killSubagentRunAdmin(
     assertCurrent: () => void;
     prepareRead?: () => Promise<void> | undefined;
     beforeSessionKill?: () => boolean;
+    incarnationAuthority?: "run" | "administrative";
     preparePublication?: KillPublicationPreparation<SubagentAdminKillResult>;
   },
 ): Promise<SubagentAdminKillResult> {
@@ -661,6 +682,7 @@ export async function killSubagentRunAdmin(
       runs: [entry],
       assertCurrent: control?.assertCurrent,
       prepareRead: control?.prepareRead,
+      incarnationAuthority: control?.incarnationAuthority ?? "administrative",
     },
     async (scope, [tree]) => {
       if (!tree) {

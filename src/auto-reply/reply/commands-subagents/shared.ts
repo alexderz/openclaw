@@ -2,7 +2,10 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import type { ControlledSubagentRunsReadContext } from "../../../agents/subagents/registry/subagent-control-scope.js";
+import type {
+  ControlledSubagentRead,
+  ControlledSubagentRunsReadContext,
+} from "../../../agents/subagents/registry/subagent-control-scope.js";
 import type { SubagentRunRecord } from "../../../agents/subagents/registry/subagent-registry.types.js";
 import { commandReply } from "../command-gates.js";
 import type { CommandHandler, CommandHandlerResult } from "../commands-types.js";
@@ -15,7 +18,7 @@ type SubagentsCommandParams = Parameters<CommandHandler>[0];
 export type SubagentsCommandContext = {
   params: SubagentsCommandParams;
   requesterKey: string;
-  readContext: Pick<ControlledSubagentRunsReadContext, "list">;
+  readContext: ControlledSubagentRead;
   restTokens: string[];
 };
 

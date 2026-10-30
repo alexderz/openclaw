@@ -149,7 +149,14 @@ export async function reconcileDurableSubagentKillIntent(params: {
           throw new Error("Subagent session preparation lost its original kill intent.");
         }
       },
-      undefined,
+      killIntent.sessionId && killIntent.sessionLifecycleRevision
+        ? {
+            sessionKey: params.entry.childSessionKey,
+            sessionId: killIntent.sessionId,
+            expectedLifecycleRevision: killIntent.sessionLifecycleRevision,
+            storePath,
+          }
+        : undefined,
       params.entry.childAgentId,
     );
     if (isSessionLifecycleMutationActive(session.storePath, identities)) {

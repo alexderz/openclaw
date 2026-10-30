@@ -289,7 +289,7 @@ it.each(["requester", "controller"] as const)(
     );
     const read = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
 
-    const context = await buildControlledSubagentRunsReadContext(requesterSessionKey);
+    const context = await buildControlledReadSnapshotForTest(requesterSessionKey);
 
     expect(context.runs.map((entry) => entry.runId)).toEqual([latest.runId]);
     expect(context.list.pendingDescendants.get(latest.childSessionKey)).toBe(
@@ -309,7 +309,7 @@ it.each(["requester", "controller"] as const)(
       requesterSessionKey: "agent:main:moved",
     };
     persistRegistryFixture(new Map([[moved.runId, moved]]), [moved.runId]);
-    expect((await buildControlledSubagentRunsReadContext(requesterSessionKey)).runs).toEqual([]);
+    expect((await buildControlledReadSnapshotForTest(requesterSessionKey)).runs).toEqual([]);
   },
 );
 
@@ -321,7 +321,7 @@ it("reselects a durable controlled generation that replaced a cached physical ro
   saveSubagentRegistryToSqlite(new Map([[replacement.runId, replacement]]));
   const read = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
 
-  const context = await buildControlledSubagentRunsReadContext(previous.requesterSessionKey);
+  const context = await buildControlledReadSnapshotForTest(previous.requesterSessionKey);
 
   expect(context.runs.map((entry) => entry.runId)).toEqual([replacement.runId]);
   expect(read.mock.calls.map(([, command]) => command)).toEqual([
@@ -458,7 +458,7 @@ it("captures parent and yielded-child facts after the final scoped hydration", a
   child.delivery = { status: "pending" };
   saveSubagentRegistryToSqlite(new Map([parent, child].map((entry) => [entry.runId, entry])));
   const gate = holdFirstCompactRead("subagents.runs", "session");
-  const reading = buildControlledSubagentRunsReadContext(parent.requesterSessionKey);
+  const reading = buildControlledReadSnapshotForTest(parent.requesterSessionKey);
   try {
     await gate.entered;
     const changedParent = { ...parent, task: "published during child hydration" };
@@ -888,3 +888,15 @@ it("keeps unrelated publication context failures visible", () => {
   );
   expect(() => persistRegistryFixture(runs("current"), ["one"])).toThrow(failure);
 });
+
+async function buildControlledReadSnapshotForTest(
+  ...args: Parameters<typeof buildControlledSubagentRunsReadContext>
+) {
+  const held = await buildControlledSubagentRunsReadContext(...args);
+  try {
+    for (let pending = held.prepareRead(); pending; pending = held.prepareRead()) await pending;
+    return held.commitSync((current) => current);
+  } finally {
+    held.release();
+  }
+}

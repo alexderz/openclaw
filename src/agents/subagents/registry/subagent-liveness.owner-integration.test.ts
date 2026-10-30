@@ -273,7 +273,7 @@ it("retains an exact queued collector reservation without calling it executor-li
     onStartFailure: () => true,
   });
   await Promise.resolve();
-  const prepared = await buildControlledSubagentRunsReadContext(parent, "main", getRuntimeConfig());
+  const prepared = await buildControlledReadSnapshotForTest(parent, "main", getRuntimeConfig());
   expect(
     (
       await buildSubagentList({
@@ -284,11 +284,7 @@ it("retains an exact queued collector reservation without calling it executor-li
     ).active.map((row) => ({ status: row.status, execution: row.execution.state })),
   ).toEqual([{ status: "queued", execution: "queued" }]);
   now.mockReturnValue(olderThanCutoff);
-  const agedContext = await buildControlledSubagentRunsReadContext(
-    parent,
-    "main",
-    getRuntimeConfig(),
-  );
+  const agedContext = await buildControlledReadSnapshotForTest(parent, "main", getRuntimeConfig());
   expect(resolveSubagentEntryForToken(agedContext.list.view, "1")).toMatchObject({
     entry: { runId: entry.runId },
   });
@@ -401,7 +397,7 @@ it("does not retain an old run after its last claim releases preserved routing m
 it("does not borrow a same-run-ID successor's live claim through a prepared observation", async () => {
   vi.spyOn(Date, "now").mockReturnValue(start);
   const original = await register("live-generation");
-  const prepared = await buildControlledSubagentRunsReadContext(parent, "main", getRuntimeConfig());
+  const prepared = await buildControlledReadSnapshotForTest(parent, "main", getRuntimeConfig());
   const successor = await register(original.runId);
   const claim = claimAgentRunContext(
     successor.runId,
@@ -412,11 +408,7 @@ it("does not borrow a same-run-ID successor's live claim through a prepared obse
     expect(successor.generation).toBeGreaterThan(original.generation!);
     expect(hasLiveAgentRunContext(successor.runId)).toBe(true);
     expect(isSubagentRunLive(successor)).toBe(true);
-    const current = await buildControlledSubagentRunsReadContext(
-      parent,
-      "main",
-      getRuntimeConfig(),
-    );
+    const current = await buildControlledReadSnapshotForTest(parent, "main", getRuntimeConfig());
 
     expect(prepared.getExecutionObservation(prepared.runs[0]!)).toMatchObject({ state: "unknown" });
     expect(current.getExecutionObservation(current.runs[0]!)).toMatchObject({ state: "running" });
@@ -462,7 +454,7 @@ it("preserves queued retention across row values while rejecting replaced reserv
     });
   expect(reserve()).toBe(true);
   const original = await register(id, true);
-  const prepared = await buildControlledSubagentRunsReadContext(parent, "main", getRuntimeConfig());
+  const prepared = await buildControlledReadSnapshotForTest(parent, "main", getRuntimeConfig());
   now.mockReturnValue(olderThanCutoff);
   const snapshot = buildSubagentSessionListReadIndex();
   const compact = snapshot.listDescendantRunsForRequester(parent)[0]!;
@@ -482,7 +474,7 @@ it("preserves queued retention across row values while rejecting replaced reserv
   expect(replacement.generation).toBeGreaterThan(original.generation!);
   expect(isSubagentRunQueued(original)).toBe(false);
   expect(isSubagentRunQueued(replacement)).toBe(false);
-  const replaced = await buildControlledSubagentRunsReadContext(parent, "main", getRuntimeConfig());
+  const replaced = await buildControlledReadSnapshotForTest(parent, "main", getRuntimeConfig());
   expect(replaced.getExecutionObservation(replaced.runs[0]!)).toMatchObject({ state: "unknown" });
   expect(snapshot.countActiveDescendantRuns(parent)).toBe(0);
   expect(snapshot.hasDescendantRunAwaitingSettle(parent)).toBe(false);
@@ -675,3 +667,15 @@ it("makes an admitted child inactive when termination is recorded", async () => 
     }
   });
 });
+
+async function buildControlledReadSnapshotForTest(
+  ...args: Parameters<typeof buildControlledSubagentRunsReadContext>
+) {
+  const held = await buildControlledSubagentRunsReadContext(...args);
+  try {
+    for (let pending = held.prepareRead(); pending; pending = held.prepareRead()) await pending;
+    return held.commitSync((current) => current);
+  } finally {
+    held.release();
+  }
+}

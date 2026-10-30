@@ -4,11 +4,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { bindInProcessSubagentResume } from "../../gateway/in-process-subagent-resume.js";
 import type { TrustedAgentToolCaller } from "../../gateway/server-methods/types.js";
 import { bindParentSubagentResume } from "../../gateway/session-subagent-resume.js";
-import {
-  detachedRootAuthorizationError,
-  readChildRootAuthorization,
-} from "../subagents/registry/subagent-control-root-authority.js";
-import { getLatestLiveSubagentRunByChildSessionKey } from "../subagents/registry/subagent-registry-read.js";
+import type { TrustedSubagentResume } from "../../gateway/in-process-subagent-resume.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { jsonResult } from "./common.js";
 import {
@@ -44,6 +40,7 @@ export async function resumeSessionsSendTask(params: {
   sendParams: Record<string, unknown>;
   callGateway: AgentToolGatewayRequestCaller;
 }): Promise<ReturnType<typeof jsonResult>> {
+  let subagentResume: TrustedSubagentResume | undefined;
   try {
     const assertCurrent = () => {
       params.caller.assertCurrent();
@@ -66,15 +63,8 @@ export async function resumeSessionsSendTask(params: {
     ) {
       throw new Error("Task resume requires the existing, unarchived native child session.");
     }
-    const run = getLatestLiveSubagentRunByChildSessionKey(params.sessionKey);
-    if (run) {
-      const rootFacts = await readChildRootAuthorization(params.cfg, run, assertCurrent);
-      const detachedRootError = detachedRootAuthorizationError(run, rootFacts);
-      if (detachedRootError) {
-        throw new Error(detachedRootError);
-      }
-    }
-    const subagentResume = bindParentSubagentResume({
+    // Bind retains the child-root proof. Admission asserts that proof; this snapshot is not authority.
+    subagentResume = await bindParentSubagentResume({
       cfg: params.cfg,
       caller: params.caller,
       childSessionKey: params.sessionKey,
@@ -126,5 +116,7 @@ export async function resumeSessionsSendTask(params: {
       sessionKey: params.displayKey,
       error: formatErrorMessage(error),
     });
+  } finally {
+    subagentResume?.releaseChildRootProof();
   }
 }

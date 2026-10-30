@@ -16,14 +16,15 @@ import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-w
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { holdQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
 import { resolveSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { resolveRunOwnedKillTarget } from "./subagent-control-kill-target.js";
 import {
   detachedRootAuthorizationError,
   type ChildRootAuthorization,
 } from "./subagent-control-root-authority.js";
 import {
-  ensureSubagentControllerOwnsRun,
   getLatestOwnedSubagentRun,
   isCurrentSubagentRun,
+  subagentControllerCandidateError,
 } from "./subagent-control-scope.js";
 import {
   prepareSubagentKillSession,
@@ -72,6 +73,8 @@ export type KillSelection = {
   ownsRoot?: (entry: SubagentRunRecord) => boolean;
   selectPublishedRoot?: (entry: SubagentRunRecord) => boolean;
   controller?: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
+  /** Run-owned cancellation requires a recorded incarnation. Admin keeps the supplied-field fence. */
+  incarnationAuthority?: "run" | "administrative";
 };
 
 export type KillScope = {
@@ -152,7 +155,7 @@ export async function withSubagentKillScope<T>(
         parent?.canTraverse(requirePreparedSession) !== false &&
         ownsRoot?.(candidate) !== false &&
         (!controller ||
-          !ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry: candidate }));
+          !subagentControllerCandidateError({ cfg: params.cfg, controller, entry: candidate }));
       if (!ownerCurrent(entry, false) || !isCurrentSubagentRun(entry, params.cfg)) {
         continue;
       }
@@ -282,12 +285,17 @@ export async function withSubagentKillScope<T>(
         prepare: async () => {
           try {
             const selectedRun = tree.entry;
+            const authority = params.incarnationAuthority ?? "run";
+            const runTarget = resolveRunOwnedKillTarget(selectedRun);
             session = await prepareSubagentKillSession(
               params.cfg,
               selectedRun.childSessionKey,
               () => assertSubagentRegistryWriteSourceCurrent(stateContext),
-              selectedRun.execution.transcriptTarget,
+              authority === "administrative"
+                ? (selectedRun.execution.transcriptTarget ?? runTarget)
+                : runTarget,
               selectedRun.childAgentId,
+              { authority },
             );
             releaseSessions.push(session.release);
             // Registry handoff is best-effort after the durable promotion commit.
@@ -295,7 +303,13 @@ export async function withSubagentKillScope<T>(
             const rootFacts: ChildRootAuthorization =
               session.entry === undefined
                 ? { proved: true, missing: true }
-                : { proved: true, missing: false, promotedFrom: session.entry.promotedFrom };
+                : {
+                    proved: true,
+                    missing: false,
+                    promotedFrom: session.entry.promotedFrom,
+                    sessionId: session.entry.sessionId ?? null,
+                    lifecycleRevision: session.entry.lifecycleRevision ?? null,
+                  };
             const detachedRootError = detachedRootAuthorizationError(selectedRun, rootFacts);
             if (detachedRootError) {
               // Drop the prepared incarnation before the error is recorded. Traversal

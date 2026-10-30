@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
   ensureSubagentControllerOwnsRun,
+  isSubagentRunCandidateForSession,
   isSubagentRunVisibleToSession,
 } from "./subagent-control-scope.js";
 import {
@@ -25,6 +26,15 @@ const provedPromoted: ChildRootAuthorization = {
   proved: true,
   missing: false,
   promotedFrom: promoted,
+  sessionId: "child-session",
+  lifecycleRevision: "child-revision",
+};
+const provedDelegated: ChildRootAuthorization = {
+  proved: true,
+  missing: false,
+  promotedFrom: undefined,
+  sessionId: "child-session",
+  lifecycleRevision: "child-revision",
 };
 const spawner = {
   requesterSessionKey: parent,
@@ -51,15 +61,16 @@ describe("detached root authorization", () => {
     );
   });
 
-  it("still authorizes that edge when the caller did not supply root facts", () => {
+  it("denies the final authorization API when root facts are omitted", () => {
     expect(
       ensureSubagentControllerOwnsRun({
         cfg,
         controller: { controllerSessionKey: parent, controllerAgentId: "main" },
         entry: spawner,
       }),
-    ).toBeUndefined();
-    expect(isSubagentRunVisibleToSession(spawner, parent, "main", cfg)).toBe(true);
+    ).toBe(UNPROVED_ROOT_CONTROL_DENIED);
+    expect(isSubagentRunVisibleToSession(spawner, parent, "main", cfg)).toBe(false);
+    expect(isSubagentRunCandidateForSession(spawner, parent, "main", cfg)).toBe(true);
   });
 
   it("fails closed when root facts are unproved", () => {
@@ -87,7 +98,7 @@ describe("detached root authorization", () => {
     expect(
       detachedRootAuthorizationError(
         spawner,
-        { proved: true, missing: false, promotedFrom: undefined },
+        provedDelegated,
       ),
     ).toBeUndefined();
   });
@@ -106,5 +117,41 @@ describe("detached root authorization", () => {
       }),
     ).toBe("This session was promoted to a standard session; its former parent no longer controls it.");
     expect(isSubagentRunVisibleToSession(handedOff, parent, "main", cfg)).toBe(false);
+  });
+
+  it("denies a promoted edge for an independent controller and a cross-agent requester", () => {
+    const independent = {
+      ...spawner,
+      controllerSessionKey: "agent:main:dashboard:controller",
+      requesterSessionKey: "agent:other:main",
+    } as SubagentRunReadRecord;
+    expect(detachedRootAuthorizationError(independent, provedPromoted)).toBe(
+      PROMOTED_ROOT_FORMER_PARENT_DENIED,
+    );
+    const rawRequester = {
+      ...spawner,
+      requesterSessionKey: "other",
+    } as SubagentRunReadRecord;
+    expect(detachedRootAuthorizationError(rawRequester, provedPromoted)).toBe(
+      PROMOTED_ROOT_FORMER_PARENT_DENIED,
+    );
+  });
+
+  it("does not treat a self-requester record as a former-parent spawner edge", () => {
+    const self = {
+      ...spawner,
+      requesterSessionKey: child,
+      childSessionKey: child,
+      controllerSessionKey: "agent:main:dashboard:controller",
+    } as SubagentRunReadRecord;
+    expect(detachedRootAuthorizationError(self, provedPromoted)).toBeUndefined();
+    expect(
+      ensureSubagentControllerOwnsRun({
+        cfg,
+        controller: { controllerSessionKey: parent, controllerAgentId: "main" },
+        entry: self,
+        rootFacts: provedPromoted,
+      }),
+    ).toBe("Subagents can only control runs spawned from their own session.");
   });
 });

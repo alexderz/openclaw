@@ -262,7 +262,7 @@ it.runIf(process.env.OPENCLAW_ENTRY_RELOAD_BENCH === "1")(
             );
             expect(recovery?.sessionEntry?.sessionId).toBe(run.runId);
 
-            const context = await buildControlledSubagentRunsReadContext(
+            const context = await buildControlledReadSnapshotForTest(
               controllerSessionKey,
               "main",
               cfg,
@@ -310,3 +310,15 @@ it.runIf(process.env.OPENCLAW_ENTRY_RELOAD_BENCH === "1")(
     );
   },
 );
+
+async function buildControlledReadSnapshotForTest(
+  ...args: Parameters<typeof buildControlledSubagentRunsReadContext>
+) {
+  const held = await buildControlledSubagentRunsReadContext(...args);
+  try {
+    for (let pending = held.prepareRead(); pending; pending = held.prepareRead()) await pending;
+    return held.commitSync((current) => current);
+  } finally {
+    held.release();
+  }
+}
