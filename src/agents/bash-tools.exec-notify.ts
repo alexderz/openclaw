@@ -3,6 +3,7 @@ import {
   captureSessionEventTargetForHost as captureSessionEventTarget,
   enqueueSessionEventForHost as enqueueSessionEvent,
 } from "../auto-reply/reply/session-event-handoff.js";
+import { isHostCapturedSessionEventTarget } from "../auto-reply/reply/session-event-target.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resolveEventSessionKeyForPolicy } from "../infra/event-session-routing.js";
 import { readExecRequestOwners, withExecRequestOwners } from "../infra/exec-request-context.js";
@@ -116,6 +117,10 @@ export function maybeNotifyOnExit(
         agentId,
         source: "exec",
         expectedTarget: session.notifySessionTarget,
+        ...(session.notifySessionTarget.sessionId &&
+        isHostCapturedSessionEventTarget(session.notifySessionTarget)
+          ? { preAdmissionRetry: "exec-completion-storage" as const }
+          : {}),
       });
       recordNotifyOnExitRemoval(session, receipt.cancel);
       void receipt.settled.then((outcome) => {

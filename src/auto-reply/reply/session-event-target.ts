@@ -28,6 +28,10 @@ import {
   parseAgentSessionKey,
   toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
+import {
+  hasOnlySessionLifecycleMutationKindActive,
+  isSessionLifecycleMutationActive,
+} from "../../sessions/session-lifecycle-admission.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.read.js";
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
@@ -249,10 +253,26 @@ export function assertSessionEventTargetCurrent(target: SessionEventTarget): voi
   }
 }
 
+class SessionEventPreparationDeferredError extends Error {
+  readonly reason = "compaction-storage-gate" as const;
+}
+
+export function isSessionEventPreparationDeferredError(error: unknown): boolean {
+  return error instanceof SessionEventPreparationDeferredError;
+}
+
+export function isHostCapturedSessionEventTarget(target: SessionEventTarget): boolean {
+  return Boolean(targetScopes.get(target)?.source);
+}
+
 /** Deferred producers retain snapshots; only admitted consumption holds live generation facts. */
 export async function prepareSessionEventTargetForHost(
   target: SessionEventTarget,
-  options: { createIfMissing?: true; assertAcceptanceCurrent?: () => void } = {},
+  options: {
+    createIfMissing?: true;
+    assertAcceptanceCurrent?: () => void;
+    deferOnCompactionStorageGate?: true;
+  } = {},
 ) {
   assertSessionEventTargetCurrent(target);
   if (!target.agentId || !target.sessionKey || !target.storePath) {
@@ -267,6 +287,33 @@ export async function prepareSessionEventTargetForHost(
   };
   assertAcceptance();
   assertCapturedEventSource(source);
+  if (
+    options.deferOnCompactionStorageGate &&
+    !options.createIfMissing &&
+    target.sessionId &&
+    source
+  ) {
+    const identities = [target.sessionKey, target.sessionId];
+    const scopes = new Set([
+      target.storePath,
+      source.database.path,
+      source.selectedStore.path,
+      source.selectedStore.physicalPath,
+    ]);
+    const active = [...scopes].filter((scope) =>
+      isSessionLifecycleMutationActive(scope, identities),
+    );
+    if (
+      active.length > 0 &&
+      active.every((scope) =>
+        hasOnlySessionLifecycleMutationKindActive(scope, identities, "compaction"),
+      )
+    ) {
+      throw new SessionEventPreparationDeferredError(
+        "Session event preparation deferred by compaction storage gate",
+      );
+    }
+  }
   let preparation:
     | ReturnType<
         typeof import("../../config/sessions/session-accessor.entry-mutation.js").prepareSessionEntryMutationDatabases

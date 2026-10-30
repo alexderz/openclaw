@@ -1,30 +1,46 @@
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from "vitest";
-import type { dispatchInboundMessageWithRoutedChannelDispatcher } from "../auto-reply/dispatch.js";
+import { dispatchInboundMessageWithRoutedChannelDispatcher } from "../auto-reply/dispatch.js";
 import { enqueueSessionEventForHost as enqueueSessionEvent } from "../auto-reply/reply/session-event-handoff.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
+import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
+import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
+import { isHostCapturedSessionEventTarget } from "../auto-reply/reply/session-event-target.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import {
   consumeSelectedSystemEventEntries,
   enqueueSystemEventEntry,
+  isSystemEventTurnOwned,
+  peekDeliverableSystemEventEntries,
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../infra/system-events.js";
 import * as gatewayWork from "../process/gateway-work-admission.js";
+import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import * as processRegistry from "./bash-process-registry.js";
 import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
 import { startDeferredNotifyRun } from "./bash-tools.notify-on-exit-ack.test-support.js";
 import { createProcessTool } from "./bash-tools.process.js";
 import { acknowledgeInternalToolResult } from "./runtime/internal-hooks.js";
 
+const routeReplyMock = vi.hoisted(() =>
+  vi.fn<typeof import("../auto-reply/reply/route-reply.js").routeReply>(),
+);
+vi.mock("../auto-reply/reply/route-reply.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../auto-reply/reply/route-reply.js")>()),
+  routeReply: routeReplyMock,
+}));
 const supervisorSpawnMock = vi.hoisted(() => vi.fn());
 const randomMock = vi.hoisted(() => vi.fn(() => 0));
 vi.mock("../auto-reply/reply/session-event-handoff.js", async (importOriginal) => {
@@ -189,4 +205,177 @@ it("keeps an identical successor queued when an earlier consumer settles", async
   expect(peekSystemEventEntries(QUEUE_KEY)).toEqual(queued);
   acknowledgeInternalToolResult(successorResult);
   expect(peekSystemEventEntries(QUEUE_KEY)).toEqual([]);
+});
+
+it("delivers a captured incognito completion once without persistent-source retry", async () => {
+  const sessionKey = "agent:main:dashboard:incognito-notify";
+  const authority = { assertCurrent() {} };
+  const actor = expectDefined(await captureOpenClawAgentDatabaseExecution({ kind: "ephemeral", agentId: "main", env: state.env, authority }), "incognito actor");
+  try {
+  await actor.sessions.create(authority, { sessionKey, entry: {
+    sessionId: "incognito-origin", lifecycleRevision: "incognito-revision", updatedAt: Date.now(), incognito: true,
+  } });
+  await withIncognitoSessionActor(actor, async () => {
+  const process = await startDeferredNotifyRun({
+    spawn: supervisorSpawnMock, sessionKey,
+    notifyDeliveryContext: { channel: "telegram", to: "-100123", threadId: 42 },
+  });
+  const target = expectDefined(process.run.session.notifySessionTarget, "captured incognito target");
+  expect(target.sessionId).toBe("incognito-origin");
+  expect(isHostCapturedSessionEventTarget(target)).toBe(false);
+  const timers = vi.spyOn(globalThis, "setTimeout");
+  routeReplyMock.mockImplementationOnce(async (params) => {
+    await params.beforeDeliver?.();
+    return { ok: true, delivered: true };
+  });
+  vi.mocked(dispatchInboundMessageWithRoutedChannelDispatcher).mockImplementationOnce(async (params) => {
+    params.replyOptions?.internalEventExecution?.onStarted?.("incognito-delivery");
+    await params.dispatcherOptions.deliver({ text: "completion delivered" }, { kind: "final" });
+    return { queuedFinal: false, counts: { tool: 0, block: 0, final: 1 } };
+  });
+  await process.finish();
+  expect(enqueueSessionEvent).toHaveBeenCalledTimes(1);
+  const options = vi.mocked(enqueueSessionEvent).mock.calls[0]?.[1];
+  expect(options?.expectedTarget).toBe(target);
+  expect(options).not.toHaveProperty("preAdmissionRetry");
+  const result = vi.mocked(enqueueSessionEvent).mock.results[0];
+  if (!result || result.type !== "return") throw new Error("missing notification receipt");
+  await expect(result.value.accepted).resolves.toEqual({ ok: true });
+  await expect(result.value.settled).resolves.toMatchObject({ status: "completed", executionStarted: true, delivered: true });
+  expect(dispatchInboundMessageWithRoutedChannelDispatcher).toHaveBeenCalledTimes(1);
+  expect(routeReplyMock).toHaveBeenCalledTimes(1);
+  expect(timers.mock.calls.filter((args) => args[1] === 250 || args[1] === 1000)).toEqual([]);
+  });
+  } finally {
+    await actor.close();
+  }
+});
+
+it("cancels the one captured exec occurrence when process poll is acknowledged during compaction backoff", async () => {
+  const process = await startNotifyRun();
+  const entered = createDeferredCore<void>();
+  const release = createDeferredCore<void>();
+  const mutation = runExclusiveSessionLifecycleMutation("patch", {
+    scope: resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env }),
+    identities: [QUEUE_KEY, "main-origin"],
+    kind: "compaction",
+    run: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  await entered.promise;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const registration = vi.spyOn(processRegistry, "recordNotifyOnExitRemoval");
+  const timers = vi.spyOn(globalThis, "setTimeout");
+  const cleared = vi.spyOn(globalThis, "clearTimeout");
+  try {
+    await process.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(registration).toHaveBeenCalledTimes(1);
+    expect(enqueueSessionEvent).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        source: "exec",
+        preAdmissionRetry: "exec-completion-storage",
+        expectedTarget: expect.any(Object),
+      }),
+    );
+    const result = vi.mocked(enqueueSessionEvent).mock.results[0];
+    if (!result || result.type !== "return") throw new Error("missing notification receipt");
+    const receipt = result.value;
+    const event = expectDefined(peekSystemEventEntries(QUEUE_KEY)[0], "waiting notification");
+    expect(event.id).toBe(receipt.id);
+    expect(isSystemEventTurnOwned(QUEUE_KEY, event)).toBe(true);
+    expect(peekDeliverableSystemEventEntries(QUEUE_KEY)).toEqual([]);
+    const retryIndex = timers.mock.calls.findIndex((args) => args[1] === 250);
+    expect(retryIndex).toBeGreaterThanOrEqual(0);
+    const retryTimer = timers.mock.results[retryIndex]?.value;
+    const pollResult = await poll(process.run.session.id);
+    acknowledgeInternalToolResult(pollResult);
+    await expect(receipt.settled).resolves.toMatchObject({
+      status: "cancelled",
+      executionStarted: false,
+    });
+    expect(peekSystemEventEntries(QUEUE_KEY)).toEqual([]);
+    expect(cleared).toHaveBeenCalledWith(retryTimer);
+    await vi.advanceTimersByTimeAsync(3600000);
+    expect(enqueueSessionEvent).toHaveBeenCalledTimes(1);
+  } finally {
+    registration.mockRestore();
+    timers.mockRestore();
+    cleared.mockRestore();
+    vi.useRealTimers();
+    release.resolve();
+    await mutation;
+  }
+});
+
+it("enqueues one captured exec completion when the compaction gate opens", async () => {
+  const process = await startNotifyRun();
+  const entered = createDeferredCore<void>();
+  const release = createDeferredCore<void>();
+  const mutation = runExclusiveSessionLifecycleMutation("patch", {
+    scope: resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env }),
+    identities: [QUEUE_KEY, "main-origin"],
+    kind: "compaction",
+    run: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  await entered.promise;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await process.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    const result = vi.mocked(enqueueSessionEvent).mock.results[0];
+    if (!result || result.type !== "return") throw new Error("missing notification receipt");
+    const receipt = result.value;
+    const event = expectDefined(peekSystemEventEntries(QUEUE_KEY)[0], "waiting notification");
+    expect(event.id).toBe(receipt.id);
+    expect(isSystemEventTurnOwned(QUEUE_KEY, event)).toBe(true);
+    expect(peekDeliverableSystemEventEntries(QUEUE_KEY)).toEqual([]);
+    routeReplyMock.mockImplementationOnce(async (params) => {
+      await params.beforeDeliver?.();
+      return { ok: true, delivered: true };
+    });
+    vi.mocked(dispatchInboundMessageWithRoutedChannelDispatcher).mockImplementationOnce(
+      async (params) => {
+        expect(params.ctx.MessageSid).toBe(receipt.id);
+        expect(params.ctx.SessionKey).toBe(QUEUE_KEY);
+        params.replyOptions?.internalEventExecution?.onStarted?.("producer-delivery");
+        await params.dispatcherOptions.deliver({ text: "completion delivered" }, { kind: "final" });
+        return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+      },
+    );
+    release.resolve();
+    await mutation;
+    await vi.advanceTimersByTimeAsync(250);
+    vi.useRealTimers();
+    await expect(receipt.accepted).resolves.toEqual({ ok: true });
+    await expect(receipt.settled).resolves.toMatchObject({
+      status: "completed",
+      executionStarted: true,
+      delivered: true,
+    });
+    expect(enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchInboundMessageWithRoutedChannelDispatcher).toHaveBeenCalledTimes(1);
+    expect(routeReplyMock).toHaveBeenCalledTimes(1);
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: QUEUE_KEY,
+        channel: "telegram",
+        to: "-100123",
+        threadId: 42,
+      }),
+    );
+    expect(peekSystemEventEntries(QUEUE_KEY)).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+    release.resolve();
+    await mutation;
+  }
 });

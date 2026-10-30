@@ -2,6 +2,7 @@ import "../../test-utils/prepare-compiled-subprocesses.js";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   awaitGateBeforeSettlement,
@@ -22,16 +23,20 @@ import {
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import * as sessionReplacement from "../../config/sessions/session-accessor.sqlite-replacement-worker.js";
+import * as sessionGeneration from "../../config/sessions/session-delivery-generation.js";
 import * as sessionEntryRead from "../../config/sessions/session-entry-read-runtime.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
+  consumeSelectedSystemEventEntries,
   enqueueRequiredSystemEventEntry,
   isSystemEventTurnOwned,
+  peekDeliverableSystemEventEntries,
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
 import * as gatewayWork from "../../process/gateway-work-admission.js";
+import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
@@ -49,7 +54,10 @@ import {
   enqueueSessionEventForHost,
   type SessionEventTarget,
 } from "./session-event-handoff.js";
-import { prepareSessionEventTargetForHost } from "./session-event-target.js";
+import {
+  isSessionEventPreparationDeferredError,
+  prepareSessionEventTargetForHost,
+} from "./session-event-target.js";
 // These cases stop before turn admission. Unexpected dispatch is a failure,
 // never a synthetic adoption/settlement supplied by the fixture.
 const dispatch = vi.hoisted(() =>
@@ -63,6 +71,11 @@ const dispatchResult = (overrides: Partial<DispatchResult> = {}): DispatchResult
   counts: { tool: 0, block: 0, final: 0 },
   ...overrides,
 });
+const routeReplyMock = vi.hoisted(() => vi.fn<typeof import("./route-reply.js").routeReply>());
+vi.mock("./route-reply.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./route-reply.js")>()),
+  routeReply: routeReplyMock,
+}));
 const eventLogError = vi.hoisted(() => vi.fn());
 vi.mock("../../logging/subsystem.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../logging/subsystem.js")>();
@@ -129,6 +142,7 @@ async function withTargetFixture(
 
 beforeEach(() => {
   eventLogError.mockClear();
+  routeReplyMock.mockReset();
   continuation.mockClear();
   dispatch.mockClear();
   // mockClear keeps persistent implementations; restore the throwing default.
@@ -999,4 +1013,786 @@ describe("session event target custody", () => {
       expect(dispatch).not.toHaveBeenCalled();
     });
   });
+
+  it("preserves policy readmission without restarting storage backoff after dispatch", async () => {
+    const adoptions: TurnAdoptionLifecycle[] = [];
+    await withDeferredFixture(adoptions, async (target) => {
+      const operation = beginReplyOwner();
+      const receipt = enqueueCompletion(target, { preAdmissionRetry: "exec-completion-storage" });
+      await expect(receipt.accepted).resolves.toMatchObject({ ok: true });
+      const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "accepted occurrence");
+      expect(event.id).toBe(receipt.id);
+      const entered = createDeferred();
+      const release = createDeferred();
+      const mutation = runExclusiveSessionLifecycleMutation("patch", {
+        scope: expectDefined(target.storePath, "captured store"),
+        identities: [sessionKey, target.sessionId],
+        kind: "compaction",
+        run: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      });
+      await entered.promise;
+      let sameOccurrenceReadmitted = false;
+      const prepare = vi
+        .spyOn(sessionGeneration, "prepareSessionGenerationFacts")
+        .mockImplementationOnce(async () => {
+          const retained = expectDefined(
+            peekSystemEventEntries(sessionKey)[0],
+            "readmitted occurrence",
+          );
+          expect(retained.id).toBe(receipt.id);
+          expect(isSystemEventTurnOwned(sessionKey, retained)).toBe(true);
+          sameOccurrenceReadmitted = true;
+          throw Object.assign(new Error("later generation unavailable"), {
+            code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE",
+          });
+        });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await rejectLatestAdoption(adoptions, ["write"], operation);
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "failed",
+          executionStarted: false,
+        });
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect(sameOccurrenceReadmitted).toBe(true);
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        prepare.mockRestore();
+        release.resolve();
+        await mutation;
+      }
+    });
+  });
+
+  it("waits for the original dispatch owner settlement before disposing an uncertain occurrence", async () => {
+    await withTargetFixture(async ({ env }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const operation = beginReplyOwner();
+      const dispatched = createDeferred();
+      dispatch.mockImplementationOnce(async (params) => {
+        params.replyOptions?.onReplyOperationOwned?.(operation);
+        dispatched.resolve();
+        return dispatchResult();
+      });
+      try {
+        const receipt = enqueueCompletion(target, { preAdmissionRetry: "exec-completion-storage" });
+        await dispatched.promise;
+        let settled = false;
+        void receipt.settled.then(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "owner occurrence");
+        expect(event.id).toBe(receipt.id);
+        expect(isSystemEventTurnOwned(sessionKey, event)).toBe(true);
+        operation.complete();
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "failed",
+          executionStarted: false,
+        });
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      } finally {
+        operation.complete();
+        replyRunTesting.resetReplyRunRegistry();
+      }
+    });
+  });
+});
+
+describe("exec completion compaction preparation", () => {
+  it("emits only a host-origin marker under a compaction gate", async () => {
+    await withTargetFixture(async ({ env, storePath }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const started = createDeferred();
+      const release = createDeferred();
+      const mutation = runExclusiveSessionLifecycleMutation("patch", {
+        scope: storePath,
+        identities: [sessionKey, target.sessionId],
+        kind: "compaction",
+        run: async () => {
+          started.resolve();
+          await release.promise;
+        },
+      });
+      await started.promise;
+      const prepareFacts = vi.spyOn(sessionGeneration, "prepareSessionGenerationFacts");
+      try {
+        let refusal: unknown;
+        try {
+          await prepareSessionEventTargetForHost(target, { deferOnCompactionStorageGate: true });
+        } catch (error) {
+          refusal = error;
+        }
+        expect(isSessionEventPreparationDeferredError(refusal)).toBe(true);
+        expect(prepareFacts).not.toHaveBeenCalled();
+        expect(
+          isSessionEventPreparationDeferredError(
+            Object.assign(
+              new Error("Session event preparation deferred by compaction storage gate"),
+              { reason: "compaction-storage-gate" },
+            ),
+          ),
+        ).toBe(false);
+        expect(dispatch).not.toHaveBeenCalled();
+      } finally {
+        prepareFacts.mockRestore();
+        release.resolve();
+        await mutation;
+      }
+    });
+  });
+
+  it("keeps one occurrence owned during the gate and cancels its timer immediately", async () => {
+    await withTargetFixture(async ({ env, storePath }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const started = createDeferred();
+      const release = createDeferred();
+      const mutation = runExclusiveSessionLifecycleMutation("patch", {
+        scope: storePath,
+        identities: [sessionKey, target.sessionId],
+        kind: "compaction",
+        run: async () => {
+          started.resolve();
+          await release.promise;
+        },
+      });
+      await started.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(vi.getTimerCount()).toBe(1);
+        const events = peekSystemEventEntries(sessionKey);
+        expect(events).toHaveLength(1);
+        expect(isSystemEventTurnOwned(sessionKey, expectDefined(events[0], "owned event"))).toBe(
+          true,
+        );
+        receipt.cancel();
+        await expect(receipt.settled).resolves.toMatchObject({ status: "cancelled" });
+        expect(vi.getTimerCount()).toBe(0);
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+        await vi.advanceTimersByTimeAsync(3600000);
+        expect(dispatch).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+        release.resolve();
+        await mutation;
+      }
+    });
+  });
+
+  it("exhausts two bounded waits without dispatch or leaving the occurrence", async () => {
+    await withTargetFixture(async ({ env, storePath }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const started = createDeferred();
+      const release = createDeferred();
+      const mutation = runExclusiveSessionLifecycleMutation("patch", {
+        scope: storePath,
+        identities: [sessionKey, target.sessionId],
+        kind: "compaction",
+        run: async () => {
+          started.resolve();
+          await release.promise;
+        },
+      });
+      await started.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const timers = vi.spyOn(globalThis, "setTimeout");
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "owned event");
+        expect(event).toBeDefined();
+        expect(isSystemEventTurnOwned(sessionKey, event)).toBe(true);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(expectDefined(peekSystemEventEntries(sessionKey)[0], "owned event").id).toBe(
+          event.id,
+        );
+        expect(vi.getTimerCount()).toBe(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect(receipt.settled).resolves.toMatchObject({ status: "failed" });
+        expect(vi.getTimerCount()).toBe(0);
+        expect(
+          timers.mock.calls
+            .map((args) => args[1])
+            .filter((delay) => delay === 250 || delay === 1000),
+        ).toEqual([250, 1000]);
+        expect(peekDeliverableSystemEventEntries(sessionKey)).toEqual([]);
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+        expect(eventLogError).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(3600000);
+        expect(dispatch).not.toHaveBeenCalled();
+      } finally {
+        timers.mockRestore();
+        vi.useRealTimers();
+        release.resolve();
+        await mutation;
+      }
+    });
+  });
+
+  it("dispatches the original occurrence once when the compaction gate opens", async () => {
+    await withTargetFixture(async ({ env, storePath }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const started = createDeferred();
+      const release = createDeferred();
+      const mutation = runExclusiveSessionLifecycleMutation("patch", {
+        scope: storePath,
+        identities: [sessionKey, target.sessionId],
+        kind: "compaction",
+        run: async () => {
+          started.resolve();
+          await release.promise;
+        },
+      });
+      await started.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "owned event");
+        expect(isSystemEventTurnOwned(sessionKey, event)).toBe(true);
+        expect(event.id).toBe(receipt.id);
+        expect(peekDeliverableSystemEventEntries(sessionKey)).toEqual([]);
+        const { drainFormattedSystemEvents } = await import("./session-system-events.js");
+        await expect(
+          drainFormattedSystemEvents({
+            cfg: getRuntimeConfigSnapshot() ?? {},
+            agentId: "main",
+            sessionKey,
+            isMainSession: false,
+            isNewSession: false,
+          }),
+        ).resolves.toBeUndefined();
+        expect(peekSystemEventEntries(sessionKey)[0]?.id).toBe(receipt.id);
+        expect(isSystemEventTurnOwned(sessionKey, event)).toBe(true);
+        let accepted = false;
+        void receipt.accepted.then(() => {
+          accepted = true;
+        });
+        await Promise.resolve();
+        expect(accepted).toBe(false);
+        dispatch.mockImplementationOnce(async (params) => {
+          expect(params.ctx.MessageSid).toBe(event.id);
+          expect(params.ctx.SessionKey).toBe(sessionKey);
+          params.replyOptions?.internalEventExecution?.onStarted?.("wake-test");
+          return dispatchResult();
+        });
+        release.resolve();
+        await mutation;
+        await vi.advanceTimersByTimeAsync(250);
+        vi.useRealTimers();
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "completed",
+          executionStarted: true,
+        });
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        release.resolve();
+        await mutation;
+      }
+    });
+  });
+
+  it.each(["cancel", "removal", "request abort"] as const)(
+    "withdraws the original waiting occurrence on %s without advancing the clock",
+    async (withdrawal) => {
+      await withTargetFixture(async ({ env, storePath }) => {
+        const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+        const entered = createDeferred();
+        const release = createDeferred();
+        const mutation = runExclusiveSessionLifecycleMutation("patch", {
+          scope: storePath,
+          identities: [sessionKey, target.sessionId],
+          kind: "compaction",
+          run: async () => {
+            entered.resolve();
+            await release.promise;
+          },
+        });
+        await entered.promise;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const controller = new AbortController();
+          const receipt = enqueueSessionEventForHost("completion", {
+            agentId: "main",
+            sessionKey,
+            source: "exec",
+            expectedTarget: target,
+            preAdmissionRetry: "exec-completion-storage",
+            abortSignal: controller.signal,
+          });
+          await vi.advanceTimersByTimeAsync(0);
+          const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "waiting occurrence");
+          expect(event.id).toBe(receipt.id);
+          expect(isSystemEventTurnOwned(sessionKey, event)).toBe(true);
+          expect(peekDeliverableSystemEventEntries(sessionKey)).toEqual([]);
+          if (withdrawal === "cancel") {
+            expect(receipt.cancel()).toBe(true);
+            expect(receipt.cancel()).toBe(false);
+          } else if (withdrawal === "removal") {
+            expect(consumeSelectedSystemEventEntries(sessionKey, [event])).toHaveLength(1);
+          } else {
+            controller.abort();
+          }
+          await expect(receipt.settled).resolves.toMatchObject({
+            status: "cancelled",
+            executionStarted: false,
+          });
+          expect(vi.getTimerCount()).toBe(0);
+          expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+          await vi.advanceTimersByTimeAsync(3600000);
+          expect(dispatch).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+          release.resolve();
+          await mutation;
+        }
+      });
+    },
+  );
+
+  it.each([
+    "ingress",
+    "producer",
+    "generation",
+    "session replacement",
+    "destination move",
+  ] as const)("does not dispatch or retarget when %s changes during backoff", async (change) => {
+    await withTargetFixture(async ({ env, storePath, path: fixturePath }) => {
+      let live = true;
+      const target = await captureSessionEventTargetForHost("main", sessionKey, {
+        env,
+        assertCurrent: () => {
+          if (change === "producer" && !live) throw new Error("producer retired");
+        },
+      });
+      const entered = createDeferred();
+      const release = createDeferred();
+      const mutation = runExclusiveSessionLifecycleMutation("patch", {
+        scope: storePath,
+        identities: [sessionKey, target.sessionId],
+        kind: "compaction",
+        run: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      });
+      await entered.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+          assertAcceptanceCurrent: () => {
+            if (change === "ingress" && !live) throw new Error("ingress revoked");
+          },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "waiting occurrence");
+        expect(event.id).toBe(receipt.id);
+        expect(isSystemEventTurnOwned(sessionKey, event)).toBe(true);
+        release.resolve();
+        await mutation;
+        live = false;
+        if (change === "generation") rotateAgentEventLifecycleGeneration();
+        if (change === "destination move") {
+          setRuntimeConfigSnapshot({
+            agents: { entries: { main: {} } },
+            session: { store: fixturePath("new-dashboard.sqlite") },
+          });
+        }
+        if (change === "session replacement") {
+          replaceSessionEntrySync(
+            { agentId: "main", storePath, sessionKey, env },
+            {
+              sessionId: "replacement-session",
+              lifecycleRevision: "replacement",
+              updatedAt: 2,
+              delivery: normalizeSessionDeliveryState({
+                context: { ...route, to: "new-dashboard" },
+              }),
+            },
+          );
+        }
+        await vi.advanceTimersByTimeAsync(250);
+        await expect(receipt.accepted).resolves.toMatchObject({ ok: false });
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "failed",
+          executionStarted: false,
+        });
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+        release.resolve();
+        await mutation;
+      }
+    });
+  });
+
+  it("never retries an uncertain dispatch after the dispatch boundary", async () => {
+    await withTargetFixture(async ({ env }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const entered = createDeferred();
+      const release = createDeferred();
+      dispatch.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        throw new Error("unknown dispatch result");
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+        });
+        await entered.promise;
+        const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "dispatch occurrence");
+        expect(event.id).toBe(receipt.id);
+        await vi.advanceTimersByTimeAsync(3600000);
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        release.resolve();
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "failed",
+          executionStarted: false,
+        });
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+        expect(dispatch).toHaveBeenCalledTimes(1);
+      } finally {
+        release.resolve();
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("rejects retry opt-in without an existing captured exec target", async () => {
+    await withTargetFixture(async ({ env }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      for (const options of [
+        { source: "hook" as const, expectedTarget: target },
+        { source: "exec" as const },
+        { source: "exec" as const, expectedTarget: target, createIfMissing: true as const },
+        { source: "exec" as const, expectedTarget: { ...target } },
+      ]) {
+        expect(() =>
+          enqueueSessionEventForHost("completion", {
+            agentId: "main",
+            sessionKey,
+            preAdmissionRetry: "exec-completion-storage",
+            ...options,
+          }),
+        ).toThrow("existing host-captured target");
+      }
+      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    [
+      "generation unavailable",
+      Object.assign(new Error("generation unavailable"), {
+        code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE",
+      }),
+    ],
+    [
+      "wrapped generation unavailable",
+      new Error("wrapper", {
+        cause: Object.assign(new Error("generation unavailable"), {
+          code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE",
+        }),
+      }),
+    ],
+    ["busy", Object.assign(new Error("busy"), { code: "SQLITE_BUSY" })],
+    ["locked", Object.assign(new Error("locked"), { code: "SQLITE_LOCKED" })],
+    ["worker timeout", new Error("worker timeout")],
+    ["worker disconnected", new Error("worker disconnected")],
+    ["unknown worker result", new Error("unknown worker result")],
+    ["ordinary error", new Error("ordinary failure")],
+  ])("does not retry %s from generation preparation", async (_name, error) => {
+    await withTargetFixture(async ({ env }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const prepare = vi
+        .spyOn(sessionGeneration, "prepareSessionGenerationFacts")
+        .mockRejectedValueOnce(error);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+        });
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "failed",
+          executionStarted: false,
+        });
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        prepare.mockRestore();
+      }
+    });
+  });
+
+  it.each(["promotion", "mixed"] as const)(
+    "does not mint a compaction marker for %s lifecycle gates",
+    async (kind) => {
+      await withTargetFixture(async ({ env, storePath }) => {
+        const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+        const entered = createDeferred();
+        const release = createDeferred();
+        const promote = runExclusiveSessionLifecycleMutation("patch", {
+          scope: storePath,
+          identities: [sessionKey],
+          kind: "promote",
+          run: async () => {
+            entered.resolve();
+            await release.promise;
+          },
+        });
+        await entered.promise;
+        const secondEntered = createDeferred();
+        const compaction =
+          kind === "mixed"
+            ? runExclusiveSessionLifecycleMutation("patch", {
+                scope: storePath,
+                identities: [target.sessionId],
+                kind: "compaction",
+                run: async () => {
+                  secondEntered.resolve();
+                  await release.promise;
+                },
+              })
+            : undefined;
+        if (compaction) await secondEntered.promise;
+        try {
+          let error: unknown;
+          let lease: Awaited<ReturnType<typeof prepareSessionEventTargetForHost>> | undefined;
+          try {
+            lease = await prepareSessionEventTargetForHost(target, {
+              deferOnCompactionStorageGate: true,
+            });
+          } catch (caught) {
+            error = caught;
+          } finally {
+            lease?.release();
+          }
+          expect(isSessionEventPreparationDeferredError(error)).toBe(false);
+        } finally {
+          release.resolve();
+          await promote;
+          await compaction;
+        }
+      });
+    },
+  );
+
+  it("rejects a replaced physical source during backoff without minting a retry marker", async () => {
+    await withTargetFixture(async ({ env, storePath }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const entered = createDeferred();
+      const release = createDeferred();
+      const mutation = runExclusiveSessionLifecycleMutation("patch", {
+        scope: storePath,
+        identities: [sessionKey, target.sessionId],
+        kind: "compaction",
+        run: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      });
+      await entered.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "waiting event");
+        expect(isSystemEventTurnOwned(sessionKey, event)).toBe(true);
+        const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env });
+        await fs.rename(databasePath, `${databasePath}.original`);
+        await fs.writeFile(databasePath, "replacement");
+        let failure: unknown;
+        try {
+          await prepareSessionEventTargetForHost(target, { deferOnCompactionStorageGate: true });
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeDefined();
+        expect(isSessionEventPreparationDeferredError(failure)).toBe(false);
+        release.resolve();
+        await mutation;
+        await vi.advanceTimersByTimeAsync(250);
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "failed",
+          executionStarted: false,
+        });
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        release.resolve();
+        await mutation;
+      }
+    });
+  });
+
+  it("does not re-enqueue after model start followed by dispatch uncertainty", async () => {
+    await withTargetFixture(async ({ env }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      dispatch.mockImplementationOnce(async (params) => {
+        params.replyOptions?.internalEventExecution?.onStarted?.("started-run");
+        throw Object.assign(new Error("generation unavailable after start"), {
+          code: "SESSION_DELIVERY_GENERATION_UNAVAILABLE",
+        });
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const receipt = enqueueSessionEventForHost("completion", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+          preAdmissionRetry: "exec-completion-storage",
+        });
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "failed",
+          executionStarted: true,
+        });
+        await vi.advanceTimersByTimeAsync(3600000);
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it.each(["delivered", "uncertain"] as const)(
+    "retains the original route and performs one %s delivery after the gate",
+    async (delivery) => {
+      await withTargetFixture(async ({ env, storePath }) => {
+        const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+        const entered = createDeferred();
+        const release = createDeferred();
+        const mutation = runExclusiveSessionLifecycleMutation("patch", {
+          scope: storePath,
+          identities: [sessionKey, target.sessionId],
+          kind: "compaction",
+          run: async () => {
+            entered.resolve();
+            await release.promise;
+          },
+        });
+        await entered.promise;
+        routeReplyMock.mockImplementationOnce(async (params) => {
+          await params.beforeDeliver?.();
+          return delivery === "delivered"
+            ? { ok: true, delivered: true }
+            : { ok: false, delivered: true, ambiguous: true, error: "uncertain transport" };
+        });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const receipt = enqueueSessionEventForHost("completion", {
+            agentId: "main",
+            sessionKey,
+            source: "exec",
+            expectedTarget: target,
+            preAdmissionRetry: "exec-completion-storage",
+          });
+          await vi.advanceTimersByTimeAsync(0);
+          const event = expectDefined(peekSystemEventEntries(sessionKey)[0], "waiting occurrence");
+          expect(event.id).toBe(receipt.id);
+          expect(peekDeliverableSystemEventEntries(sessionKey)).toEqual([]);
+          dispatch.mockImplementationOnce(async (params) => {
+            expect(params.ctx.MessageSid).toBe(event.id);
+            expect(params.ctx.OriginatingTo).toBe(route.to);
+            expect(params.replyOptions?.admittedSessionSettings).toEqual(target.settings);
+            expect(params.replyOptions?.toolsAllow).toEqual(target.toolsAllow);
+            params.replyOptions?.internalEventExecution?.onStarted?.("delivery-run");
+            await params.dispatcherOptions.deliver(
+              { text: "completion result" },
+              { kind: "final" },
+            );
+            return dispatchResult();
+          });
+          release.resolve();
+          await mutation;
+          await vi.advanceTimersByTimeAsync(250);
+          vi.useRealTimers();
+          await expect(receipt.settled).resolves.toMatchObject({
+            status: delivery === "delivered" ? "completed" : "failed",
+            executionStarted: true,
+            delivered: true,
+            deliveryAttempted: true,
+            ...(delivery === "uncertain" ? { deliveryAmbiguous: true } : {}),
+          });
+          expect(dispatch).toHaveBeenCalledTimes(1);
+          expect(routeReplyMock).toHaveBeenCalledTimes(1);
+          expect(routeReplyMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+              sessionKey,
+              channel: route.channel,
+              to: route.to,
+              accountId: route.accountId,
+              threadId: route.threadId,
+            }),
+          );
+          expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+        } finally {
+          vi.useRealTimers();
+          release.resolve();
+          await mutation;
+        }
+      });
+    },
+  );
 });

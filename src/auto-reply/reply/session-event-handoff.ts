@@ -45,6 +45,8 @@ import {
   assertSessionEventSettingsCurrent,
   captureSessionEventTargetForHost,
   getSessionEventRuntimeConfig,
+  isHostCapturedSessionEventTarget,
+  isSessionEventPreparationDeferredError,
   prepareSessionEventTargetForHost,
   readSessionEventTargetEnvironment,
   resolveSessionEventKey,
@@ -65,8 +67,17 @@ const log = createSubsystemLogger("session-events");
 /** Policy publications an accepted occurrence may outlive before it waits for an ordinary turn. */
 const MAX_CONFIG_READMISSION_ATTEMPTS = 2;
 
+type PreparationRetryState = { failures: number; disabled: boolean };
+
 /** Producer-owned occurrence; passive notices continue to use enqueueSystemEvent. */
 export function enqueueSessionEventForHost(
+  text: string,
+  options: Parameters<typeof enqueueSessionEventAttempt>[1],
+): SessionEventReceipt {
+  return enqueueSessionEventAttempt(text, options, { failures: 0, disabled: false });
+}
+
+function enqueueSessionEventAttempt(
   text: string,
   {
     assertAcceptanceCurrent,
@@ -79,6 +90,7 @@ export function enqueueSessionEventForHost(
     deliveryContext?: DeliveryContext;
     abortSignal?: AbortSignal;
     expectedTarget?: SessionEventTarget;
+    preAdmissionRetry?: "exec-completion-storage";
     /** Authorized fresh work may create an absent session; captured completions may not. */
     createIfMissing?: true;
     /** Submitting invocation custody lasts through acceptance only. */
@@ -96,7 +108,17 @@ export function enqueueSessionEventForHost(
     /** Host producer remains live through admission, execution and delivery. */
     assertCurrent?: () => void;
   },
+  retryState: PreparationRetryState,
 ): SessionEventReceipt {
+  if (
+    options.preAdmissionRetry &&
+    (options.source !== "exec" ||
+      !options.expectedTarget?.sessionId ||
+      options.createIfMissing ||
+      !isHostCapturedSessionEventTarget(options.expectedTarget))
+  ) {
+    throw new Error("Exec preparation retry requires an existing host-captured target");
+  }
   let acceptanceAssertion = assertAcceptanceCurrent;
   acceptanceAssertion?.();
   options.assertCurrent?.();
@@ -351,32 +373,39 @@ export function enqueueSessionEventForHost(
             // the current policy. The captured target, producer authority ceiling,
             // settings, delivery opt-out, liveness assertion, and cancellation signal
             // all carry over; a destination move or retired producer still rejects.
-            readmittedReceipt = enqueueSessionEventForHost(eventText, {
-              agentId,
-              sessionKey,
-              source: options.source,
-              ...(options.contextKey ? { contextKey: options.contextKey } : {}),
-              ...(options.deliveryContext
-                ? { deliveryContext: structuredClone(options.deliveryContext) }
-                : {}),
-              ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
-              ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
-              ...(options.assertCurrent ? { assertCurrent: options.assertCurrent } : {}),
-              ...(pendingAcceptanceAssertion
-                ? { assertAcceptanceCurrent: pendingAcceptanceAssertion }
-                : {}),
-              occurrences,
-              // Deliberately no preserveOccurrenceOnRejection: the occurrence is
-              // producer-owned, not a pre-existing passive notice, so any terminal
-              // settlement of this attempt (cancel, Stop, admission refusal) consumes
-              // it instead of parking contract-less text for a later turn.
-              readmissionAttempt: attempt + 1,
-              // A durable producer still commits its attempt only once the re-admitted
-              // turn is adopted.
-              ...(options.onAdopted ? { onAdopted: options.onAdopted } : {}),
-              ...(options.deliver !== undefined ? { deliver: options.deliver } : {}),
-              ...(options.createIfMissing ? { createIfMissing: options.createIfMissing } : {}),
-            });
+            readmittedReceipt = enqueueSessionEventAttempt(
+              eventText,
+              {
+                agentId,
+                sessionKey,
+                source: options.source,
+                ...(options.contextKey ? { contextKey: options.contextKey } : {}),
+                ...(options.deliveryContext
+                  ? { deliveryContext: structuredClone(options.deliveryContext) }
+                  : {}),
+                ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+                ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+                ...(options.assertCurrent ? { assertCurrent: options.assertCurrent } : {}),
+                ...(pendingAcceptanceAssertion
+                  ? { assertAcceptanceCurrent: pendingAcceptanceAssertion }
+                  : {}),
+                occurrences,
+                // Deliberately no preserveOccurrenceOnRejection: the occurrence is
+                // producer-owned, not a pre-existing passive notice, so any terminal
+                // settlement of this attempt (cancel, Stop, admission refusal) consumes
+                // it instead of parking contract-less text for a later turn.
+                readmissionAttempt: attempt + 1,
+                // A durable producer still commits its attempt only once the re-admitted
+                // turn is adopted.
+                ...(options.onAdopted ? { onAdopted: options.onAdopted } : {}),
+                ...(options.deliver !== undefined ? { deliver: options.deliver } : {}),
+                ...(options.createIfMissing ? { createIfMissing: options.createIfMissing } : {}),
+                ...(options.preAdmissionRetry
+                  ? { preAdmissionRetry: options.preAdmissionRetry }
+                  : {}),
+              },
+              retryState,
+            );
           } catch (error) {
             // Re-admission rejected synchronously (retired producer, moved destination,
             // revoked ingress). The released occurrence carries no producer contract,
@@ -519,16 +548,56 @@ export function enqueueSessionEventForHost(
       if (!target.sessionId && !options.createIfMissing) {
         throw new Error("Session event origin is missing; start fresh authorized work instead");
       }
-      generationLease = await prepareSessionEventTargetForHost(target, {
-        createIfMissing: options.createIfMissing,
-        assertAcceptanceCurrent: assertOwnerCurrent,
-      });
+      for (;;) {
+        assertOwnerCurrent();
+        assertSessionEventTargetCurrent(target);
+        try {
+          generationLease = await prepareSessionEventTargetForHost(target, {
+            createIfMissing: options.createIfMissing,
+            assertAcceptanceCurrent: assertOwnerCurrent,
+            ...(options.preAdmissionRetry && !retryState.disabled
+              ? { deferOnCompactionStorageGate: true as const }
+              : {}),
+          });
+          break;
+        } catch (error) {
+          assertOwnerCurrent();
+          assertSessionEventTargetCurrent(target);
+          if (
+            !options.preAdmissionRetry ||
+            retryState.disabled ||
+            !isSessionEventPreparationDeferredError(error) ||
+            retryState.failures >= 2
+          ) {
+            throw error;
+          }
+          const delay = retryState.failures++ === 0 ? 250 : 1000;
+          await new Promise<void>((resolve, reject) => {
+            const cleanup = () => signal.removeEventListener("abort", onWaitAbort);
+            const timer = setTimeout(() => {
+              cleanup();
+              resolve();
+            }, delay);
+            timer.unref();
+            const onWaitAbort = () => {
+              clearTimeout(timer);
+              cleanup();
+              reject(signal.reason);
+            };
+            signal.addEventListener("abort", onWaitAbort, { once: true });
+            if (signal.aborted) onWaitAbort();
+          });
+          assertOwnerCurrent();
+          assertSessionEventTargetCurrent(target);
+        }
+      }
       settings ??= target.settings;
       route ??= structuredClone(target.deliveryContext);
       await prepareCurrent();
       settings = narrowSessionEventSettings(settings, generationLease.readSessionSettings());
       settingsAdmitted = true;
       assertCurrent();
+      retryState.disabled = true;
       const result = await dispatchInboundMessageWithRoutedChannelDispatcher({
         cfg: { ...cfg, session: { ...cfg.session, store: storePath } },
         ctx: {
