@@ -62,6 +62,7 @@ export type ChatHistoryPageAnchor = Pick<ChatHistoryPageCursor, "sessionId" | "s
   oldestMessageId?: string;
   newestMessageId?: string;
   messageSequences?: Record<string, number>;
+  resolvedMessageId?: string;
 };
 
 export type ChatHistoryPage = {

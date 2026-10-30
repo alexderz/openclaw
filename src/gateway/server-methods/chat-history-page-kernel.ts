@@ -109,11 +109,12 @@ export async function readChatHistoryPageKernel(
     if (!readPage.found) {
       return { messages: [] };
     }
+    const resolvedMessageId = readPage.resolvedMessageId ?? messageId;
     let pageMessages = readPage.messages;
     let overreadContextMessage = readPage.hasOverreadContext ? pageMessages[0] : undefined;
     if (direction) {
       const anchorIndex = pageMessages.findIndex(
-        (message) => readChatHistoryMessageId(message) === messageId,
+        (message) => readChatHistoryMessageId(message) === resolvedMessageId,
       );
       if (anchorIndex < 0) {
         return { messages: [], windowReset: true };
@@ -208,6 +209,7 @@ export async function readChatHistoryPageKernel(
               sessionId,
               source,
               direction,
+              ...(readPage.resolvedMessageId ? { resolvedMessageId } : {}),
               hasOlder: direction === "newer" || (oldestSeq !== undefined && oldestSeq > 1),
               hasNewer: direction === "older" || readPage.offset > 0,
               oldestMessageId: readChatHistoryMessageId(cursorMessages[0]),

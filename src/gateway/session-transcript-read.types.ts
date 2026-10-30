@@ -97,6 +97,8 @@ export type SessionTranscriptSourcePageOptions = SessionTranscriptReadOptions & 
 };
 
 export type ReadSessionMessagesAroundIdResult = ReadRecentSessionMessagesResult & {
+  /** Actual visible anchor when a source-local display alias was resolved. */
+  resolvedMessageId?: string;
   found: boolean;
   hasOverreadContext: boolean;
   offset: number;

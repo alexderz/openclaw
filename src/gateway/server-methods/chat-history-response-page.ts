@@ -246,7 +246,7 @@ export function prepareChatHistoryResponsePage(
                 ? replaced.messages[0]
                 : replaced.messages.at(-1),
             ) ?? messageId)
-          : messageId,
+          : (historyPage.anchor?.resolvedMessageId ?? messageId),
       })
     : capChatHistoryTail(capParams);
   const pagination = historyPage.pagination;

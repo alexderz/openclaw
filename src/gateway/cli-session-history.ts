@@ -155,8 +155,20 @@ export async function prepareCliSessionHistoryReader(
       throw new SessionTranscriptProjectionUnavailableError(params.sessionId!, "window-changed");
     }
   };
+  const assertCompositeCurrent = async () => {
+    if (!revision || !readRevision) {
+      throw new SessionTranscriptProjectionUnavailableError(params.sessionId!, "window-changed");
+    }
+    const currentSource = await resolveClaudeCliHistorySource(native);
+    const current = await readRevision();
+    if (currentSource?.[1] !== source[1] || current.database !== revision.database ||
+        revisionKey(current) !== localRevision) {
+      retire(identity);
+      throw new SessionTranscriptProjectionUnavailableError(params.sessionId!, "window-changed");
+    }
+  };
   if (!cached) {
-    const index = new CliSessionHistoryIndex(!revision?.database);
+    const index = new CliSessionHistoryIndex(!revision?.database, binding.sessionId);
     try {
       await withTranscriptRedactionSnapshot(redaction, () =>
         visitClaudeCliSessionMessages(
@@ -233,7 +245,14 @@ export async function prepareCliSessionHistoryReader(
       }
       const currentSource = await resolveClaudeCliHistorySource(native);
       await assertCurrent();
-      index.finish();
+      const currentRevision = revision && readRevision ? await readRevision() : undefined;
+      const compositeSourceCurrent = Boolean(
+        activeSource && revision?.database && currentRevision && currentSource?.[1] === source[1] &&
+          currentRevision.database === revision.database &&
+          revisionKey(currentRevision) === localRevision,
+      );
+      index.finish(compositeSourceCurrent);
+      if (index.hasCompositeRetirements) { await assertCompositeCurrent(); }
       if (activeSource && revision?.database && currentSource?.[1] === source[1]) {
         cached = {
           database: revision?.database,
@@ -274,13 +293,14 @@ export async function prepareCliSessionHistoryReader(
       return seq;
     }
     const ordinal = id
-      ? index.ordinal(id)
+      ? index.lookupDisplayLocation(id)?.ordinal
       : seq === undefined
         ? undefined
         : index.localOrdinal(seq);
     return ordinal === undefined ? undefined : ordinal + 1;
   };
   const readRange = async (start: number, end: number, maxBytes = Number.POSITIVE_INFINITY) => {
+    if (index.hasCompositeRetirements) { await assertCompositeCurrent(); }
     const selected = index.rows(start, end);
     let bytes = 0;
     let first = selected.length;
@@ -341,6 +361,7 @@ export async function prepareCliSessionHistoryReader(
       });
     }
     await assertCurrent();
+    if (index.hasCompositeRetirements) { await assertCompositeCurrent(); }
     return messages;
   };
   const page = async (options: SessionTranscriptPageOptions) => {
@@ -419,22 +440,56 @@ export async function prepareCliSessionHistoryReader(
         anchorScope: Parameters<Readers["readSessionMessagesAroundIdWithStatsAsync"]>[0],
         options: Parameters<Readers["readSessionMessagesAroundIdWithStatsAsync"]>[1],
       ) => {
-        const ordinal = index.ordinal(options.messageId);
         // The index covers only the latest reset window, and reset clears CLI bindings.
         // Closed reset intervals and archives keep the canonical anchor contract; rows
         // indexed here stay subject to merge and display filtering. Cursors stay on the
         // source that issued them, because a closed interval shares its retained rows
         // and closing reset marker with the index.
         if (
-          ordinal === undefined ||
           canonicalAnchorPage ||
           (params.pageCursor !== undefined && params.pageCursor.source !== indexCursorSource)
         ) {
           canonicalAnchorPage = true;
           return await readers.readSessionMessagesAroundIdWithStatsAsync(anchorScope, options);
         }
-        const range = resolveHistoryAnchorPageRange(index.count, ordinal, options);
+        const location = index.lookupDisplayLocation(options.messageId);
+        if (!location) {
+          canonicalAnchorPage = true;
+          return await readers.readSessionMessagesAroundIdWithStatsAsync(anchorScope, options);
+        }
+        if (location.kind === "retired-composite") {
+          if (anchorScope.agentId !== scope.agentId || anchorScope.sessionId !== scope.sessionId ||
+              anchorScope.sessionKey !== scope.sessionKey || anchorScope.storePath !== scope.storePath) {
+            throw new SessionTranscriptProjectionUnavailableError(params.sessionId!, "window-changed");
+          }
+          await assertCompositeCurrent();
+          const local = await readers.readSessionMessageByIdAsync(anchorScope, options.messageId, {
+            allowResetArchiveFallback: false,
+            historyVisibility: { sessionStartedAt: params.entry?.sessionStartedAt },
+          });
+          await assertCompositeCurrent();
+          if (!local.found || local.historyHidden || local.seq !== location.localSeq) {
+            throw new SessionTranscriptProjectionUnavailableError(params.sessionId!, "window-changed");
+          }
+        }
+        const resolvedMessageId = location.kind === "retired-composite"
+          ? readChatHistoryMessageId(index.message(location.targetRowId))
+          : undefined;
+        if (location.kind === "retired-composite" && !resolvedMessageId) {
+          throw new SessionTranscriptProjectionUnavailableError(params.sessionId!, "window-changed");
+        }
+        if (resolvedMessageId) {
+          const target = await readIndexedMessage(anchorScope, resolvedMessageId, {
+            historyVisibility: { sessionStartedAt: params.entry?.sessionStartedAt },
+          });
+          if (!target.found) {
+            return { messages: [], totalMessages: index.count, found: false, offset: 0,
+              hasOverreadContext: false, displaySource: key };
+          }
+        }
+        const range = resolveHistoryAnchorPageRange(index.count, location.ordinal, options);
         return {
+          ...(resolvedMessageId ? { resolvedMessageId } : {}),
           messages: await readRange(range.readStart, range.endExclusive, options.maxBytes),
           totalMessages: index.count,
           found: true,

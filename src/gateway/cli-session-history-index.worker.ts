@@ -23,6 +23,7 @@ import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { isImageMediaFact, readPersistedMediaFacts } from "../media/media-facts.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
+import { canRetireCompositeReply, findBoundedCompositeProof, isInternalUserMessage } from "./cli-session-history-composite.js";
 
 const INDEX_INSERT_BATCH_ROWS = 65;
 const INDEX_ORDINAL_BATCH_ROWS = 256;
@@ -148,11 +149,17 @@ type HistoryRow = {
   metadata: string | null;
   consumed: number;
   ordinal: number | null;
+  internal_user: number;
+  composite_eligible: number;
+  turn_start: number | null;
 };
 type HistoryDatabase = {
   messages: HistoryRow;
   imports: HistoryRow;
   floors: { role: string; text: string; minimum_order: number };
+  import_display: { import_id: number; display_row_id: number };
+  composite_retirements: { local_row_id: number; target_row_id: number };
+  composite_claims: { import_id: number; local_row_id: number };
 };
 
 /** Reconstructible display index; canonical transcript bytes are never changed. */
@@ -168,22 +175,30 @@ export class CliSessionHistoryIndex {
   private pendingImportBytes = 0;
   private nextLocal = 0;
   private nextImport = 0;
+  private importTurnStart: number | null = null;
   private expanded = false;
   count = 0;
 
-  constructor(memoryOnly = false) {
+  constructor(memoryOnly = false, private readonly cliSessionId?: string) {
     this.database = openNodeSqliteDatabase(memoryOnly ? ":memory:" : "");
     this.db = getNodeSqliteKysely<HistoryDatabase>(this.database);
     // Only imported bodies live here; local rows retain their canonical sequence.
     const columns = `id INTEGER PRIMARY KEY, local_seq INTEGER, import_ref INTEGER, message_id TEXT, payload TEXT, bytes INTEGER NOT NULL, role TEXT,
       text TEXT, drift_text TEXT, timestamp REAL, external_key TEXT, image_key TEXT,
       image_mentions INTEGER NOT NULL, metadata TEXT, consumed INTEGER NOT NULL,
-      ordinal INTEGER`;
+      ordinal INTEGER, internal_user INTEGER NOT NULL, composite_eligible INTEGER NOT NULL, turn_start INTEGER`;
     // sqlite-allow-raw -- Reconstructible temporary schema; no canonical writes or durability.
     this.database
       .exec(`PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA cache_size = -2048;
       CREATE TABLE messages (${columns}); CREATE TABLE imports (${columns});
       CREATE TABLE floors (role TEXT NOT NULL, text TEXT NOT NULL, minimum_order INTEGER NOT NULL, PRIMARY KEY(role,text));
+      CREATE TABLE import_display (import_id INTEGER PRIMARY KEY, display_row_id INTEGER NOT NULL);
+      CREATE TABLE composite_retirements (local_row_id INTEGER PRIMARY KEY, target_row_id INTEGER NOT NULL);
+      CREATE TABLE composite_claims (import_id INTEGER PRIMARY KEY, local_row_id INTEGER NOT NULL);
+      CREATE INDEX composite_candidates ON messages(composite_eligible, consumed, id);
+      CREATE INDEX composite_prompts ON messages(role, internal_user, local_seq);
+      CREATE INDEX composite_ends ON imports(role, timestamp, id);
+      CREATE INDEX composite_turns ON imports(turn_start, id);
       CREATE INDEX match_external ON messages(external_key, id);
       CREATE INDEX match_text ON messages(role, text, consumed, id);
       CREATE INDEX match_timed_text ON messages(role, text, consumed, id) WHERE timestamp IS NOT NULL;
@@ -267,6 +282,9 @@ export class CliSessionHistoryIndex {
         metadata: parameter((row) => row.metadata),
         consumed: parameter((row) => row.consumed),
         ordinal: parameter((row) => row.ordinal),
+        internal_user: parameter((row) => row.internal_user),
+        composite_eligible: parameter((row) => row.composite_eligible),
+        turn_start: parameter((row) => row.turn_start),
       });
       return table === "messages"
         ? query.onConflict((conflict) => conflict.column("id").doNothing())
@@ -312,6 +330,9 @@ export class CliSessionHistoryIndex {
       metadata: meta ? JSON.stringify(meta) : null,
       consumed: 0,
       ordinal: null,
+      internal_user: isInternalUserMessage(record) ? 1 : 0,
+      composite_eligible: canRetireCompositeReply(record, this.cliSessionId) ? 1 : 0,
+      turn_start: null,
     };
   }
 
@@ -334,6 +355,10 @@ export class CliSessionHistoryIndex {
 
   appendImported(message: unknown): void {
     const row = this.row(message, this.nextImport++);
+    if (row.role === "user" && !row.internal_user) {
+      this.importTurnStart = row.id;
+    }
+    row.turn_start = this.importTurnStart;
     if (this.pendingImportBytes + row.bytes > INDEX_INSERT_BATCH_BYTES) {
       this.flushImports();
     }
@@ -357,7 +382,7 @@ export class CliSessionHistoryIndex {
     this.pendingImportBytes = 0;
   }
 
-  finish(): void {
+  finish(enableCompositeRetirement = false): void {
     this.flushImports();
     // Reserve every existing external identity before text matching can consume it.
     executeSqliteQuerySync(
@@ -486,6 +511,8 @@ export class CliSessionHistoryIndex {
         }
       }
     };
+    const mapImport = (importId: number, displayRowId: number) =>
+      executeSqliteQuerySync(this.database, this.db.insertInto("import_display").values({ import_id: importId, display_row_id: displayRowId }));
     for (let offset = 0; offset < this.nextImport; offset += INDEX_INSERT_BATCH_ROWS) {
       const batch = executeSqliteQuerySync(
         this.database,
@@ -507,6 +534,9 @@ export class CliSessionHistoryIndex {
             "metadata",
             "consumed",
             "ordinal",
+            "internal_user",
+            "composite_eligible",
+            "turn_start",
           ])
           .where("id", ">=", offset)
           .orderBy("id")
@@ -516,6 +546,7 @@ export class CliSessionHistoryIndex {
         for (const imported of batch) {
           let duplicate = imported.external_key ? matchExternal(imported.external_key) : undefined;
           if (duplicate) {
+            mapImport(imported.id, duplicate.id);
             advance(imported, duplicate);
             continue;
           }
@@ -558,6 +589,7 @@ export class CliSessionHistoryIndex {
                 metadataChanged = true;
               }
             }
+            mapImport(imported.id, duplicate.id);
             consume({
               id: duplicate.id,
               metadata: metadataChanged ? JSON.stringify(meta) : duplicate.metadata,
@@ -565,6 +597,7 @@ export class CliSessionHistoryIndex {
             });
             advance(imported, duplicate);
           } else {
+            mapImport(imported.id, this.nextLocal);
             this.insertMessage({
               ...imported,
               id: this.nextLocal++,
@@ -577,10 +610,15 @@ export class CliSessionHistoryIndex {
         }
       });
     }
+    if (enableCompositeRetirement && this.cliSessionId) {
+      this.retireCompositeRepliesBounded();
+    }
     // Preserve the existing stable comparator even for mixed/missing timestamps.
     const order = executeSqliteQuerySync(
       this.database,
-      this.db.selectFrom("messages").select(["id", "timestamp"]).orderBy("id"),
+      this.db.selectFrom("messages").select(["id", "timestamp"])
+        .where("id", "not in", this.db.selectFrom("composite_retirements").select("local_row_id"))
+        .orderBy("id"),
     ).rows;
     if (this.expanded) {
       order.sort((a, b) =>
@@ -598,6 +636,103 @@ export class CliSessionHistoryIndex {
       });
     }
     this.count = order.length;
+  }
+
+  /** Optional bounded proof; an exhausted or ambiguous search leaves normal history intact. */
+  private retireCompositeRepliesBounded(): void {
+    let after = -1;
+    let examined = 0;
+    let work = 0;
+    while (examined < 4096 && work < 65536) {
+      const locals = executeSqliteQuerySync(this.database, this.db.selectFrom("messages")
+        .select(["id", "local_seq", "message_id", "text", "timestamp"])
+        .where("id", ">", after).where("local_seq", "is not", null)
+        .where("composite_eligible", "=", 1).where("consumed", "=", 0)
+        .where("timestamp", "is not", null).where("bytes", "<=", 65536)
+        .orderBy("id").limit(Math.min(65, 4096 - examined))).rows;
+      if (!locals.length) { break; }
+      for (const local of locals) {
+        after = local.id;
+        examined++;
+        if (local.local_seq === null || local.timestamp === null || !local.text || work >= 65536) { continue; }
+        const prompt = executeSqliteQueryTakeFirstSync(this.database, this.db.selectFrom("messages")
+          .select("id").where("role", "=", "user").where("internal_user", "=", 0)
+          .where("local_seq", "<", local.local_seq).orderBy("local_seq", "desc").limit(1));
+        if (!prompt) { continue; }
+        const ends = executeSqliteQuerySync(this.database, this.db.selectFrom("imports")
+          .select(["id", "turn_start"]).where("role", "=", "assistant")
+          .where("timestamp", ">=", local.timestamp - DEDUPE_TIMESTAMP_WINDOW_MS)
+          .where("timestamp", "<=", local.timestamp + DEDUPE_TIMESTAMP_WINDOW_MS)
+          .orderBy("timestamp").orderBy("id").limit(33)).rows;
+        work += ends.length;
+        if (ends.length > 32 || work > 65536) { continue; }
+        let proof: { ids: readonly number[]; target: number } | undefined;
+        let unsupported = false;
+        for (const end of ends) {
+          if (end.turn_start === null) { continue; }
+          const turnPrompt = executeSqliteQueryTakeFirstSync(this.database, this.db.selectFrom("import_display")
+            .innerJoin("imports", "imports.id", "import_display.import_id")
+            .select(["import_display.display_row_id", "imports.metadata"])
+            .where("import_display.import_id", "=", end.turn_start));
+          if (turnPrompt?.display_row_id !== prompt.id) { continue; }
+          const promptMeta = turnPrompt.metadata ? JSON.parse(turnPrompt.metadata) as Record<string, unknown> : undefined;
+          const promptSession = normalizeOptionalString(promptMeta?.cliSessionId);
+          const promptSource = normalizeOptionalString(promptMeta?.importedFrom);
+          if ((promptSession && promptSession !== this.cliSessionId) || (promptSource && promptSource !== "claude-cli")) { continue; }
+          const raw = executeSqliteQuerySync(this.database, this.db.selectFrom("imports")
+            .select(["id", "bytes", "role", "composite_eligible"])
+            .where("turn_start", "=", end.turn_start).where("id", "<=", end.id)
+            .orderBy("id").limit(257)).rows;
+          work += raw.length;
+          if (raw.length > 256 || work > 65536) { unsupported = true; break; }
+          let bytes = 0;
+          const segments: { importId: number; displayRowId: number; turnStartImportId: number; text: string }[] = [];
+          for (const row of raw) {
+            if (row.role !== "assistant" || !row.composite_eligible) { continue; }
+            bytes += row.bytes;
+            if (bytes > 256 * 1024) { unsupported = true; break; }
+            const display = executeSqliteQueryTakeFirstSync(this.database, this.db.selectFrom("import_display")
+              .innerJoin("messages", "messages.id", "import_display.display_row_id")
+              .select(["messages.id", "messages.import_ref"]).where("import_display.import_id", "=", row.id));
+            if (!display || display.import_ref !== row.id) { continue; }
+            const claimed = executeSqliteQueryTakeFirstSync(this.database, this.db.selectFrom("composite_claims")
+              .select("import_id").where("import_id", "=", row.id));
+            if (claimed) { continue; }
+            const textRow = executeSqliteQueryTakeFirstSync(this.database, this.db.selectFrom("imports")
+              .select("text").where("id", "=", row.id));
+            if (textRow?.text) { segments.push({ importId: row.id, displayRowId: display.id, turnStartImportId: end.turn_start, text: JSON.parse(textRow.text) as string }); }
+          }
+          if (unsupported) { break; }
+          const result = findBoundedCompositeProof({ localText: JSON.parse(local.text) as string,
+            rows: segments, endImportId: end.id, maxStates: 4096 });
+          if (result.kind === "limit" || result.kind === "ambiguous") { unsupported = true; break; }
+          if (result.kind === "unique") {
+            if (proof) { unsupported = true; break; }
+            proof = { ids: result.segments, target: segments[segments.length - 1]!.displayRowId };
+          }
+        }
+        if (proof && !unsupported) {
+          // A colliding display ID must never be suppressed or redirected.
+          if (local.message_id !== null) {
+            const collisions = executeSqliteQuerySync(this.database, this.db.selectFrom("messages")
+              .select("id").where("message_id", "=", local.message_id).limit(2)).rows;
+            if (collisions.length !== 1) { continue; }
+          }
+          const target = executeSqliteQueryTakeFirstSync(this.database, this.db.selectFrom("messages")
+            .select("message_id").where("id", "=", proof.target));
+          if (!target?.message_id || executeSqliteQuerySync(this.database, this.db.selectFrom("messages")
+            .select("id").where("message_id", "=", target.message_id).limit(2)).rows.length !== 1) { continue; }
+          const selected = proof;
+          runSqliteImmediateTransactionSync(this.database, () => {
+            for (const id of selected.ids) {
+              executeSqliteQuerySync(this.database, this.db.insertInto("composite_claims").values({ import_id: id, local_row_id: local.id }));
+            }
+            executeSqliteQuerySync(this.database, this.db.insertInto("composite_retirements")
+              .values({ local_row_id: local.id, target_row_id: selected.target }));
+          });
+        }
+      }
+    }
   }
 
   get importedCount(): number {
@@ -628,13 +763,43 @@ export class CliSessionHistoryIndex {
     return row?.payload ? JSON.parse(row.payload) : undefined;
   }
 
+  get hasCompositeRetirements(): boolean {
+    return Boolean(executeSqliteQueryTakeFirstSync(this.database,
+      this.db.selectFrom("composite_retirements").select("local_row_id").limit(1)));
+  }
+
+  lookupDisplayLocation(messageId: string):
+    | { kind: "direct"; ordinal: number }
+    | { kind: "retired-composite"; ordinal: number; localSeq: number; targetRowId: number }
+    | undefined {
+    const direct = this.ordinal(messageId);
+    if (direct !== undefined) { return { kind: "direct", ordinal: direct }; }
+    const row = executeSqliteQueryTakeFirstSync(this.database,
+      this.db.selectFrom("composite_retirements")
+        .innerJoin("messages as local", "local.id", "composite_retirements.local_row_id")
+        .innerJoin("messages as target", "target.id", "composite_retirements.target_row_id")
+        .select(["local.local_seq as localSeq", "target.id as targetRowId", "target.ordinal as ordinal"])
+        .where("local.message_id", "=", JSON.stringify(messageId))
+        .where("target.import_ref", "is not", null)
+        .where("target.ordinal", "is not", null));
+    if (!row || row.localSeq === null || row.ordinal === null) { return undefined; }
+    return { kind: "retired-composite", ordinal: row.ordinal, localSeq: row.localSeq, targetRowId: row.targetRowId };
+  }
+
   localOrdinal(seq: number): number | undefined {
-    return (
+    const direct =
       executeSqliteQueryTakeFirstSync(
         this.database,
         this.db.selectFrom("messages").select("ordinal").where("local_seq", "=", seq),
-      )?.ordinal ?? undefined
-    );
+      )?.ordinal ?? undefined;
+    if (direct !== undefined) { return direct; }
+    return executeSqliteQueryTakeFirstSync(this.database,
+      this.db.selectFrom("composite_retirements")
+        .innerJoin("messages as local", "local.id", "composite_retirements.local_row_id")
+        .innerJoin("messages as target", "target.id", "composite_retirements.target_row_id")
+        .select("target.ordinal")
+        .where("local.local_seq", "=", seq)
+        .where("target.import_ref", "is not", null))?.ordinal ?? undefined;
   }
 
   ordinal(messageId: string): number | undefined {
