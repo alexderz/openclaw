@@ -108,6 +108,21 @@ for await (const line of createInterface({ input: process.stdin })) {
       result();
       continue;
     }
+    if (scenario.startsWith("settlement-")) {
+      send({ type: "command_lifecycle", state: "started", command_uuid: message.uuid });
+      if (turn > 1) {
+        if (scenario === "settlement-duplicates") nativeResult("late old", { origin: { kind: "task-notification", runId: "agent-run-1" }, num_turns: 1 });
+        result({ answer: "warm input" }); continue;
+      }
+      system("init", { capabilities: ["msg_lifecycle_v1"] });
+      pendingInputUuid = message.uuid;
+      const agent = { task_id: "settlement-agent", task_type: "local_agent", run_id: "agent-run-1" };
+      tasks([agent]);
+      system("task_started", { ...agent, is_backgrounded: true });
+      result({ answer: "initial interim" });
+      permission("settlement-first", "Read", { file_path: "fixture.txt" }, "settlement-first");
+      continue;
+    }
     if (scenario.startsWith("nested-child-")) {
       send({ type: "command_lifecycle", state: "started", command_uuid: message.uuid });
       if (turn > 1) {
@@ -383,6 +398,41 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (message.type === "control_response") {
     assert.equal(message.response.subtype, "success");
     const { request_id: id, response } = message.response;
+    if (id === "settlement-first") {
+      const oldAgent = { task_id: "settlement-agent", task_type: "local_agent", run_id: "agent-run-1" };
+      const agent = { ...oldAgent, run_id: "agent-run-2" };
+      system("task_notification", { ...oldAgent, status: "completed" });
+      tasks([agent]);
+      system("task_started", { ...agent, is_backgrounded: true });
+      const child = { task_id: "settlement-child", task_type: "local_bash", owned_by_subagent: true };
+      system("task_started", { ...child, is_backgrounded: true });
+      system("task_notification", { ...child, status: "completed" });
+      if (scenario === "settlement-requeued" || scenario === "settlement-duplicates") {
+        system("task_notification", { ...agent, status: "completed" });
+        tasks([]);
+      }
+      if (scenario === "settlement-duplicates") {
+        system("task_notification", { ...oldAgent, status: "completed" });
+        nativeResult("unknown run", { origin: { kind: "task-notification", runId: "unknown-run" }, num_turns: 1 });
+      }
+      if (scenario.startsWith("settlement-inline")) {
+        send({ type: "user", isReplay: true, parent_tool_use_id: null, uuid: "old-receipt",
+          origin: { kind: "task-notification", ...(scenario === "settlement-inline" ? { runId: "agent-run-1" } : {}) },
+          message: { role: "user", content: "<task-notification><task-id>settlement-agent</task-id></task-notification>" } });
+      }
+      nativeResult("resumed", { origin: { kind: "task-notification", producer: "session-task", runId: "agent-run-1" }, num_turns: 1 });
+      if (scenario === "settlement-duplicates") nativeResult("duplicate old", { origin: { kind: "task-notification", runId: "agent-run-1" }, num_turns: 1 });
+      permission("settlement-second", "Read", { file_path: "fixture.txt" }, "settlement-second");
+      continue;
+    }
+    if (id === "settlement-second") {
+      const agent = { task_id: "settlement-agent", task_type: "local_agent", run_id: "agent-run-2" };
+      if (scenario !== "settlement-requeued" && scenario !== "settlement-duplicates") { system("task_notification", { ...agent, status: "completed" }); tasks([]); }
+      send({ type: "command_lifecycle", state: "completed", command_uuid: pendingInputUuid });
+      nativeResult(JSON.stringify({ pid: process.pid, answer: "parent final" }),
+        { origin: { kind: "task-notification", producer: "session-task", runId: "agent-run-2" }, num_turns: 1 });
+      continue;
+    }
     if (id === "background-release") {
       if (parentStopped) {
         tasks([{ task_id: "live-sibling", task_type: "local_workflow" }]);

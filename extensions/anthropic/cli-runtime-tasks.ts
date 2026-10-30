@@ -33,29 +33,40 @@ export function readReplayedTaskId(
   return /^<task-notification>\s*<task-id>([^<]+)<\/task-id>/u.exec(text)?.[1];
 }
 
+export type NativeTaskOccurrence = {
+  taskId: string;
+  runId?: string;
+  ownerInputUuid: string | false;
+  phase: "running" | "notified" | "acknowledged";
+};
+
 export function recordTaskOwnership(
-  session: { taskOwners: Map<string, string | false>; taskRuns: Map<string, string> },
+  session: {
+    taskOwners: Map<string, string | false>;
+    taskRuns: Map<string, NativeTaskOccurrence>;
+    currentTaskOccurrence: Map<string, NativeTaskOccurrence>;
+  },
   task: Record<string, unknown>,
   inputUuid: string,
-): string | undefined {
+  start: boolean,
+  restart: boolean,
+): NativeTaskOccurrence | undefined {
   const taskId = task.task_id;
-  if (typeof taskId !== "string" || !taskId) {
-    return undefined;
-  }
+  if (typeof taskId !== "string" || !taskId) return undefined;
+  const runId = typeof task.run_id === "string" && task.run_id ? task.run_id : undefined;
+  const known = runId ? session.taskRuns.get(runId) : session.currentTaskOccurrence.get(taskId);
+  if (known && (known.taskId !== taskId || (runId && known.runId !== runId))) return undefined;
+  if (known && (!start || !restart || known.phase === "running" || runId)) return known;
+  if (!start) return undefined;
   const previous = session.taskOwners.get(taskId);
-  // Nested tasks report back to their launching agent, not the parent input.
-  // Native marks nested Bash explicitly; Agents and workflows carry a parent ID.
-  const owner =
-    task.owned_by_subagent === true || typeof task.parent_task_id === "string"
-      ? false
-      : (previous ?? inputUuid);
-  if (owner !== previous) {
-    session.taskOwners.set(taskId, owner);
-  }
-  if (typeof task.run_id === "string" && task.run_id) {
-    session.taskRuns.set(task.run_id, taskId);
-  }
-  return owner === false ? undefined : taskId;
+  const owner = task.owned_by_subagent === true || typeof task.parent_task_id === "string"
+    ? false : (previous ?? (inputUuid || false));
+  if (previous !== undefined && previous !== owner) return undefined;
+  session.taskOwners.set(taskId, owner);
+  const occurrence: NativeTaskOccurrence = { taskId, runId, ownerInputUuid: owner, phase: "running" };
+  if (runId) session.taskRuns.set(runId, occurrence);
+  session.currentTaskOccurrence.set(taskId, occurrence);
+  return occurrence;
 }
 
 /** Agents and workflows make their own tool calls; subagent-owned work can resume its Agent. */

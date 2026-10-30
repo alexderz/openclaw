@@ -1,4 +1,5 @@
 /** Native task ownership: which input a background task holds, settles, or retires. */
+import { PassThrough } from "node:stream";
 import type { CliBackendToolPermissionResult } from "openclaw/plugin-sdk/cli-backend";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { withinTest } from "openclaw/plugin-sdk/test-fixtures";
@@ -8,11 +9,111 @@ import {
   installClaudeCliRuntimeHarness,
   resultDetail,
 } from "./cli-runtime.harness.test-support.js";
-import { executeClaudeCli } from "./cli.runtime.js";
+import { acceptMessageForTest, closeSessionForTest, executeClaudeCli, handleRequestForTest } from "./cli.runtime.js";
 
 const { createContext, createLiveSession } = installClaudeCliRuntimeHarness();
 
 describe("Claude native task ownership", () => {
+  it("does not let an old run notification or acknowledgment clear the new run descendant", async () => {
+    const turn = {
+      inputUuid: "input-1", inputStarted: true, sawTerminalResult: false,
+      controller: new AbortController(), events: new PassThrough({ objectMode: true }),
+      foregroundTaskIds: new Set(), foregroundBashToolUseIds: new Set(),
+      pendingBackgroundTaskIds: new Set(), taskNotifications: new Map(),
+    };
+    const session = {
+      currentTurn: turn, hasInputLifecycle: false, closed: false,
+      taskOwners: new Map(), taskRuns: new Map(), currentTaskOccurrence: new Map(),
+      runningDescendants: new Set(), handle: { close: () => {} },
+    } as unknown as Parameters<typeof acceptMessageForTest>[0];
+    const send = (message: Record<string, unknown>) => acceptMessageForTest(session, message);
+    const start = (run_id: string) => ({ type: "system", subtype: "task_started", task_id: "same-task", run_id, task_type: "local_agent", is_backgrounded: true });
+    const notify = (run_id: string) => ({ type: "system", subtype: "task_notification", task_id: "same-task", run_id, status: "completed" });
+    const ack = (runId: string) => ({ type: "result", subtype: "success", origin: { kind: "task-notification", runId } });
+
+    await send(start("R1"));
+    const old = session.taskRuns.get("R1")!;
+    await send(notify("R1"));
+    // Keep the turn alive while settling R1, as in a continuing parent stream.
+    turn.pendingBackgroundTaskIds.add({} as never);
+    await send(ack("R1"));
+    turn.pendingBackgroundTaskIds.clear();
+    expect(old.phase).toBe("acknowledged");
+    await send(start("R2"));
+    const current = session.taskRuns.get("R2")!;
+    expect(turn.pendingBackgroundTaskIds.has(current as never)).toBe(true);
+    expect(session.runningDescendants.has(current)).toBe(true);
+
+    await send(notify("R1"));
+    await send(ack("R1"));
+    expect(current.phase).toBe("running");
+    expect(turn.pendingBackgroundTaskIds.has(current as never)).toBe(true);
+    expect(session.runningDescendants.has(current)).toBe(true);
+    expect(session.currentTaskOccurrence.get("same-task")).toBe(current);
+
+    await send(notify("R2"));
+    expect(session.runningDescendants.has(current)).toBe(false);
+    expect(turn.pendingBackgroundTaskIds.has(current as never)).toBe(true);
+    await send(ack("R2"));
+    expect(current.phase).toBe("acknowledged");
+    expect(turn.pendingBackgroundTaskIds.has(current as never)).toBe(false);
+  });
+
+  it("does not restore a revoked owner when both runs finish and permissions resolve late", async () => {
+    const decisions = [createDeferred<CliBackendToolPermissionResult>(), createDeferred<CliBackendToolPermissionResult>()];
+    const events = new PassThrough({ objectMode: true });
+    const delivered: unknown[] = [];
+    events.on("data", (message) => delivered.push(message));
+    const turn = {
+      context: { requestToolPermission: ({ toolCallId }: { toolCallId?: string }) =>
+        decisions[toolCallId === "permission-R1" ? 0 : 1]!.promise },
+      inputUuid: "input-1", inputStarted: true, sawTerminalResult: false,
+      controller: new AbortController(), events,
+      foregroundTaskIds: new Set(), foregroundBashToolUseIds: new Set(),
+      pendingBackgroundTaskIds: new Set(), taskNotifications: new Map(),
+    };
+    const session = {
+      currentTurn: turn, hasInputLifecycle: false, closed: false,
+      taskOwners: new Map(), taskRuns: new Map(), currentTaskOccurrence: new Map(),
+      runningDescendants: new Set(), handle: { close: () => {} },
+    } as unknown as Parameters<typeof acceptMessageForTest>[0];
+    const send = (message: Record<string, unknown>) => acceptMessageForTest(session, message);
+    const notify = (run_id: string) => ({ type: "system", subtype: "task_notification", task_id: "same-task", run_id, status: "completed" });
+    const start = (run_id: string) => ({ type: "system", subtype: "task_started", task_id: "same-task", run_id, task_type: "local_agent", is_backgrounded: true });
+    const permission = (run: string) => handleRequestForTest(session, {
+      subtype: "can_use_tool", tool_name: "Bash", input: {}, tool_use_id: `permission-${run}`,
+    }, new AbortController().signal);
+    await send(start("R1"));
+    const r1 = session.taskRuns.get("R1")!;
+    const p1 = permission("R1");
+    await send(notify("R1"));
+    await send(start("R2"));
+    const r2 = session.taskRuns.get("R2")!;
+    const p2 = permission("R2");
+    expect(r1).not.toBe(r2);
+    expect(turn.pendingBackgroundTaskIds.size).toBe(2);
+    expect(session.runningDescendants.has(r2)).toBe(true);
+    closeSessionForTest(session, new Error("owner revoked"));
+    const deliveredBeforeLate = delivered.length;
+    decisions[0]!.resolve({ behavior: "allow", updatedInput: {} });
+    decisions[1]!.resolve({ behavior: "allow", updatedInput: {} });
+    expect(await p1).toMatchObject({ behavior: "deny", toolUseID: "permission-R1" });
+    expect(await p2).toMatchObject({ behavior: "deny", toolUseID: "permission-R2" });
+    for (const run of ["R1", "R2"]) {
+      await send(notify(run));
+      await send({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: run } });
+    }
+    expect(delivered).toHaveLength(deliveredBeforeLate);
+    expect(session.closed).toBe(true);
+    expect(session.currentTurn).toBeUndefined();
+    expect(turn.controller.signal.aborted).toBe(true);
+    expect(session.taskRuns.size).toBe(2);
+    expect(session.runningDescendants.size).toBe(0);
+    expect(turn.pendingBackgroundTaskIds.size).toBe(2); // retired turn's inert bookkeeping
+    expect(r1.phase).toBe("notified");
+    expect(r2.phase).toBe("running");
+  });
+
   it.each([
     "background-success",
     "background-agent-subagent-bash-completed",
@@ -63,6 +164,85 @@ describe("Claude native task ownership", () => {
     const next = resultDetail(await collect({ ...context, prompt: "next input", useResume: true }));
     expect(next).toMatchObject({ pid: detail.pid, turn: 2, user: "next input" });
     expect(liveSession.current()).toBe(handle);
+  });
+
+  it.for(["settlement-resumed", "settlement-requeued", "settlement-duplicates", "settlement-inline", "settlement-inline-legacy"])(
+    "preserves the restarted Agent completion across an old receipt (%s)",
+    async (scenario, { signal }) => {
+      const liveSession = createLiveSession();
+      const first = createDeferred<CliBackendToolPermissionResult>();
+      const second = createDeferred<CliBackendToolPermissionResult>();
+      const decision = { behavior: "deny" as const, message: "Fixture released." };
+      const context = await createContext(scenario, {
+        liveSession,
+        requestToolPermission: ({ toolCallId }) =>
+          toolCallId === "settlement-first" ? first.promise : second.promise,
+      });
+      const results: Record<string, unknown>[] = [];
+      const running = (async () => {
+        for await (const record of executeClaudeCli(context)) {
+          if (record.type !== "result") continue;
+          results.push(record);
+          if (results.length <= 2) {
+            expect(record, `result ${results.length}: ${String(record.result)}`).toHaveProperty(
+              "openclaw_interim_result", true,
+            );
+            expect(liveSession.current()?.isIdle()).toBe(false);
+            (results.length === 1 ? first : second).resolve(decision);
+          }
+        }
+      })();
+      try { await withinTest(running, signal); } finally { first.resolve(decision); second.resolve(decision); }
+      expect(results).toHaveLength(3);
+      expect(resultDetail([results[0]!]).answer).toBe("initial interim");
+      expect(results[1]!.result).toBe("resumed");
+      expect(results[2]).not.toHaveProperty("openclaw_interim_result");
+      const final = resultDetail(results);
+      expect(final.answer).toBe("parent final");
+      const handle = liveSession.current();
+      expect(handle?.isIdle()).toBe(true);
+      const next = resultDetail(await withinTest(collect({ ...context, useResume: true }), signal));
+      expect(next).toMatchObject({ answer: "warm input", pid: final.pid });
+      expect(liveSession.current()).toBe(handle);
+    },
+  );
+
+  it("retires a cancelled parent while its resumed occurrence and permission are pending", async ({ signal }) => {
+    const liveSession = createLiveSession();
+    const controller = new AbortController();
+    const secondStarted = createDeferred<void>();
+    const second = createDeferred<CliBackendToolPermissionResult>();
+    const decision = { behavior: "deny" as const, message: "Fixture released." };
+    const context = await createContext("settlement-resumed", {
+      liveSession,
+      abortSignal: controller.signal,
+      requestToolPermission: ({ toolCallId }) => {
+        if (toolCallId === "settlement-first") return Promise.resolve(decision);
+        secondStarted.resolve();
+        return second.promise;
+      },
+    });
+    const outcome = collect(context).catch((error: unknown) => error);
+    try {
+      await withinTest(secondStarted.promise, signal);
+      const oldHandle = liveSession.current();
+      expect(oldHandle?.isIdle()).toBe(false);
+      controller.abort(new Error("Synthetic parent cancellation."));
+      second.resolve(decision);
+      expect(await withinTest(outcome, signal)).toBeInstanceOf(Error);
+      expect(liveSession.current()).toBeUndefined();
+      const next = resultDetail(await withinTest(collect({
+        ...context,
+        useResume: true,
+        abortSignal: AbortSignal.timeout(10_000),
+        env: { ...context.env, CLAUDE_FIXTURE_SCENARIO: "normal" },
+      }), signal));
+      expect(next.turn).toBe(1);
+      expect(liveSession.current()).not.toBe(oldHandle);
+    } finally {
+      controller.abort();
+      second.resolve(decision);
+    }
   });
 
   it.each(["local_agent", "local_workflow"])(

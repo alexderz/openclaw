@@ -12,7 +12,7 @@ import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { hasClaudeRawToolInvocation } from "./cli-output.js";
 import type { ClaudeCliSecretInput } from "./cli-process.js";
 import { prepareClaudeCliTransportArgs } from "./cli-runtime-args.js";
-import { isDescendantTask, readReplayedTaskId, recordTaskOwnership } from "./cli-runtime-tasks.js";
+import { isDescendantTask, readReplayedTaskId, recordTaskOwnership, type NativeTaskOccurrence } from "./cli-runtime-tasks.js";
 import { createClaudeCliTransport } from "./cli-transport.js";
 import { createClaudeCliUserInputAuthorizer } from "./cli-user-input.js";
 
@@ -26,10 +26,10 @@ type ClaudeCliTurn = {
   inputUuid: string;
   inputStarted: boolean;
   sawTerminalResult: boolean;
-  foregroundTaskIds: Set<string>;
+  foregroundTaskIds: Set<NativeTaskOccurrence>;
   foregroundBashToolUseIds: Set<string>;
-  pendingBackgroundTaskIds: Set<string>;
-  taskNotifications: Map<string, "queued" | "replayed">;
+  pendingBackgroundTaskIds: Set<NativeTaskOccurrence>;
+  taskNotifications: Map<NativeTaskOccurrence, "queued" | "replayed">;
   error?: Error;
 };
 type ClaudeCliSession = {
@@ -43,9 +43,10 @@ type ClaudeCliSession = {
   // Tasks outlive inputs; false marks subagent work with no parent-stream query.
   taskOwners: Map<string, string | false>;
   // Native notification results identify task runs rather than task IDs.
-  taskRuns: Map<string, string>;
+  taskRuns: Map<string, NativeTaskOccurrence>;
+  currentTaskOccurrence: Map<string, NativeTaskOccurrence>;
   // Running Agent/Workflow tasks and subagent-owned work, at any depth, until notified.
-  runningDescendants: Set<string>;
+  runningDescendants: Set<NativeTaskOccurrence>;
 };
 const sessions = new WeakMap<CliBackendLiveSessionHandle, ClaudeCliSession>();
 
@@ -213,150 +214,110 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
       Array.isArray(message.capabilities) && message.capabilities.includes("msg_lifecycle_v1");
   }
   const turn = session.currentTurn;
-  let taskId: string | undefined;
+  const input = turn && (!session.hasInputLifecycle || turn.inputStarted) ? turn : undefined;
+  let occurrence: NativeTaskOccurrence | undefined;
   if (message.type === "system") {
-    const startedTasks =
-      message.subtype === "task_started"
-        ? [message]
-        : message.subtype === "background_tasks_changed" && Array.isArray(message.tasks)
-          ? message.tasks.filter(isRecord)
-          : [];
+    const startedTasks = message.subtype === "task_started" ? [message]
+      : message.subtype === "background_tasks_changed" && Array.isArray(message.tasks)
+        ? message.tasks.filter(isRecord) : [];
     for (const task of startedTasks) {
-      if (typeof task.task_id === "string" && isDescendantTask(task)) {
-        session.runningDescendants.add(task.task_id);
+      const current = typeof task.task_id === "string" ? session.currentTaskOccurrence.get(task.task_id) : undefined;
+      const item = recordTaskOwnership(session, task, input?.inputUuid ?? "", true,
+        message.subtype === "task_started" && current?.phase !== "running");
+      if (!item || item.phase !== "running") continue;
+      if (isDescendantTask(task)) {
+        session.runningDescendants.add(item);
+      }
+      if (task === message) occurrence = item;
+      if (input && item.ownerInputUuid === input.inputUuid &&
+        (((task.task_type === "local_agent" || task.task_type === "local_workflow") &&
+          (message.subtype === "background_tasks_changed" || task.is_backgrounded === true)) ||
+          (task.task_type === "local_bash" && input.foregroundTaskIds.has(item)))) {
+        input.pendingBackgroundTaskIds.add(item);
       }
     }
-    if (message.subtype === "task_notification" && typeof message.task_id === "string") {
-      session.runningDescendants.delete(message.task_id);
-    }
-    const input = turn && (!session.hasInputLifecycle || turn.inputStarted) ? turn : undefined;
-    const inputUuid = input?.inputUuid ?? "";
-    if (message.subtype === "background_tasks_changed") {
-      if (Array.isArray(message.tasks)) {
-        for (const task of message.tasks) {
-          if (!isRecord(task)) {
-            continue;
-          }
-          const id = recordTaskOwnership(session, task, inputUuid);
-          if (
-            id &&
-            input &&
-            session.taskOwners.get(id) === input.inputUuid &&
-            (task.task_type === "local_agent" ||
-              task.task_type === "local_workflow" ||
-              (task.task_type === "local_bash" && input.foregroundTaskIds.has(id)))
-          ) {
-            // Disappearing from a snapshot does not acknowledge the queued answer.
-            input.pendingBackgroundTaskIds.add(id);
-          }
-        }
+    if (message.subtype === "task_notification") {
+      occurrence = recordTaskOwnership(session, message, input?.inputUuid ?? "", false, false);
+      if (occurrence && occurrence.phase === "running") {
+        session.runningDescendants.delete(occurrence);
       }
-    } else {
-      taskId = recordTaskOwnership(session, message, inputUuid);
     }
   }
-  if (!turn) {
-    return;
-  }
+  if (!turn) return;
   if (message.type === "command_lifecycle") {
-    if (message.state === "started" && message.command_uuid === turn.inputUuid) {
-      turn.inputStarted = true;
-    }
+    if (message.state === "started" && message.command_uuid === turn.inputUuid) turn.inputStarted = true;
     return;
   }
-  // Newer CLI builds identify the submitted input; ignore replayed prior-turn output.
-  if (
-    session.hasInputLifecycle &&
-    !turn.inputStarted &&
-    !(message.type === "system" && message.subtype === "init")
-  ) {
-    return;
-  }
-  if (
-    message.type === "system" &&
-    message.subtype === "task_started" &&
-    taskId &&
-    session.taskOwners.get(taskId) === turn.inputUuid
-  ) {
-    if (message.is_backgrounded === false) {
-      turn.foregroundTaskIds.add(taskId);
-    }
-    const foregroundBash =
-      typeof message.tool_use_id === "string" &&
+  if (session.hasInputLifecycle && !turn.inputStarted &&
+    !(message.type === "system" && message.subtype === "init")) return;
+  if (message.type === "system" && message.subtype === "task_started" && occurrence &&
+    occurrence.phase === "running" && occurrence.ownerInputUuid === turn.inputUuid) {
+    if (message.is_backgrounded === false) turn.foregroundTaskIds.add(occurrence);
+    const foregroundBash = typeof message.tool_use_id === "string" &&
       turn.foregroundBashToolUseIds.delete(message.tool_use_id);
-    if (foregroundBash && message.is_backgrounded === true) {
-      turn.pendingBackgroundTaskIds.add(taskId);
-    }
+    if (foregroundBash && message.is_backgrounded === true) turn.pendingBackgroundTaskIds.add(occurrence);
   }
-  // A replay receipt acknowledges consumption within the current query. Keep its
-  // queue slot until that query's result so it cannot acknowledge the next task twice.
   const replayedTaskId = readReplayedTaskId(message, turn.inputUuid);
   if (replayedTaskId) {
-    turn.pendingBackgroundTaskIds.delete(replayedTaskId);
-    turn.foregroundTaskIds.delete(replayedTaskId);
-    turn.taskNotifications.set(replayedTaskId, "replayed");
+    const origin = isRecord(message.origin) ? message.origin : undefined;
+    const explicitRun = typeof origin?.runId === "string" ? origin.runId : undefined;
+    const replayed = explicitRun ? session.taskRuns.get(explicitRun)
+      : [...turn.taskNotifications.keys()].find((item) => item.taskId === replayedTaskId);
+    if (replayed && replayed.taskId === replayedTaskId && replayed.ownerInputUuid === turn.inputUuid &&
+      replayed.phase === "notified" && turn.taskNotifications.has(replayed)) {
+      turn.taskNotifications.set(replayed, "replayed");
+    }
   }
-  if (message.type === "system" && message.subtype === "task_notification" && taskId) {
-    if (message.status === "stopped") {
-      // Stopped work has no notification query to wait for.
-      turn.pendingBackgroundTaskIds.delete(taskId);
-      turn.foregroundTaskIds.delete(taskId);
-      turn.taskNotifications.delete(taskId);
-    } else if (turn.foregroundTaskIds.has(taskId) && !turn.pendingBackgroundTaskIds.has(taskId)) {
-      turn.foregroundTaskIds.delete(taskId);
-    } else {
-      // Older inputs still consume their own ordered notification result.
-      turn.taskNotifications.set(taskId, "queued");
+  if (message.type === "system" && message.subtype === "task_notification" && occurrence &&
+    occurrence.phase === "running") {
+    occurrence.phase = "notified";
+    if (occurrence.ownerInputUuid === turn.inputUuid) {
+      if (message.status === "stopped") {
+        occurrence.phase = "acknowledged";
+        turn.pendingBackgroundTaskIds.delete(occurrence);
+        turn.foregroundTaskIds.delete(occurrence);
+        turn.taskNotifications.delete(occurrence);
+      } else if (turn.foregroundTaskIds.has(occurrence) && !turn.pendingBackgroundTaskIds.has(occurrence)) {
+        occurrence.phase = "acknowledged";
+        turn.foregroundTaskIds.delete(occurrence);
+      } else {
+        turn.taskNotifications.set(occurrence, "queued");
+      }
     }
   }
   let completesTurn = false;
   if (message.type === "result") {
-    const failed =
-      message.is_error === true ||
+    const failed = message.is_error === true ||
       (typeof message.subtype === "string" && message.subtype.startsWith("error")) ||
       (typeof message.result === "string" && hasClaudeRawToolInvocation(message.result));
     const origin = isRecord(message.origin) ? message.origin : undefined;
     const taskNotification = origin?.kind === "task-notification" && origin.subkind === undefined;
-    const runTaskId =
-      taskNotification && typeof origin?.runId === "string"
-        ? session.taskRuns.get(origin.runId)
-        : undefined;
-    const notifiedTaskId = taskNotification
-      ? (runTaskId ?? turn.taskNotifications.keys().next().value)
-      : undefined;
-    // A prior input's continuation answers that input, not this one. Without a run ID
-    // the queue order is the only correlation, so a failure still ends this turn.
-    const priorInputResult =
-      notifiedTaskId !== undefined &&
-      session.taskOwners.get(notifiedTaskId) !== turn.inputUuid &&
-      (!failed || runTaskId !== undefined);
-    if (taskNotification && message.subtype === "success" && !failed && notifiedTaskId) {
-      // A later task can finish during this query. Consume one notification, not all
-      // completed tasks; retain pending work on failure so completeTurn retires it.
-      turn.taskNotifications.delete(notifiedTaskId);
-      turn.pendingBackgroundTaskIds.delete(notifiedTaskId);
-      turn.foregroundTaskIds.delete(notifiedTaskId);
+    const explicitRun = taskNotification && typeof origin?.runId === "string" ? origin.runId : undefined;
+    const notified = taskNotification ? (explicitRun ? session.taskRuns.get(explicitRun)
+      : turn.taskNotifications.keys().next().value) : undefined;
+    // Explicit identities are never allowed to fall through to an unrelated FIFO slot.
+    if (explicitRun && (!notified || notified.ownerInputUuid !== turn.inputUuid ||
+      notified.phase !== "notified" || !turn.taskNotifications.has(notified))) return;
+    if (taskNotification && message.subtype === "success" && !failed && notified) {
+      notified.phase = "acknowledged";
+      turn.taskNotifications.delete(notified);
+      turn.pendingBackgroundTaskIds.delete(notified);
+      turn.foregroundTaskIds.delete(notified);
     }
-    // A batched notification can acknowledge input without running the model.
-    const queuedContinuation =
-      turn.sawTerminalResult &&
-      taskNotification &&
-      message.num_turns === 0 &&
-      message.result === "" &&
-      message.stop_reason === null &&
-      message.terminal_reason === undefined;
-    if (!priorInputResult) {
-      // Inline receipts have no separate result. The query just answered them too.
-      for (const [replayedId, state] of turn.taskNotifications) {
-        if (state === "replayed") {
-          turn.taskNotifications.delete(replayedId);
-        }
+    const queuedContinuation = turn.sawTerminalResult && taskNotification && message.num_turns === 0 &&
+      message.result === "" && message.stop_reason === null && message.terminal_reason === undefined;
+    for (const [replayed, state] of turn.taskNotifications) {
+      if (state === "replayed" && (!explicitRun || replayed === notified)) {
+        replayed.phase = "acknowledged";
+        turn.taskNotifications.delete(replayed);
+        turn.pendingBackgroundTaskIds.delete(replayed);
+        turn.foregroundTaskIds.delete(replayed);
       }
-      turn.sawTerminalResult = true;
-      // Background work holds successful interim results, never terminal failures.
-      completesTurn = (turn.pendingBackgroundTaskIds.size === 0 && !queuedContinuation) || failed;
     }
+    turn.sawTerminalResult = true;
+    completesTurn = (turn.pendingBackgroundTaskIds.size === 0 && turn.taskNotifications.size === 0 && !queuedContinuation) || failed;
   }
+
   // The transport owns continuation lifetime; the completed answer can be
   // delivered through normal reply hooks without waiting for the children.
   const outputMessage =
@@ -371,6 +332,11 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
   }
 }
 
+// Expose the actual reducer to isolated ownership regression tests.
+export const acceptMessageForTest = acceptMessage;
+export const closeSessionForTest = closeSession;
+export const handleRequestForTest = handleRequest;
+
 function createSession(capability?: CliBackendLiveSessionCapability): ClaudeCliSession {
   const session: ClaudeCliSession = {
     capability,
@@ -378,6 +344,7 @@ function createSession(capability?: CliBackendLiveSessionCapability): ClaudeCliS
     closed: false,
     taskOwners: new Map(),
     taskRuns: new Map(),
+    currentTaskOccurrence: new Map(),
     runningDescendants: new Set(),
     handle: {
       generation: randomUUID(),
