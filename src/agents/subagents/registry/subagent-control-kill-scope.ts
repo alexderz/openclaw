@@ -17,6 +17,10 @@ import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.
 import { holdQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
 import { resolveSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
 import {
+  detachedRootAuthorizationError,
+  type ChildRootAuthorization,
+} from "./subagent-control-root-authority.js";
+import {
   ensureSubagentControllerOwnsRun,
   getLatestOwnedSubagentRun,
   isCurrentSubagentRun,
@@ -286,6 +290,19 @@ export async function withSubagentKillScope<T>(
               selectedRun.childAgentId,
             );
             releaseSessions.push(session.release);
+            // Registry handoff is best-effort after the durable promotion commit.
+            // Never traverse or cancel a promoted root through a stale spawner edge.
+            const rootFacts: ChildRootAuthorization =
+              session.entry === undefined
+                ? { proved: true, missing: true }
+                : { proved: true, missing: false, promotedFrom: session.entry.promotedFrom };
+            const detachedRootError = detachedRootAuthorizationError(selectedRun, rootFacts);
+            if (detachedRootError) {
+              // Drop the prepared incarnation before the error is recorded. Traversal
+              // treats a retained session as permission to walk already captured descendants.
+              session = undefined;
+              throw new Error(detachedRootError);
+            }
             if (!tree.canTraverse(false)) {
               return;
             }

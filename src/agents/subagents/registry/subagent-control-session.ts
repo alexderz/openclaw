@@ -71,10 +71,9 @@ export async function prepareSubagentKillSession(
         }
         const entry = read.value;
         if (
-          selected?.sessionId &&
-          (entry?.sessionId !== selected.sessionId ||
-            (selected.expectedLifecycleRevision !== undefined &&
-              entry?.lifecycleRevision !== selected.expectedLifecycleRevision))
+          (selected?.sessionId !== undefined && entry?.sessionId !== selected.sessionId) ||
+          (selected?.expectedLifecycleRevision !== undefined &&
+            entry?.lifecycleRevision !== selected.expectedLifecycleRevision)
         ) {
           throw new Error("Subagent session changed during cancellation preparation");
         }

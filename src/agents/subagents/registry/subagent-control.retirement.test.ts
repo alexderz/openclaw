@@ -31,7 +31,17 @@ import {
   seedSubagentCompletionDelivery,
 } from "../completion/subagent-completion-admission.test-helpers.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
-import { killAllControlledSubagentRuns, killSubagentRunAdmin } from "./subagent-control.js";
+import { killSessionSubagentRuns } from "./subagent-control-kill.js";
+import { readChildRootAuthorization } from "./subagent-control-root-authority.js";
+import {
+  ensureSubagentControllerOwnsRun,
+  isSubagentRunVisibleToSession,
+} from "./subagent-control-scope.js";
+import {
+  buildControlledSubagentRunsReadContext,
+  killAllControlledSubagentRuns,
+  killSubagentRunAdmin,
+} from "./subagent-control.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { PROVISIONAL_KILL_RECONCILIATION_MS } from "./subagent-registry-helpers.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -54,6 +64,310 @@ import { resolveSubagentSessionStatus } from "./subagent-session-metrics.js";
 
 const fixture = useSubagentControlFixture();
 const { worker, gateway } = fixture;
+
+it("does not cancel a durable promoted root when registry handoff is absent", async () => {
+  const parent = "agent:main:main";
+  const child = "agent:main:dashboard:promoted-root";
+  const sessionId = "promoted-root-session";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: child,
+    defaultSessionId: sessionId,
+    lifecycleRevision: "promoted-revision",
+  });
+  const stored = loadSessionEntry({ storePath, sessionKey: child })!;
+  await replaceSessionEntry(
+    { storePath, sessionKey: child },
+    {
+      ...stored,
+      promotedFrom: { version: 1, requestId: "request", profileId: "profile", at: 1 },
+    },
+  );
+  await registerSubagentRun({
+    runId: "stale-spawner",
+    childSessionKey: child,
+    requesterSessionKey: parent,
+    controllerSessionKey: parent,
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "old task",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  const run = subagentRuns.get("stale-spawner")!;
+  expect(run.childHandoff).toBeUndefined();
+  const abort = vi.fn();
+  const handle = createEmbeddedRunHandle({ abort, runId: run.runId });
+  setActiveEmbeddedRun(sessionId, handle, child);
+  try {
+    const result = await killAllControlledSubagentRuns({
+      cfg: getRuntimeConfig(),
+      controller: {
+        controllerSessionKey: parent,
+        controllerAgentId: "main",
+        callerSessionKey: parent,
+        callerIsSubagent: false,
+        controlScope: "children",
+      },
+      runs: [run],
+    });
+    expect(abort).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "error", killed: 0 });
+  } finally {
+    clearActiveEmbeddedRun(sessionId, handle, child);
+  }
+});
+
+it("does not cancel a grandchild of a detached root when registry handoff is absent", async () => {
+  const parent = "agent:main:main";
+  const child = "agent:main:dashboard:promoted-root-with-child";
+  const grandchild = "agent:main:subagent:promoted-grandchild";
+  const childSessionId = "promoted-root-with-child-session";
+  const grandchildSessionId = "promoted-grandchild-session";
+  const childStore = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: child,
+    defaultSessionId: childSessionId,
+    lifecycleRevision: "promoted-revision",
+  });
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: grandchild,
+    defaultSessionId: grandchildSessionId,
+  });
+  const stored = loadSessionEntry({ storePath: childStore, sessionKey: child })!;
+  await replaceSessionEntry(
+    { storePath: childStore, sessionKey: child },
+    {
+      ...stored,
+      promotedFrom: { version: 1, requestId: "request", profileId: "profile", at: 1 },
+    },
+  );
+  await registerSubagentRun({
+    runId: "stale-spawner-with-child",
+    childSessionKey: child,
+    requesterSessionKey: parent,
+    controllerSessionKey: parent,
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "old task",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  await registerSubagentRun({
+    runId: "captured-grandchild",
+    childSessionKey: grandchild,
+    requesterSessionKey: child,
+    controllerSessionKey: child,
+    requesterAgentId: "main",
+    requesterDisplayKey: "child",
+    task: "nested task",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  const run = subagentRuns.get("stale-spawner-with-child")!;
+  const nested = subagentRuns.get("captured-grandchild")!;
+  const abort = vi.fn();
+  const nestedAbort = vi.fn();
+  const handle = createEmbeddedRunHandle({ abort, runId: run.runId });
+  const nestedHandle = createEmbeddedRunHandle({ abort: nestedAbort, runId: nested.runId });
+  setActiveEmbeddedRun(childSessionId, handle, child);
+  setActiveEmbeddedRun(grandchildSessionId, nestedHandle, grandchild);
+  try {
+    const result = await killAllControlledSubagentRuns({
+      cfg: getRuntimeConfig(),
+      controller: {
+        controllerSessionKey: parent,
+        controllerAgentId: "main",
+        callerSessionKey: parent,
+        callerIsSubagent: false,
+        controlScope: "children",
+      },
+      runs: [run],
+    });
+    expect(abort).not.toHaveBeenCalled();
+    expect(nestedAbort).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "error", killed: 0 });
+  } finally {
+    clearActiveEmbeddedRun(childSessionId, handle, child);
+    clearActiveEmbeddedRun(grandchildSessionId, nestedHandle, grandchild);
+  }
+});
+
+it("does not retire a detached root through the requester lifecycle path", async () => {
+  const parent = "agent:main:main";
+  const child = "agent:main:dashboard:promoted-requester-root";
+  const sessionId = "promoted-requester-session";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: child,
+    defaultSessionId: sessionId,
+  });
+  const stored = loadSessionEntry({ storePath, sessionKey: child })!;
+  await replaceSessionEntry(
+    { storePath, sessionKey: child },
+    {
+      ...stored,
+      promotedFrom: { version: 1, requestId: "request", profileId: "profile", at: 1 },
+    },
+  );
+  await registerSubagentRun({
+    runId: "requester-retirement",
+    childSessionKey: child,
+    requesterSessionKey: parent,
+    controllerSessionKey: parent,
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "retire me",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  const run = subagentRuns.get("requester-retirement")!;
+  const abort = vi.fn();
+  const handle = createEmbeddedRunHandle({ abort, runId: run.runId });
+  setActiveEmbeddedRun(sessionId, handle, child);
+  try {
+    const result = await killSessionSubagentRuns({
+      cfg: getRuntimeConfig(),
+      sessionKey: parent,
+      agentId: "main",
+    });
+    expect(abort).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "ok", killed: 0 });
+  } finally {
+    clearActiveEmbeddedRun(sessionId, handle, child);
+  }
+});
+
+it("still cancels an ordinary delegated child", async () => {
+  const parent = "agent:main:main";
+  const child = "agent:main:subagent:ordinary-delegated-child";
+  const sessionId = "ordinary-delegated-session";
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: child,
+    defaultSessionId: sessionId,
+  });
+  await registerSubagentRun({
+    runId: "ordinary-delegated",
+    childSessionKey: child,
+    requesterSessionKey: parent,
+    controllerSessionKey: parent,
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "still mine",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  const run = subagentRuns.get("ordinary-delegated")!;
+  const abort = vi.fn();
+  const handle = createEmbeddedRunHandle({ abort, runId: run.runId });
+  setActiveEmbeddedRun(sessionId, handle, child);
+  try {
+    const result = await killAllControlledSubagentRuns({
+      cfg: getRuntimeConfig(),
+      controller: {
+        controllerSessionKey: parent,
+        controllerAgentId: "main",
+        callerSessionKey: parent,
+        callerIsSubagent: false,
+        controlScope: "children",
+      },
+      runs: [run],
+    });
+    expect(abort).toHaveBeenCalled();
+    expect(result.killed).toBeGreaterThan(0);
+    expect(result.status).toBe("ok");
+  } finally {
+    clearActiveEmbeddedRun(sessionId, handle, child);
+  }
+});
+
+it("hides a detached root from its former parent and still lists a delegated child", async () => {
+  const parent = "agent:main:main";
+  const detachedKey = "agent:main:dashboard:hidden-promoted-root";
+  const delegatedKey = "agent:main:subagent:listed-delegated-child";
+  const detachedStore = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: detachedKey,
+    defaultSessionId: "hidden-promoted-session",
+  });
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: delegatedKey,
+    defaultSessionId: "listed-delegated-session",
+  });
+  const stored = loadSessionEntry({ storePath: detachedStore, sessionKey: detachedKey })!;
+  await replaceSessionEntry(
+    { storePath: detachedStore, sessionKey: detachedKey },
+    {
+      ...stored,
+      promotedFrom: { version: 1, requestId: "request", profileId: "profile", at: 1 },
+    },
+  );
+  await registerSubagentRun({
+    runId: "hidden-promoted",
+    childSessionKey: detachedKey,
+    requesterSessionKey: parent,
+    controllerSessionKey: parent,
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "hidden",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  await registerSubagentRun({
+    runId: "listed-delegated",
+    childSessionKey: delegatedKey,
+    requesterSessionKey: parent,
+    controllerSessionKey: parent,
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "listed",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  const detached = subagentRuns.get("hidden-promoted")!;
+  const delegated = subagentRuns.get("listed-delegated")!;
+  const cfg = getRuntimeConfig();
+  const detachedFacts = await readChildRootAuthorization(cfg, detached);
+  const delegatedFacts = await readChildRootAuthorization(cfg, delegated);
+  expect(
+    isSubagentRunVisibleToSession(detached, parent, "main", cfg, detachedFacts),
+  ).toBe(false);
+  expect(isSubagentRunVisibleToSession(delegated, parent, "main", cfg, delegatedFacts)).toBe(true);
+  expect(
+    ensureSubagentControllerOwnsRun({
+      cfg,
+      controller: { controllerSessionKey: parent, controllerAgentId: "main" },
+      entry: detached,
+      rootFacts: detachedFacts,
+    }),
+  ).toBe("Promoted session is no longer owned by its former parent.");
+  expect(
+    ensureSubagentControllerOwnsRun({
+      cfg,
+      controller: { controllerSessionKey: parent, controllerAgentId: "main" },
+      entry: delegated,
+      rootFacts: delegatedFacts,
+    }),
+  ).toBeUndefined();
+  const listed = await buildControlledSubagentRunsReadContext(parent, "main", cfg);
+  const listedIds = listed.runs.map((entry) => entry.runId);
+  expect(listedIds).not.toContain("hidden-promoted");
+  expect(listedIds).toContain("listed-delegated");
+  const viewIds = [...listed.list.view.active, ...listed.list.view.recent].map(
+    (entry) => entry.runId,
+  );
+  expect(viewIds).not.toContain("hidden-promoted");
+});
 
 it.each([
   { transition: "normal retirement", cancel: true },

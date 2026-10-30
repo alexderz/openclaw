@@ -6,8 +6,10 @@ import { createAbortError } from "../../infra/abort-signal.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { sanitizeRunStatusText } from "../run-status-text.js";
 import { optionalPositiveIntegerSchema, optionalStringEnum } from "../schema/typebox.js";
+import { readChildRootAuthorization } from "../subagents/registry/subagent-control-root-authority.js";
 import {
   ensureSubagentControllerOwnsRun,
+  isSubagentRunVisibleToSession,
   listControlledSubagentRunFacts,
   resolveSubagentControllerIdentity,
 } from "../subagents/registry/subagent-control-scope.js";
@@ -221,7 +223,9 @@ function waitForSelectedRuns(params: {
 }
 
 export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTool {
-  const readScope = (readController?: ReturnType<typeof createSubagentControllerRead>["read"]) => {
+  const readScope = async (
+    readController?: ReturnType<typeof createSubagentControllerRead>["read"],
+  ) => {
     const cfg = opts.config ?? getRuntimeConfig();
     const controller = readController
       ? readController()
@@ -252,10 +256,22 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
         cfg,
       );
       for (const entry of entries) {
+        const rootFacts = await readChildRootAuthorization(cfg, entry);
+        if (
+          !isSubagentRunVisibleToSession(
+            entry,
+            current.controllerSessionKey,
+            current.controllerAgentId,
+            cfg,
+            rootFacts,
+          )
+        ) {
+          continue;
+        }
         readable.set(entry.runId, entry);
         if (
           controller.controlScope !== "children" ||
-          ensureSubagentControllerOwnsRun({ cfg, controller: current, entry })
+          ensureSubagentControllerOwnsRun({ cfg, controller: current, entry, rootFacts })
         ) {
           continue;
         }
@@ -332,7 +348,13 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
               assertCurrent: assertSelection,
             })
           : undefined;
-      const readCurrentScope = () => readScope(controllerRead?.read);
+      let provedScope: Awaited<ReturnType<typeof readScope>> | undefined;
+      const readCurrentScope = () => {
+        if (!provedScope) {
+          throw new Error("Subagent ownership was not proved before control.");
+        }
+        return provedScope;
+      };
       const prepareRead = () => {
         assertSelection();
         if (!getSubagentSessionListReadSnapshotIdentity()) {
@@ -350,22 +372,24 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
           if (runIds.length > 32) {
             throw new ToolInputError("At most 32 runIds may be waited for");
           }
+          const proved = await readScope();
+          provedScope = proved;
+          const visible = new Set(proved.readable.map((entry) => entry.runId));
           return jsonResult({
             status: "ok",
             action,
             ...(await waitForSelectedRuns({
               runIds,
-              readRuns: (snapshot) => {
-                const visible = new Set(readScope().readable.map((entry) => entry.runId));
-                return [...snapshot.values()].filter((entry) => visible.has(entry.runId));
-              },
+              readRuns: (snapshot) =>
+                [...snapshot.values()].filter((entry) => visible.has(entry.runId)),
               timeoutMs:
                 Math.min(60, readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30) * 1000,
               signal,
             })),
           });
         }
-        const { cfg, controller, readable, controlled } = readCurrentScope();
+        provedScope = await readScope(controllerRead?.read);
+        const { cfg, controller, readable, controlled } = provedScope;
         if (action === "list") {
           const readContext = await buildControlledSubagentRunsReadContext(
             controller.controllerSessionKey,
@@ -415,7 +439,15 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
               expectedOwnerKey: target.requesterSessionKey,
             },
             {
-              prepareRead,
+              prepareRead: () => {
+                const pending = prepareRead();
+                if (!pending) {
+                  return undefined;
+                }
+                return pending.then(async () => {
+                  provedScope = await readScope(controllerRead?.read);
+                });
+              },
               assertCurrent: () => {
                 signal?.throwIfAborted();
                 const current = readCurrentScope();

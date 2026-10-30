@@ -17,6 +17,11 @@ import {
   type KillPublicationPreparation,
 } from "./subagent-control-kill-scope.js";
 import {
+  detachedRootAuthorizationError,
+  readChildRootAuthorization,
+  type ChildRootAuthorization,
+} from "./subagent-control-root-authority.js";
+import {
   ensureSubagentControllerOwnsRun,
   getLatestOwnedSubagentRun,
   type captureExecRequestSubagentSelection,
@@ -529,21 +534,44 @@ export async function killSessionSubagentRuns(params: {
   assertCurrent?: () => void;
 }) {
   const controller = { controllerSessionKey: params.sessionKey, controllerAgentId: params.agentId };
+  const runs = [
+    ...listSubagentRunsForRequester(params.sessionKey, { requesterAgentId: params.agentId }),
+    ...listRunsForControllerFromRuns(subagentRuns, params.sessionKey, params.agentId),
+  ];
+  const rootFacts = new Map<string, ChildRootAuthorization>();
+  for (const entry of runs) {
+    if (rootFacts.has(entry.runId)) {
+      continue;
+    }
+    rootFacts.set(
+      entry.runId,
+      await readChildRootAuthorization(params.cfg, entry, params.assertCurrent ?? (() => {})),
+    );
+  }
   return killSelectedSubagentRuns({
     cfg: params.cfg,
     assertCurrent: params.assertCurrent,
-    runs: [
-      ...listSubagentRunsForRequester(params.sessionKey, { requesterAgentId: params.agentId }),
-      ...listRunsForControllerFromRuns(subagentRuns, params.sessionKey, params.agentId),
-    ],
+    runs,
     // Ordinary controller mutations retain their narrower authority. Only an admitted
     // lifecycle boundary can retire work whose completion belongs to this session.
     // A promoted child is no longer this session's to retire, by any boundary.
-    ownsRoot: (entry) =>
-      !entry.childHandoff &&
-      (!ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry }) ||
-        (entry.requesterSessionKey === params.sessionKey &&
-          resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId)),
+    ownsRoot: (entry) => {
+      const facts = rootFacts.get(entry.runId);
+      if (!facts || detachedRootAuthorizationError(entry, facts)) {
+        return false;
+      }
+      return (
+        !entry.childHandoff &&
+        (!ensureSubagentControllerOwnsRun({
+          cfg: params.cfg,
+          controller,
+          entry,
+          rootFacts: facts,
+        }) ||
+          (entry.requesterSessionKey === params.sessionKey &&
+            resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId))
+      );
+    },
     suppressTaskDelivery: true,
   });
 }

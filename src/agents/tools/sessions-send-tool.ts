@@ -8,7 +8,7 @@ import { resolveSessionThreadInfo } from "../../channels/plugins/session-convers
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { createRuntimeConfigReader } from "../../config/runtime-snapshot.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
-import { shouldResumeParentSubagent } from "../../gateway/session-subagent-resume.js";
+import { shouldResumeParentSubagentNow } from "../../gateway/session-subagent-resume.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store-lookup.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -533,11 +533,11 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
             (mode === undefined &&
               resumeCaller &&
               !targetAcpMeta &&
-              shouldResumeParentSubagent({
+              (await shouldResumeParentSubagentNow({
                 cfg,
                 caller: resumeCaller,
                 childSessionKey: resolvedKey,
-              }))
+              })))
           ) {
             if (!resumeCaller) {
               throw new ToolInputError("Task resume requires an admitted parent tool caller.");

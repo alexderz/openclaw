@@ -1,5 +1,9 @@
 /** Exact parent-owned paused-task binding for explicit model-tool resume admission. */
 import {
+  readChildRootAuthorization,
+  type ChildRootAuthorization,
+} from "../agents/subagents/registry/subagent-control-root-authority.js";
+import {
   ensureSubagentControllerOwnsRun,
   resolveSubagentController,
 } from "../agents/subagents/registry/subagent-control-scope.js";
@@ -14,6 +18,7 @@ export function shouldResumeParentSubagent(params: {
   cfg: OpenClawConfig;
   caller: TrustedAgentToolCaller;
   childSessionKey: string;
+  rootFacts?: ChildRootAuthorization;
 }): boolean {
   const entry = getLatestLiveSubagentRunByChildSessionKey(
     params.childSessionKey,
@@ -35,12 +40,39 @@ export function shouldResumeParentSubagent(params: {
   });
   return (
     controller.controlScope === "children" &&
-    ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry }) === undefined
+    ensureSubagentControllerOwnsRun({
+      cfg: params.cfg,
+      controller,
+      entry,
+      rootFacts: params.rootFacts,
+    }) === undefined
   );
 }
 
+/** Re-reads the child root before implicit resume so a missing handoff still fails closed. */
+export async function shouldResumeParentSubagentNow(
+  params: Parameters<typeof shouldResumeParentSubagent>[0],
+): Promise<boolean> {
+  const entry = getLatestLiveSubagentRunByChildSessionKey(
+    params.childSessionKey,
+    (candidate) => candidate.pauseReason === "sessions_yield",
+  );
+  if (!entry) {
+    return false;
+  }
+  const rootFacts = await readChildRootAuthorization(params.cfg, entry, () => {
+    params.caller.assertCurrent?.();
+  });
+  return shouldResumeParentSubagent({ ...params, rootFacts });
+}
+
 // Control ownership comes from the registry, not the child's key shape or message provenance.
-function requirePausedChild(cfg: OpenClawConfig, caller: TrustedAgentToolCaller, key: string) {
+function requirePausedChild(
+  cfg: OpenClawConfig,
+  caller: TrustedAgentToolCaller,
+  key: string,
+  rootFacts?: ChildRootAuthorization,
+) {
   if (!caller.assertCurrent) {
     throw new Error("Task resume requires an admitted parent tool caller.");
   }
@@ -70,7 +102,7 @@ function requirePausedChild(cfg: OpenClawConfig, caller: TrustedAgentToolCaller,
   }
   if (
     controller.controlScope !== "children" ||
-    ensureSubagentControllerOwnsRun({ cfg, controller, entry })
+    ensureSubagentControllerOwnsRun({ cfg, controller, entry, rootFacts })
   ) {
     throw new Error("Task resume is limited to children controlled by the calling session.");
   }
@@ -108,9 +140,15 @@ export function assertParentSubagentResumeCurrent(params: {
   resume: TrustedSubagentResume;
   sessionKey: string | undefined;
   sessionId: string;
+  rootFacts?: ChildRootAuthorization;
 }): SubagentRunRecord {
   const { resume } = params;
-  const entry = requirePausedChild(params.cfg, resume.caller, resume.childSessionKey);
+  const entry = requirePausedChild(
+    params.cfg,
+    resume.caller,
+    resume.childSessionKey,
+    params.rootFacts,
+  );
   if (
     params.sessionKey !== resume.childSessionKey ||
     params.sessionId !== resume.childSessionId ||
@@ -160,9 +198,15 @@ export async function prepareParentSubagentResume(params: {
   const runtime = await import("../agents/subagents/registry/subagent-registry.js");
   return async () => {
     params.assertAdmissionCurrent();
+    const rootFacts = await readChildRootAuthorization(
+      params.cfg,
+      { childSessionKey: params.resume.childSessionKey },
+      params.assertAdmissionCurrent,
+    );
     const expected = assertParentSubagentResumeCurrent({
       ...params,
       sessionId: params.getSessionId(),
+      rootFacts,
     });
     const adopted = await runtime.adoptPausedSubagentRunForFollowUp({
       childSessionKey: params.resume.childSessionKey,
@@ -173,7 +217,11 @@ export async function prepareParentSubagentResume(params: {
       gatewayContextResolver: params.gatewayContextResolver,
       assertCurrent: () => {
         params.assertAdmissionCurrent();
-        assertParentSubagentResumeCurrent({ ...params, sessionId: params.getSessionId() });
+        assertParentSubagentResumeCurrent({
+          ...params,
+          sessionId: params.getSessionId(),
+          rootFacts,
+        });
       },
     });
     if (!adopted) {

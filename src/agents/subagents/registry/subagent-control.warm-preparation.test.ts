@@ -27,6 +27,79 @@ import { writeSubagentSessionEntry } from "./subagent-registry.persistence.test-
 
 const fixture = useSubagentControlFixture();
 
+it("rejects a stale lifecycle revision even when a legacy target lacks a session id", async () => {
+  const childKey = "agent:main:subagent:revision-only-target";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "revision-only-session",
+    lifecycleRevision: "current-revision",
+  });
+  await expect(
+    prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
+      sessionKey: childKey,
+      storePath,
+      expectedLifecycleRevision: "stale-revision",
+    }),
+  ).rejects.toThrow("Subagent session changed during cancellation preparation");
+});
+
+it("prepares an ordinary child when the lifecycle revision matches and session id is absent", async () => {
+  const childKey = "agent:main:subagent:revision-match-target";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "revision-match-session",
+    lifecycleRevision: "current-revision",
+  });
+  const prepared = await prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
+    sessionKey: childKey,
+    storePath,
+    expectedLifecycleRevision: "current-revision",
+  });
+  try {
+    expect(prepared.entry?.lifecycleRevision).toBe("current-revision");
+  } finally {
+    await prepared.release();
+  }
+});
+
+it("prepares an ordinary child when no lifecycle revision is supplied", async () => {
+  const childKey = "agent:main:subagent:revision-absent-target";
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "revision-absent-session",
+    lifecycleRevision: "current-revision",
+  });
+  const prepared = await prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {});
+  try {
+    expect(prepared.entry?.sessionId).toBe("revision-absent-session");
+  } finally {
+    await prepared.release();
+  }
+});
+
+it("rejects a replaced session id when the caller supplies one", async () => {
+  const childKey = "agent:main:subagent:session-id-fence";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: childKey,
+    defaultSessionId: "current-session",
+  });
+  await expect(
+    prepareSubagentKillSession(getRuntimeConfig(), childKey, () => {}, {
+      sessionKey: childKey,
+      storePath,
+      sessionId: "replacement-session",
+    }),
+  ).rejects.toThrow("Subagent session changed during cancellation preparation");
+});
+
 it.for(["unrelated", "same session"] as const)(
   "prepares warm cancellation with a %s write while retaining publication ordering",
   async (writerTarget, { signal }) => {

@@ -16,6 +16,11 @@ import {
 import { resolveStoredSubagentCapabilities } from "../spawn/subagent-capabilities.js";
 import type { SessionCapabilityLookup } from "../spawn/subagent-session-store.js";
 import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
+import {
+  detachedRootAuthorizationError,
+  readChildRootAuthorization,
+  type ChildRootAuthorization,
+} from "./subagent-control-root-authority.js";
 import type { ResolvedSubagentController } from "./subagent-control.types.js";
 import {
   readSubagentExecRequestController,
@@ -272,9 +277,13 @@ export function isSubagentRunVisibleToSession(
   sessionKey: string,
   agentId: string,
   cfg?: OpenClawConfig,
+  rootFacts?: ChildRootAuthorization,
 ): boolean {
   if (entry.childHandoff) {
     // The child was promoted to a standard session; its former parent no longer sees it.
+    return false;
+  }
+  if (rootFacts && detachedRootAuthorizationError(entry, rootFacts)) {
     return false;
   }
   const controllerKey = entry.controllerSessionKey?.trim();
@@ -356,25 +365,67 @@ export async function buildControlledSubagentRunsReadContext(
         .map((entry) => entry.childSessionKey),
     };
   };
-  return withSubagentRunReadSnapshot(
+  const captured = await withSubagentRunReadSnapshot(
     subagentRuns,
     select,
     (selection, snapshot) => {
       const visibleIds = new Set(selection.runIds);
-      const runs = [...snapshot.values()].filter((entry) => visibleIds.has(entry.runId));
-      const list = captureSubagentListReadContext(runs, selection.index, snapshot, recentMinutes);
       return {
-        runs: list.view.latest,
-        list,
-        getExecutionObservation: (entry: SubagentRunRecord) =>
-          observeSubagentExecution(
-            entry,
-            getSubagentRunsForRequesterSession(entry.childSessionKey),
-          ),
+        index: selection.index,
+        snapshot,
+        candidates: [...snapshot.values()].filter((entry) => visibleIds.has(entry.runId)),
       };
     },
     { sessionKeys: [key], descendants: true },
   );
+  const allowed: SubagentRunRecord[] = [];
+  const deniedSessionKeys = new Set<string>();
+  for (const entry of captured.candidates) {
+    if (!cfg) {
+      allowed.push(entry);
+      continue;
+    }
+    // Recheck the durable root after the registry snapshot await.
+    const rootFacts = await readChildRootAuthorization(cfg, entry);
+    if (isSubagentRunVisibleToSession(entry, key, agentId, cfg, rootFacts)) {
+      allowed.push(entry);
+    } else {
+      deniedSessionKeys.add(entry.childSessionKey);
+    }
+  }
+  const list = hideDeniedChildSessionKeys(
+    captureSubagentListReadContext(
+      allowed,
+      captured.index,
+      captured.snapshot,
+      recentMinutes,
+    ),
+    deniedSessionKeys,
+  );
+  return {
+    runs: list.view.latest,
+    list,
+    getExecutionObservation: (entry: SubagentRunRecord) =>
+      observeSubagentExecution(entry, getSubagentRunsForRequesterSession(entry.childSessionKey)),
+  };
+}
+
+function hideDeniedChildSessionKeys(
+  list: SubagentListReadContext,
+  deniedSessionKeys: ReadonlySet<string>,
+): SubagentListReadContext {
+  if (deniedSessionKeys.size === 0) {
+    return list;
+  }
+  return {
+    ...list,
+    childSessionsByController: new Map(
+      [...list.childSessionsByController].map(([controllerKey, children]) => [
+        controllerKey,
+        children.filter((sessionKey) => !deniedSessionKeys.has(sessionKey)),
+      ]),
+    ),
+  };
 }
 
 /** Cancellation consumes current ownership facts without hydrating retained result payloads. */
@@ -396,11 +447,19 @@ export function ensureSubagentControllerOwnsRun(params: {
   cfg: OpenClawConfig;
   controller: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
   entry: SubagentRunReadRecord;
+  /** Fresh worker read. Omitting it preserves callers that have not asked for root proof. */
+  rootFacts?: ChildRootAuthorization;
 }) {
   if (params.entry.childHandoff) {
     // A human promoted the child to a standard session: no former controller steers, waits on,
     // resumes or cancels it, or reaches the work it started itself.
     return "This session was promoted to a standard session; its former parent no longer controls it.";
+  }
+  if (params.rootFacts) {
+    const detachedRootError = detachedRootAuthorizationError(params.entry, params.rootFacts);
+    if (detachedRootError) {
+      return detachedRootError;
+    }
   }
   const controllerKey = params.entry.controllerSessionKey?.trim();
   const owner = controllerKey || params.entry.requesterSessionKey;

@@ -8,6 +8,10 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { captureExecRequestCancellation } from "../../agents/bash-process-control.js";
 import { killSubagentRunAdmin } from "../../agents/subagents/registry/subagent-control-kill.js";
+import {
+  readChildRootAuthorization,
+  type ChildRootAuthorization,
+} from "../../agents/subagents/registry/subagent-control-root-authority.js";
 import { ensureSubagentControllerOwnsRun } from "../../agents/subagents/registry/subagent-control-scope.js";
 import type { SubagentRequestSessionOrigin } from "../../agents/subagents/registry/subagent-exec-request-ownership.js";
 import {
@@ -89,13 +93,19 @@ export function abortQueuedCollectorSession(
   };
   // Preserve the actual parent admission's authority through awaited kill work;
   // visibility and operator.write alone do not own an unstarted child.
+  let rootFacts: ChildRootAuthorization | undefined;
   const assertCurrent = () => {
     params.assertCurrent?.();
     const current = getCurrentSubagentRunOwner(subagentRuns, entry);
     if (!current || (current.execution.status === "queued" && !isSubagentRunQueued(current))) {
       throw new Error("Queued collector reservation changed; retry Stop.");
     }
-    const ownershipError = ensureSubagentControllerOwnsRun({ cfg, controller, entry: current });
+    const ownershipError = ensureSubagentControllerOwnsRun({
+      cfg,
+      controller,
+      entry: current,
+      ...(rootFacts ? { rootFacts } : {}),
+    });
     if (ownershipError) {
       throw new Error(ownershipError);
     }
@@ -137,6 +147,9 @@ export function abortQueuedCollectorSession(
     };
     let failure: { error: unknown } | undefined;
     try {
+      rootFacts = await readChildRootAuthorization(cfg, entry, () => {
+        params.assertCurrent?.();
+      });
       assertCurrent();
       const projection = getSessionRowProjection(params.context);
       if (projection) {
@@ -158,6 +171,11 @@ export function abortQueuedCollectorSession(
             !sessionAbort.value.result.unauthorized &&
             sessionAbort.value.canCascade),
       });
+      const currentEntry = getCurrentSubagentRunOwner(subagentRuns, entry) ?? entry;
+      rootFacts = await readChildRootAuthorization(cfg, currentEntry, () => {
+        params.assertCurrent?.();
+      });
+      assertCurrent();
       await killSubagentRunAdmin(
         {
           cfg,

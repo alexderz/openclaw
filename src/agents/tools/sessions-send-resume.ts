@@ -4,6 +4,11 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { bindInProcessSubagentResume } from "../../gateway/in-process-subagent-resume.js";
 import type { TrustedAgentToolCaller } from "../../gateway/server-methods/types.js";
 import { bindParentSubagentResume } from "../../gateway/session-subagent-resume.js";
+import {
+  detachedRootAuthorizationError,
+  readChildRootAuthorization,
+} from "../subagents/registry/subagent-control-root-authority.js";
+import { getLatestLiveSubagentRunByChildSessionKey } from "../subagents/registry/subagent-registry-read.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { jsonResult } from "./common.js";
 import {
@@ -60,6 +65,14 @@ export async function resumeSessionsSendTask(params: {
       (params.expectedSessionId && entry.sessionId !== params.expectedSessionId)
     ) {
       throw new Error("Task resume requires the existing, unarchived native child session.");
+    }
+    const run = getLatestLiveSubagentRunByChildSessionKey(params.sessionKey);
+    if (run) {
+      const rootFacts = await readChildRootAuthorization(params.cfg, run, assertCurrent);
+      const detachedRootError = detachedRootAuthorizationError(run, rootFacts);
+      if (detachedRootError) {
+        throw new Error(detachedRootError);
+      }
     }
     const subagentResume = bindParentSubagentResume({
       cfg: params.cfg,
