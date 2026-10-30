@@ -178,7 +178,29 @@ function caretContentBounds(textarea: HTMLTextAreaElement): { top: number; botto
   mirror.style.overflowWrap = "break-word";
   mirror.style.boxSizing = "border-box";
   mirror.style.width = `${textarea.clientWidth}px`;
-  mirror.style.font = style.font;
+  // The computed shorthand can be empty (for example, when longhands do not
+  // serialize as a font shorthand). Copy the text metrics individually so
+  // wrapping in the mirror matches the actual textarea.
+  for (const property of [
+    "font-family",
+    "font-size",
+    "font-style",
+    "font-weight",
+    "font-stretch",
+    "font-variant",
+    "font-kerning",
+    "font-feature-settings",
+    "font-variation-settings",
+    "letter-spacing",
+    "word-spacing",
+    "text-indent",
+    "text-transform",
+    "tab-size",
+    "direction",
+    "word-break",
+  ]) {
+    mirror.style.setProperty(property, style.getPropertyValue(property));
+  }
   mirror.style.lineHeight = style.lineHeight;
   mirror.style.padding = `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`;
   mirror.style.border = "0";
