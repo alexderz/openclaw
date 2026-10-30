@@ -147,8 +147,13 @@ export function isPermanentAnnounceDeliveryError(error: unknown): boolean {
 }
 
 export function isIncompleteAnnounceAgentResultError(error: unknown): boolean {
+  if (asOptionalObjectRecord(error)?.reason === "empty_response") {
+    return true;
+  }
   const message = summarizeDeliveryError(error);
-  return /(?:incomplete terminal response|code=incomplete_result)\b/i.test(message);
+  return /(?:incomplete terminal response|code=incomplete_result|reason=empty_response|CLI backend returned an empty response)\b/i.test(
+    message,
+  );
 }
 
 export function hasAnnounceSendEvidence(error: unknown): boolean {
