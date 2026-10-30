@@ -784,11 +784,73 @@ describe("session event target custody", () => {
       ...extras,
     });
 
+  it.each(["after-commit", "before-commit"] as const)(
+    "commits the producer once across policy readmission: %s",
+    async (publication) => {
+      const adoptions: TurnAdoptionLifecycle[] = [];
+      await withDeferredFixture(adoptions, async (target, whenDispatchCalled) => {
+        let commits = 0;
+        let operation = beginReplyOwner();
+        const receipt = enqueueCompletion(target, {
+          onAdopted: () => {
+            commits += 1;
+            if (publication === "after-commit") publishDeny(["write", "message"]);
+          },
+        });
+        await expect(receipt.accepted).resolves.toMatchObject({ ok: true });
+        const original = expectDefined(peekSystemEventEntries(sessionKey)[0], "owned occurrence");
+        expect(original.id).toBe(receipt.id);
+        if (publication === "before-commit") publishDeny(["write", "message"]);
+        await expect(adoptions[0]?.onAdopted?.()).rejects.toThrow("configuration changed");
+        expect(commits).toBe(publication === "after-commit" ? 1 : 0);
+        adoptions[0]?.onAbandoned?.();
+        adoptions[0]?.onSettled?.();
+        operation.complete();
+        await whenDispatchCalled(2);
+        expect(peekSystemEventEntries(sessionKey)[0]?.id).toBe(receipt.id);
+        expect(dispatch.mock.calls[1]?.[0].cfg?.tools?.deny).toEqual(["write", "message"]);
+        operation = beginReplyOwner();
+        await adoptions[1]?.onAdopted?.();
+        expect(commits).toBe(1);
+        dispatch.mock.calls[1]?.[0].replyOptions?.internalEventExecution?.onStarted?.("run-test");
+        adoptions[1]?.onSettled?.();
+        operation.complete();
+        await expect(receipt.settled).resolves.toMatchObject({ status: "completed", executionStarted: true });
+        expect(dispatch).toHaveBeenCalledTimes(2);
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+        await joinContinuations();
+      });
+    },
+  );
+
+  it("does not replay a producer callback that publishes policy and fails", async () => {
+    const adoptions: TurnAdoptionLifecycle[] = [];
+    await withDeferredFixture(adoptions, async (target) => {
+      const operation = beginReplyOwner();
+      const onAdopted = vi.fn(() => {
+        publishDeny(["write"]);
+        throw new Error("producer commit outcome unknown");
+      });
+      const receipt = enqueueCompletion(target, { onAdopted });
+      await expect(receipt.accepted).resolves.toMatchObject({ ok: true });
+      await expect(adoptions[0]?.onAdopted?.()).rejects.toThrow("producer commit outcome unknown");
+      adoptions[0]?.onAbandoned?.();
+      adoptions[0]?.onSettled?.();
+      operation.complete();
+      await expect(receipt.settled).resolves.toMatchObject({ status: "failed", executionStarted: false });
+      expect(onAdopted).toHaveBeenCalledTimes(1);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      await joinContinuations();
+    });
+  });
+
   it("consumes a canceled re-admission instead of preserving it for a later turn", async () => {
     const adoptions: TurnAdoptionLifecycle[] = [];
     await withDeferredFixture(adoptions, async (target, whenDispatchCalled) => {
       const operation = beginReplyOwner();
-      const receipt = enqueueCompletion(target);
+      const onAdopted = vi.fn();
+      const receipt = enqueueCompletion(target, { onAdopted });
       await expect(receipt.accepted).resolves.toMatchObject({ ok: true });
       await rejectLatestAdoption(adoptions, ["write", "message"], operation);
       await whenDispatchCalled(2);
@@ -804,6 +866,7 @@ describe("session event target custody", () => {
       });
       // Terminal cancellation consumes the retried occurrence: no passive leak.
       expect(dispatch).toHaveBeenCalledTimes(2);
+      expect(onAdopted).not.toHaveBeenCalled();
       expect(peekSystemEventEntries(sessionKey)).toEqual([]);
       await joinContinuations();
     });
@@ -844,8 +907,10 @@ describe("session event target custody", () => {
     const adoptions: TurnAdoptionLifecycle[] = [];
     await withDeferredFixture(adoptions, async (target) => {
       let retired = false;
+      const onAdopted = vi.fn();
       const operation = beginReplyOwner();
       const receipt = enqueueCompletion(target, {
+        onAdopted,
         assertCurrent: () => {
           if (retired) {
             throw new Error("producer retired");
@@ -868,6 +933,7 @@ describe("session event target custody", () => {
       });
       // The rejected re-admission consumes the occurrence; no passive leak.
       expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(onAdopted).not.toHaveBeenCalled();
       expect(peekSystemEventEntries(sessionKey)).toEqual([]);
       expect(eventLogError).toHaveBeenCalledWith(
         "session event policy readmission rejected; occurrence settled",
@@ -892,12 +958,14 @@ describe("session event target custody", () => {
           }
         }
       });
+      const onAdopted = vi.fn();
       const receipt = enqueueSessionEventForHost("Process completed", {
         agentId: "main",
         sessionKey,
         source: "hook",
         expectedTarget: target,
         assertAcceptanceCurrent: ingressAssertion,
+        onAdopted,
       });
       // A publication races admission: the first attempt rejects pre-acceptance.
       publishDeny(["write", "message"]);
@@ -911,6 +979,7 @@ describe("session event target custody", () => {
       // Revoked ingress rejected the re-dispatch before any new turn admission;
       // the occurrence was consumed rather than parked as passive text.
       expect(dispatch).not.toHaveBeenCalled();
+      expect(onAdopted).not.toHaveBeenCalled();
       expect(peekSystemEventEntries(sessionKey)).toEqual([]);
       expect(eventLogError).toHaveBeenCalledWith(
         "session event policy readmission rejected; occurrence settled",

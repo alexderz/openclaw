@@ -67,7 +67,11 @@ const log = createSubsystemLogger("session-events");
 /** Policy publications an accepted occurrence may outlive before it waits for an ordinary turn. */
 const MAX_CONFIG_READMISSION_ATTEMPTS = 2;
 
-type PreparationRetryState = { failures: number; disabled: boolean };
+type PreparationRetryState = {
+  failures: number;
+  disabled: boolean;
+  adoption?: Promise<void>;
+};
 
 /** Producer-owned occurrence; passive notices continue to use enqueueSystemEvent. */
 export function enqueueSessionEventForHost(
@@ -746,7 +750,14 @@ function enqueueSessionEventAttempt(
                 });
               }
               await prepareCurrent();
-              await options.onAdopted?.();
+              if (options.onAdopted) {
+                // A callback can commit before publishing a new policy or throwing.
+                // Keep its outcome with the original occurrence, even across admission attempts.
+                retryState.adoption ??= (async () => {
+                  await options.onAdopted?.();
+                })();
+                await retryState.adoption;
+              }
               assertCurrent();
               accept();
             },
