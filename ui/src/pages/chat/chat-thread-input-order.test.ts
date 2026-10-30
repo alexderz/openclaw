@@ -281,6 +281,40 @@ describe("transcript input order", () => {
     },
   );
 
+  it("places late stopped inputs between loaded rows or after the tail by accepted time", () => {
+    const messages = [
+      { role: "user", content: "H1", timestamp: 10, __openclaw: { id: "h1", seq: 1 } },
+      { role: "assistant", content: "H2", timestamp: 30, __openclaw: { id: "h2", seq: 2 } },
+    ];
+    const notice = "Cancelled before the agent started it. It will not run automatically; copy it and send again.";
+    expect(visibleRows({ messages, pendingInputs: [acceptedInput("Stopped", 20, "cancelled")] }))
+      .toEqual(["H1", "Stopped", notice, "H2"]);
+    expect(visibleRows({ messages, pendingInputs: [acceptedInput("Stopped", 40, "cancelled")] }))
+      .toEqual(["H1", "H2", "Stopped", notice]);
+  });
+
+  it("keeps stopped custody in server order even when accepted times conflict", () => {
+    const messages = [
+      { role: "user", content: "H1", timestamp: 10, __openclaw: { id: "h1", seq: 1 } },
+      { role: "assistant", content: "H2", timestamp: 30, __openclaw: { id: "h2", seq: 2 } },
+    ];
+    const notice = "Interrupted before the agent started it. It will not run automatically; copy it and send again.";
+    const pendingInputs = [acceptedInput("Anchor", 20, "interrupted"), acceptedInput("Stopped", 5, "interrupted")];
+    expect(visibleRows({ messages, pendingInputs })).toEqual(["H1", "Anchor", notice, "Stopped", notice, "H2"]);
+    const afterTail = [acceptedInput("Anchor", 40, "interrupted"), acceptedInput("Stopped", 5, "interrupted")];
+    expect(visibleRows({ messages, pendingInputs: afterTail })).toEqual(["H1", "H2", "Anchor", notice, "Stopped", notice]);
+  });
+
+  it("inserts late stopped custody on cached rebuild after a history page prepend", () => {
+    const h1 = { role: "user", content: "H1", timestamp: 10, __openclaw: { id: "h1", seq: 1 } };
+    const h2 = { role: "assistant", content: "H2", timestamp: 30, __openclaw: { id: "h2", seq: 2 } };
+    const notice = "Cancelled before the agent started it. It will not run automatically; copy it and send again.";
+    expect(visibleRows({ messages: [h2] }, buildCachedChatItems)).toEqual(["H2"]);
+    expect(visibleRows({ messages: [h1, h2] }, buildCachedChatItems)).toEqual(["H1", "H2"]);
+    expect(visibleRows({ messages: [h1, h2], pendingInputs: [acceptedInput("Stopped", 20, "cancelled")] }, buildCachedChatItems))
+      .toEqual(["H1", "Stopped", notice, "H2"]);
+  });
+
   it("keeps the displayed order while consumption retires a local custody anchor", () => {
     const earlier = queuedInput("Earlier input", 10, "failed");
     const later = queuedInput("Later input", 20);
