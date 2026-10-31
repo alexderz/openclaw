@@ -7,7 +7,10 @@ import {
 } from "../../config/runtime-snapshot.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { mintMcpLoopbackClientGrant as MintMcpLoopbackClientGrant } from "../../gateway/mcp-grant-store.js";
+import {
+  bindMcpLoopbackClientGrantAdmission,
+  type mintMcpLoopbackClientGrant as MintMcpLoopbackClientGrant,
+} from "../../gateway/mcp-grant-store.js";
 import { handleMcpJsonRpc } from "../../gateway/mcp-http.handlers.js";
 import {
   resolveMcpLoopbackPolicyTools,
@@ -17,7 +20,11 @@ import { buildMcpToolSchema } from "../../gateway/mcp-http.schema.js";
 import type { CliBackendPlugin } from "../../plugins/cli-backend.types.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { resolveBundleMcpServerInstructions } from "../agent-bundle-mcp-instructions.js";
-import { setSessionMcpRuntimeScheduler } from "../agent-bundle-mcp-manager-api.js";
+import {
+  peekSessionMcpRuntime,
+  retireSessionMcpRuntime,
+  setSessionMcpRuntimeScheduler,
+} from "../agent-bundle-mcp-manager-api.js";
 import { disposeAllSessionMcpRuntimes } from "../agent-bundle-mcp-tools.js";
 import { testing as cliBackendsTesting } from "../cli-backends.test-support.js";
 import {
@@ -299,4 +306,233 @@ describe("configured MCP servers on exclusive CLI turns", () => {
       expect(probeServer.calls).toBe(deny.length > 0 ? 0 : childAllow ? 2 : 3);
     },
   );
+});
+
+// In-memory ownership probe: no MCP transport, provider, or network is used.
+describe("configured MCP disposer ownership", () => {
+  let fixture: ReturnType<typeof createCliRunnerPrepareFixture>;
+  let dispose: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  let revoke: ReturnType<typeof vi.fn>;
+  let backendCleanup: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  let events: string[];
+  let owned: boolean;
+  let prepareBackend: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    events = [];
+    owned = true;
+    dispose = vi.fn(async () => { events.push("dispose"); });
+    revoke = vi.fn(() => { events.push("revoke"); return true; });
+    backendCleanup = vi.fn(async () => { events.push("backend"); });
+    const loopback = await import("./loopback-bundle-mcp.js");
+    vi.spyOn(loopback, "prepareCliLoopbackBundleMcp").mockImplementation(async () => ({
+      tools: [],
+      takeCleanup: () => { owned = false; return dispose; },
+      [Symbol.asyncDispose]: async () => { if (owned) { owned = false; await dispose(); } },
+    }));
+    const bundle = await import("./bundle-mcp.js");
+    prepareBackend = vi.spyOn(bundle, "prepareCliBundleMcpConfig").mockImplementation(async (params) => ({
+      backend: params.backend,
+      env: params.env,
+      cleanup: backendCleanup,
+    }));
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [claudeBackend],
+    });
+    setCliRunnerPrepareTestDeps({
+      isWorkspaceBootstrapPending: async () => false,
+      makeBootstrapWarn: () => () => undefined,
+      resolveBootstrapContextForRun: async () => ({ bootstrapFiles: [], contextFiles: [] }),
+      getActiveMcpLoopbackRuntime: () => ({ port: 31783, ownerToken: "owner", nonOwnerToken: "other" }),
+      createMcpLoopbackServerConfig: createTestMcpLoopbackServerConfig,
+      mintMcpLoopbackClientGrant: createTestMcpLoopbackClientGrant,
+      bindMcpLoopbackClientGrantAdmission: () => true,
+      revokeMcpLoopbackClientGrant: revoke,
+      resolveMcpLoopbackPolicyTools: () => ({ agentId: "main", tools: [] }),
+      resolveMcpLoopbackScopedTools: () => ({ agentId: "main", tools: [] }),
+      resolveOpenClawReferencePaths: async () => ({ docsPath: null, sourcePath: null }),
+      prepareClaudeCliSkillsPlugin: async () => ({ args: [], cleanup: async () => {} }),
+      getCliLiveSessionGeneration: () => undefined,
+      loadManifestModelCatalog: () => [],
+    });
+    fixture = createCliRunnerPrepareFixture((params) =>
+      prepareCliRunContext({ skillsSnapshot: { prompt: "", skills: [] }, ...params }),
+    );
+  });
+  afterEach(async () => {
+    await fixture.settle();
+    resetCliRunnerPrepareTestDeps();
+    cliBackendsTesting.resetDepsForTest();
+    vi.restoreAllMocks();
+  });
+  const prepare = () => fixture.prepare({
+    sessionKey: "agent:main:main",
+    provider: "claude-cli",
+    model: "opus",
+    config: { plugins: { enabled: false } },
+    cliToolAvailability: { native: [], openClaw: [] },
+  });
+
+  it("releases the transferred owner after backend cleanup and revocation", async () => {
+    const context = await prepare();
+    expect(dispose).not.toHaveBeenCalled();
+    await context.preparedBackend.cleanup?.();
+    expect(events).toEqual(["backend", "revoke", "dispose"]);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith("loopback-token");
+  });
+  it("releases and revokes when backend cleanup fails", async () => {
+    backendCleanup.mockImplementation(async () => { events.push("backend"); throw new Error("backend cleanup"); });
+    const context = await prepare();
+    await expect(context.preparedBackend.cleanup?.()).rejects.toThrow("backend cleanup");
+    expect(events).toEqual(["backend", "revoke", "dispose"]);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+  it("releases and revokes if backend setup fails after transfer", async () => {
+    prepareBackend.mockRejectedValueOnce(new Error("setup failure"));
+    await expect(prepare()).rejects.toThrow("setup failure");
+    expect(events).toEqual(["revoke", "dispose"]);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+  it("denies a revoked admission and still cleans the transferred resources", async () => {
+    setCliRunnerPrepareTestDeps({ bindMcpLoopbackClientGrantAdmission: () => false });
+    await expect(prepare()).rejects.toThrow("CLI MCP client grant is no longer valid");
+    expect(events).toEqual(["backend", "revoke", "dispose"]);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith("loopback-token");
+  });
+  it("preserves an abort raised after transfer while cleaning up", async () => {
+    const abort = new Error("owner aborted");
+    abort.name = "AbortError";
+    prepareBackend.mockRejectedValueOnce(abort);
+    await expect(prepare()).rejects.toBe(abort);
+    expect(events).toEqual(["revoke", "dispose"]);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+  it("still releases if revocation throws", async () => {
+    revoke.mockImplementation(() => { events.push("revoke"); throw new Error("revocation failure"); });
+    const context = await prepare();
+    await expect(context.preparedBackend.cleanup?.()).rejects.toThrow("revocation failure");
+    expect(events).toEqual(["backend", "revoke", "dispose"]);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("configured MCP real lifecycle", () => {
+  let fixture: ReturnType<typeof createCliRunnerPrepareFixture>;
+  let server: Awaited<ReturnType<typeof startProbeServer>>;
+  let scheduler: ReturnType<typeof createTestGatewayScheduler>;
+  let token: string;
+  let abortDuringBackend: (() => void) | undefined;
+
+  beforeEach(async () => {
+    token = "";
+    abortDuringBackend = undefined;
+    server = await startProbeServer();
+    scheduler = createTestGatewayScheduler();
+    await setSessionMcpRuntimeScheduler(scheduler);
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [claudeBackend],
+    });
+    setCliRunnerPrepareTestDeps({
+      isWorkspaceBootstrapPending: async () => false,
+      makeBootstrapWarn: () => () => undefined,
+      resolveBootstrapContextForRun: async () => ({ bootstrapFiles: [], contextFiles: [] }),
+      getActiveMcpLoopbackRuntime: () => ({ port: 31783, ownerToken: "real-owner", nonOwnerToken: "other" }),
+      createMcpLoopbackServerConfig: createTestMcpLoopbackServerConfig,
+      resolveMcpLoopbackPolicyTools,
+      resolveMcpLoopbackScopedTools,
+      resolveOpenClawReferencePaths: async () => ({ docsPath: null, sourcePath: null }),
+      prepareClaudeCliSkillsPlugin: async () => ({ args: [], cleanup: async () => {} }),
+      getCliLiveSessionGeneration: () => undefined,
+      loadManifestModelCatalog: () => [],
+    });
+    const bundle = await import("./bundle-mcp.js");
+    vi.spyOn(bundle, "prepareCliBundleMcpConfig").mockImplementation(async (params) => {
+      token = params.env?.OPENCLAW_MCP_TOKEN ?? "";
+      abortDuringBackend?.();
+      return { backend: params.backend, env: params.env, cleanup: async () => {} };
+    });
+    fixture = createCliRunnerPrepareFixture((params) => {
+      setRuntimeConfigSnapshot(params.config ?? {});
+      return prepareCliRunContext({ skillsSnapshot: { prompt: "", skills: [] }, ...params });
+    });
+  });
+
+  afterEach(async () => {
+    await fixture.settle();
+    await disposeAllSessionMcpRuntimes();
+    await scheduler.stop();
+    await server.close();
+    clearRuntimeConfigSnapshot();
+    resetCliRunnerPrepareTestDeps();
+    cliBackendsTesting.resetDepsForTest();
+    vi.restoreAllMocks();
+  });
+
+  const prepare = (abortSignal?: AbortSignal) => {
+    const { sessionTarget } = fixture.session;
+    return fixture.prepare({
+      sessionKey: sessionTarget.sessionKey,
+      sessionId: sessionTarget.sessionId,
+      provider: "claude-cli",
+      model: "opus",
+      modelHasVision: false,
+      abortSignal,
+      ...(abortSignal ? { assertCurrent: () => abortSignal.throwIfAborted() } : {}),
+      config: {
+        session: { store: sessionTarget.storePath },
+        plugins: { enabled: false },
+        tools: { allow: ["read", "probe__*"] },
+        mcp: { servers: { probe: { transport: "streamable-http", url: `http://127.0.0.1:${server.port}/mcp` } } },
+      },
+    });
+  };
+
+  it("releases the real lease and grant, preserving a shared runtime until retirement", async () => {
+    const context = await prepare();
+    const { sessionTarget } = fixture.session;
+    const runtime = peekSessionMcpRuntime({ sessionId: sessionTarget.sessionId });
+    expect(runtime).toBeDefined();
+    expect(runtime!.activeLeases).toBe(1);
+    expect(token).not.toBe("");
+    const admission = context.params.admittedRunContext!;
+    const binding = { token, runtimeOwnerToken: "real-owner", admittedRunContext: admission };
+    expect(bindMcpLoopbackClientGrantAdmission(binding)).toBe(true);
+    await context.preparedBackend.cleanup?.();
+    expect(runtime!.activeLeases).toBe(0);
+    expect(bindMcpLoopbackClientGrantAdmission(binding)).toBe(false);
+    expect(peekSessionMcpRuntime({ sessionId: sessionTarget.sessionId })).toBe(runtime);
+    await context.preparedBackend.cleanup?.();
+    expect(runtime!.activeLeases).toBe(0);
+    expect(peekSessionMcpRuntime({ sessionId: sessionTarget.sessionId })).toBe(runtime);
+    const next = await prepare();
+    expect(peekSessionMcpRuntime({ sessionId: sessionTarget.sessionId })).toBe(runtime);
+    expect(runtime!.activeLeases).toBe(1);
+    expect(await retireSessionMcpRuntime({
+      sessionId: sessionTarget.sessionId, reason: "test", preserveActiveLeases: true,
+    })).toBe(true);
+    expect(runtime!.activeLeases).toBe(1);
+    expect(peekSessionMcpRuntime({ sessionId: sessionTarget.sessionId })).toBe(runtime);
+    await next.preparedBackend.cleanup?.();
+    expect(runtime!.activeLeases).toBe(0);
+    expect(peekSessionMcpRuntime({ sessionId: sessionTarget.sessionId })).toBeUndefined();
+  });
+
+  it("releases the real transferred lease when an AbortController fires", async () => {
+    const controller = new AbortController();
+    const reason = new Error("owner aborted after transfer");
+    let runtime: ReturnType<typeof peekSessionMcpRuntime>;
+    abortDuringBackend = () => {
+      runtime = peekSessionMcpRuntime({ sessionId: fixture.session.sessionTarget.sessionId });
+      expect(runtime?.activeLeases).toBe(1);
+      controller.abort(reason);
+    };
+    await expect(prepare(controller.signal)).rejects.toBe(reason);
+    expect(runtime).toBeDefined();
+    expect(runtime!.activeLeases).toBe(0);
+  });
 });

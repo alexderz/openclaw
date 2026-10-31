@@ -1096,8 +1096,11 @@ async function prepareCliRunContextWithinReadFence(
     cleanupPreparedResources =
       cleanupMcpClientGrant || cleanupConfiguredMcp
         ? async () => {
-            await cleanupMcpClientGrant?.();
-            await cleanupConfiguredMcp?.();
+            try {
+              await cleanupMcpClientGrant?.();
+            } finally {
+              await cleanupConfiguredMcp?.();
+            }
           }
         : undefined;
     const rawLoopbackServerConfig = mcpLoopbackRuntime
@@ -1154,13 +1157,14 @@ async function prepareCliRunContextWithinReadFence(
           }
         : {}),
     });
+    const cleanupMcpResources = cleanupPreparedResources;
     const cleanupPreparedBackend =
-      preparedBackend.cleanup || cleanupMcpClientGrant
+      preparedBackend.cleanup || cleanupMcpResources
         ? async () => {
             try {
               await preparedBackend.cleanup?.();
             } finally {
-              await cleanupMcpClientGrant?.();
+              await cleanupMcpResources?.();
             }
           }
         : undefined;
