@@ -283,6 +283,24 @@ export async function rewindChatHistory(
   }
 }
 
+/** Re-reads a session that continued under its own key on a new session id. */
+export async function reloadContinuedChatHistory(
+  state: ChatHistoryHost & Parameters<typeof scheduleChatScroll>[0],
+): Promise<boolean> {
+  const { sessionKey, agentParams, viewMatches, viewIsCurrent } = captureChatHistoryView(state);
+  clearCachedChatMessagesForSession(state, sessionKey, agentParams.agentId, "cache-eviction");
+  if (!viewMatches()) {
+    return false;
+  }
+  resetChatHistoryProjection(state, agentParams.agentId);
+  await loadChatHistory(state);
+  if (!viewIsCurrent()) {
+    return false;
+  }
+  scheduleChatScroll(state);
+  return true;
+}
+
 export async function switchChatHistoryBranch(
   state: SwitchChatHistoryBranchState,
   leafEntryId: string,

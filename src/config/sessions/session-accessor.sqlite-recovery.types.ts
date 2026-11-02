@@ -3,7 +3,8 @@ import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
 export type RestartTombstoneRecoveryResult =
   | {
-      status: "created" | "existing";
+      /** `rolled`: a main session continued on a new session id under its own key. */
+      status: "created" | "existing" | "rolled";
       sourceEntry: SessionEntry;
       successorEntry: SessionEntry;
       successorKey: string;
@@ -29,6 +30,12 @@ export type RestartTombstoneRecoveryParams = {
     sessionId: string;
   };
   commitGuard?: () => void;
+  /**
+   * Roll the source row itself onto `successorEntry` instead of archiving it behind a
+   * separate successor row. Main sessions use this so they are never replaced by a leaf;
+   * an earlier linked successor is ignored and left untouched.
+   */
+  inPlace?: true;
   sourceTarget: { canonicalKey: string; storeKeys: readonly string[] };
   storePath: string;
   successorEntry: InternalSessionEntry & { sessionId: string };

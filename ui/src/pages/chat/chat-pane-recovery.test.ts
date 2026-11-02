@@ -279,6 +279,38 @@ describe("chat pane session recovery", () => {
     expect(state.sessionKey).toBe("agent:main:current");
   });
 
+  it("stays on Main and reloads its history when recovery rolls it in place", async () => {
+    const sessions = {
+      recover: vi.fn(async () => ({
+        ok: true as const,
+        key: "agent:main:current",
+        sessionId: "rolled-main-session",
+        continuation: { status: "started" as const, runId: "recovery-run" },
+      })),
+      // History reads record a roster observation through the capability.
+      captureReconcile: () => undefined,
+    } as unknown as SessionCapability;
+    const request = vi.fn(async (method: string) =>
+      method === "chat.history" ? { messages: [] } : {},
+    );
+    const client = { request } as unknown as GatewayBrowserClient;
+    const { pane, state } = createTestChatPane({ client, sessions });
+    const navigate = vi.fn();
+    pane.onPaneSessionChange = navigate;
+    advertiseSessionRecovery(pane);
+
+    await expect(pane.recoverSession()).resolves.toBe(true);
+
+    expect(sessions.recover).toHaveBeenCalledWith({ agentId: "main", key: "agent:main:current" });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(state.sessionKey).toBe("agent:main:current");
+    expect(request).toHaveBeenCalledWith(
+      "chat.history",
+      expect.objectContaining({ sessionKey: "agent:main:current" }),
+      expect.anything(),
+    );
+  });
+
   it("reuses the recovered session after a same-client reconnect", async () => {
     const created = createDeferred<Awaited<ReturnType<SessionCapability["recover"]>>>();
     const recovered = {

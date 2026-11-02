@@ -21,6 +21,94 @@ import { createSessionTranscriptHeader } from "./transcript-header.js";
 import type { InternalSessionEntry } from "./types.js";
 import { MIN_READABLE_SESSION_VERSION } from "./version.js";
 
+/**
+ * Main sessions continue under their own key: clone the transcript onto the new session id
+ * and replace the row. A successor linked by an earlier recovery is never read or written.
+ */
+function rollRestartTombstoneInPlace(
+  database: OpenClawAgentDatabase,
+  params: RestartTombstoneRecoveryInput,
+  context: {
+    source: InternalSessionEntry & { sessionId: string };
+    sourceTarget: { canonicalKey: string; storeKeys: string[] };
+  },
+): { result: RestartTombstoneRecoveryResult; publication?: SessionEntryReplacementPublication } {
+  const { source, sourceTarget } = context;
+  const recovery = source.mainRestartRecovery!;
+  const tombstone = recovery.tombstone!;
+  const linked = Boolean(tombstone.recoveredSessionKey || tombstone.recoveredSessionId);
+  // A linked tombstone already advanced its revision; only the unlinked one is still pinned.
+  if (!linked && recovery.revision !== params.expected.revision) {
+    return { result: { status: "conflict", reason: "source-changed" } };
+  }
+  const successorSessionId = params.successorEntry.sessionId;
+  if (
+    successorSessionId === source.sessionId ||
+    normalizeStoreSessionKey(params.successorTarget.canonicalKey) !== sourceTarget.canonicalKey
+  ) {
+    return { result: { status: "conflict", reason: "source-changed" } };
+  }
+  const sourceEvents = loadTranscriptEventsFromDatabase(database, source.sessionId);
+  const header = findSessionTranscriptHeader(sourceEvents);
+  if (!header) {
+    return { result: { status: "conflict", reason: "transcript-missing" } };
+  }
+  const resolved = { agentId: params.agentId, path: database.path };
+  const sessionKey = normalizeStoreSessionKey(sourceTarget.canonicalKey);
+  appendTranscriptEventsInTransaction(
+    database,
+    { ...resolved, sessionId: successorSessionId, sessionKey },
+    [
+      {
+        ...createSessionTranscriptHeader({
+          cwd: typeof header.cwd === "string" ? header.cwd : undefined,
+          sessionId: successorSessionId,
+          version: header.version ?? MIN_READABLE_SESSION_VERSION,
+        }),
+        parentSession: formatLegacySqliteSessionMarkerForScope({
+          ...resolved,
+          sessionId: source.sessionId,
+          sessionKey,
+        }),
+      },
+      ...sourceEvents.filter((event) => !(isRecord(event) && event.type === "session")),
+    ],
+    { scheduleProjectionReconcile: false },
+  );
+  const nextEntry: InternalSessionEntry = {
+    ...params.successorEntry,
+    updatedAt: Math.max(Date.now(), (source.updatedAt ?? 0) + 1),
+  };
+  // The rolled row is live Main: it carries no archive or recovery custody forward.
+  delete nextEntry.archivedAt;
+  delete nextEntry.archiveReason;
+  delete nextEntry.archivedBy;
+  delete nextEntry.mainRestartRecovery;
+
+  const identityKeys = [sourceTarget.canonicalKey];
+  const previousIdentity = readSessionIdentitySnapshot(database, identityKeys);
+  writeSessionEntry(database, sourceTarget.canonicalKey, nextEntry, { previousEntry: source });
+  const currentIdentity = readSessionIdentitySnapshot(database, identityKeys);
+  return {
+    result: {
+      status: "rolled",
+      sourceEntry: structuredClone(nextEntry),
+      successorEntry: structuredClone(nextEntry),
+      successorKey: sourceTarget.canonicalKey,
+    },
+    publication: prepareSessionEntryReplacementPublication(
+      {
+        pendingArchiveRecovery: false,
+        previous: previousIdentity,
+        current: currentIdentity,
+        maintenancePlans: [],
+        membershipInvalidatedKeys: [],
+      },
+      database,
+    ),
+  };
+}
+
 /** The worker transaction owns the complete clone and both revisioned entry writes. */
 export function recoverRestartTombstoneInDatabase(
   database: OpenClawAgentDatabase,
@@ -46,6 +134,10 @@ export function recoverRestartTombstoneInDatabase(
     source.pluginOwnerId !== params.expected.pluginOwnerId
   ) {
     return { result: { status: "conflict", reason: "source-changed" } };
+  }
+
+  if (params.inPlace) {
+    return rollRestartTombstoneInPlace(database, params, { source, sourceTarget });
   }
 
   const recoveredSessionKey = tombstone.recoveredSessionKey;

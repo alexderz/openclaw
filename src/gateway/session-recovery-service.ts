@@ -43,6 +43,10 @@ import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operat
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 import { buildDashboardSessionKey } from "./session-create-key.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
+import {
+  buildInPlaceRecoveryEntry,
+  isMainSessionRecoveryTarget,
+} from "./session-recovery-in-place.js";
 import { invalidSessionRequest } from "./session-request-error.js";
 import {
   prepareSessionMutationFacts,
@@ -332,13 +336,17 @@ export async function recoverGatewaySession(params: {
   if (!recovery?.tombstone) {
     return invalidSessionRequest("Session is not recoverable.");
   }
-  const generatedSuccessorKey = buildDashboardSessionKey(sourceTarget.agentId);
-  const successorTarget = await resolveGatewaySessionStoreTargetInWorker({
-    cfg: params.cfg,
-    key: generatedSuccessorKey,
-    agentId: sourceTarget.agentId,
-    assertActive: params.commitGuard,
-  });
+  // Main never moves to a dashboard leaf: it rolls onto a new session id under its own key,
+  // including when an earlier recovery already linked a leaf successor (left untouched).
+  const inPlace = isMainSessionRecoveryTarget(params.cfg, sourceTarget);
+  const successorTarget = inPlace
+    ? sourceTarget
+    : await resolveGatewaySessionStoreTargetInWorker({
+        cfg: params.cfg,
+        key: buildDashboardSessionKey(sourceTarget.agentId),
+        agentId: sourceTarget.agentId,
+        assertActive: params.commitGuard,
+      });
   const successorSessionId = randomUUID();
 
   const sourceIdentities = [
@@ -346,12 +354,71 @@ export async function recoverGatewaySession(params: {
     sourceTarget.canonicalKey,
     initialSource.sessionId,
   ];
+  /** A concurrent request that saw this tombstone resolves to the Main row it rolled into. */
+  /** A concurrent retry that lost the race reads the Main row this recovery already rolled. */
+  const resolveRolledInPlace = (
+    current: InternalSessionEntry | undefined,
+  ): InternalSessionEntry | undefined => {
+    if (
+      !inPlace ||
+      !current?.sessionId ||
+      current.sessionId === initialSource.sessionId ||
+      current.previousSessionId !== initialSource.sessionId ||
+      current.mainRestartRecovery?.tombstone ||
+      current.archivedAt !== undefined ||
+      resolvePluginSessionOwnershipError({
+        action: "recover",
+        entry: current,
+        key: sourceTarget.canonicalKey,
+        pluginOwnerId: params.authorizedPluginId,
+      })
+    ) {
+      return undefined;
+    }
+    return current;
+  };
   const stopFailure = (error: unknown) =>
     errorShape(
       ErrorCodes.UNAVAILABLE,
       `Session recovery cannot safely stop/reclaim its cloud worker: ${formatErrorMessage(error)} Stop cloud worker or call sessions.reclaim, then retry recovery.`,
       { retryable: true },
     );
+  /** A non-Main source continues on a fresh leaf row; the source stays archived. */
+  const buildRecoverySuccessorEntry = (currentSource: InternalSessionEntry) => {
+    // Owner attribution keeps the source isolation inherited by actorless recovery.
+    const creation = params.actor
+      ? {
+          actor: params.actor,
+          sandbox:
+            params.actor.id === GATEWAY_OWNER_PROFILE_ID
+              ? currentSource.sandbox
+              : resolveCreatorSandbox(params.cfg, params),
+        }
+      : inheritSessionCreationPolicy(currentSource);
+    const entry = mergeSessionEntry(undefined, {
+      ...inheritSessionSelection(currentSource),
+      ...buildSessionCreationStamp({ via: "operator", ...creation }),
+      delivery: normalizeSessionDeliveryState(),
+      sessionId: successorSessionId,
+      previousSessionId: currentSource.sessionId,
+      spawnDepth: 0,
+      ...(currentSource.agentHarnessId ? { agentHarnessId: currentSource.agentHarnessId } : {}),
+      ...(currentSource.modelSelectionLocked === true
+        ? { modelSelectionLocked: true as const }
+        : {}),
+      ...(currentSource.pluginOwnerId ? { pluginOwnerId: currentSource.pluginOwnerId } : {}),
+      ...(currentSource.visibility ? { visibility: currentSource.visibility } : {}),
+      ...(currentSource.spawnedCwd ? { spawnedCwd: currentSource.spawnedCwd } : {}),
+      ...(currentSource.execHost ? { execHost: currentSource.execHost } : {}),
+      ...(currentSource.execNode ? { execNode: currentSource.execNode } : {}),
+      ...(currentSource.execCwd ? { execCwd: currentSource.execCwd } : {}),
+    });
+    return {
+      ...entry,
+      ...buildMainSessionRecoveryClearPatch(entry),
+      sessionId: successorSessionId,
+    };
+  };
   const storageReady = createDeferredCore();
   // Retain source custody while queued; read only after the previous recovery publishes.
   const sourcePreparation = prepareRecoverySource({
@@ -387,7 +454,8 @@ export async function recoverGatewaySession(params: {
         ) {
           return { ok: false as const, error: recoveryConflictError("source-changed") };
         }
-        if (!currentSource.mainRestartRecovery?.tombstone?.recoveredSessionKey) {
+        // In-place recovery continues an existing row; only a new successor is a creation.
+        if (!inPlace && !currentSource.mainRestartRecovery?.tombstone?.recoveredSessionKey) {
           const creationError = authorizeGatewaySessionCreation({
             cfg: params.cfg,
             agentId: sourceTarget.agentId,
@@ -423,6 +491,10 @@ export async function recoverGatewaySession(params: {
         identities: sourceIdentities,
         run: async () => {
           await source.refresh();
+          const rolled = resolveRolledInPlace(source.current());
+          if (rolled) {
+            return { ok: true as const, rolled, stop: undefined };
+          }
           const current = resolveCurrentSource();
           if (!current.ok) {
             return current;
@@ -454,6 +526,15 @@ export async function recoverGatewaySession(params: {
       if (!prepared.ok) {
         return prepared;
       }
+      if ("rolled" in prepared && prepared.rolled) {
+        const rolledEntry: InternalSessionEntry = prepared.rolled;
+        return {
+          ok: true as const,
+          created: false,
+          successorEntry: rolledEntry,
+          successorKey: sourceTarget.canonicalKey,
+        };
+      }
       let assertPlacementCurrent: (() => void) | undefined;
       if (prepared.stop) {
         try {
@@ -469,13 +550,20 @@ export async function recoverGatewaySession(params: {
         }
       }
       return await runExclusiveSessionLifecycleMutation("recover", {
-        targets: [
-          { scope: sourceTarget.storePath, identities: sourceIdentities },
-          {
-            scope: successorTarget.storePath,
-            identities: [successorTarget.canonicalKey, successorSessionId],
-          },
-        ],
+        targets: inPlace
+          ? [
+              {
+                scope: sourceTarget.storePath,
+                identities: [...sourceIdentities, successorSessionId],
+              },
+            ]
+          : [
+              { scope: sourceTarget.storePath, identities: sourceIdentities },
+              {
+                scope: successorTarget.storePath,
+                identities: [successorTarget.canonicalKey, successorSessionId],
+              },
+            ],
         prepare: async () => release(),
         run: async () => {
           await source.refresh();
@@ -489,41 +577,9 @@ export async function recoverGatewaySession(params: {
             assertPlacementCurrent?.();
           };
           commitGuard();
-          // Owner attribution keeps the source isolation inherited by actorless recovery.
-          const creation = params.actor
-            ? {
-                actor: params.actor,
-                sandbox:
-                  params.actor.id === GATEWAY_OWNER_PROFILE_ID
-                    ? currentSource.sandbox
-                    : resolveCreatorSandbox(params.cfg, params),
-              }
-            : inheritSessionCreationPolicy(currentSource);
-          const entry = mergeSessionEntry(undefined, {
-            ...inheritSessionSelection(currentSource),
-            ...buildSessionCreationStamp({ via: "operator", ...creation }),
-            delivery: normalizeSessionDeliveryState(),
-            sessionId: successorSessionId,
-            previousSessionId: currentSource.sessionId,
-            spawnDepth: 0,
-            ...(currentSource.agentHarnessId
-              ? { agentHarnessId: currentSource.agentHarnessId }
-              : {}),
-            ...(currentSource.modelSelectionLocked === true
-              ? { modelSelectionLocked: true as const }
-              : {}),
-            ...(currentSource.pluginOwnerId ? { pluginOwnerId: currentSource.pluginOwnerId } : {}),
-            ...(currentSource.visibility ? { visibility: currentSource.visibility } : {}),
-            ...(currentSource.spawnedCwd ? { spawnedCwd: currentSource.spawnedCwd } : {}),
-            ...(currentSource.execHost ? { execHost: currentSource.execHost } : {}),
-            ...(currentSource.execNode ? { execNode: currentSource.execNode } : {}),
-            ...(currentSource.execCwd ? { execCwd: currentSource.execCwd } : {}),
-          });
-          const successorEntry = {
-            ...entry,
-            ...buildMainSessionRecoveryClearPatch(entry),
-            sessionId: successorSessionId,
-          };
+          const successorEntry = inPlace
+            ? buildInPlaceRecoveryEntry(currentSource, successorSessionId)
+            : buildRecoverySuccessorEntry(currentSource);
 
           const result = await recoverSessionEntryFromRestartTombstone({
             agentId: sourceTarget.agentId,
@@ -538,6 +594,7 @@ export async function recoverGatewaySession(params: {
                 ? { pluginOwnerId: initialSource.pluginOwnerId }
                 : {}),
             },
+            ...(inPlace ? { inPlace: true as const } : {}),
             sourceTarget,
             storePath: sourceTarget.storePath,
             successorEntry,

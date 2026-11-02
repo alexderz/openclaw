@@ -33,10 +33,9 @@ import type { InternalSessionEntry } from "./types.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-session-recovery-");
 
-async function createFixture() {
+async function createFixture(sourceKey = "agent:main:dashboard:tombstoned") {
   const root = sessionDirs.make();
   const storePath = path.join(root, "sessions.json");
-  const sourceKey = "agent:main:dashboard:tombstoned";
   const successorKey = "agent:main:dashboard:recovered";
   const sourceSessionId = "source-session";
   await replaceSessionEntry({ agentId: "main", sessionKey: sourceKey, storePath }, {
@@ -532,5 +531,152 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
       }
       await closing;
     }
+  });
+});
+
+describe("recoverSessionEntryFromRestartTombstone in place", () => {
+  const mainKey = "agent:main:main";
+  const leafKey = "agent:main:dashboard:old-leaf";
+
+  function inPlaceParams(
+    fixture: Awaited<ReturnType<typeof createFixture>>,
+    overrides: { revision?: number; sessionId?: string } = {},
+  ) {
+    return {
+      agentId: "main",
+      expected: {
+        cycleId: "cycle-1",
+        revision: overrides.revision ?? 4,
+        sessionId: fixture.sourceSessionId,
+        pluginOwnerId: "codex",
+      },
+      inPlace: true as const,
+      sourceTarget: { canonicalKey: mainKey, storeKeys: [mainKey] },
+      storePath: fixture.storePath,
+      successorEntry: {
+        sessionId: overrides.sessionId ?? "rolled-session",
+        previousSessionId: fixture.sourceSessionId,
+        updatedAt: 20,
+        label: "Home",
+        pluginOwnerId: "codex",
+        // The kernel never carries archive or recovery custody onto live Main.
+        archivedAt: 99,
+        archiveReason: "restart-recovery" as const,
+        mainRestartRecovery: { cycleId: "cycle-1", revision: 9, chargedAttempts: 0 },
+      } as InternalSessionEntry & { sessionId: string },
+      successorTarget: { canonicalKey: mainKey, storeKeys: [mainKey] },
+    };
+  }
+
+  it("rolls Main onto a new session id under its own key with the cloned transcript", async () => {
+    const fixture = await createFixture(mainKey);
+    const scope = { agentId: "main", sessionKey: mainKey, storePath: fixture.storePath };
+    const sourceEvents = await loadTranscriptEvents({
+      ...scope,
+      sessionId: fixture.sourceSessionId,
+    });
+
+    const rolled = await recoverSessionEntryFromRestartTombstone(inPlaceParams(fixture));
+
+    expect(rolled).toMatchObject({
+      status: "rolled",
+      successorKey: mainKey,
+      successorEntry: { sessionId: "rolled-session" },
+    });
+    const entry = loadSessionEntry(scope);
+    expect(entry).toMatchObject({
+      sessionId: "rolled-session",
+      previousSessionId: fixture.sourceSessionId,
+      label: "Home",
+    });
+    expect(entry?.archivedAt).toBeUndefined();
+    expect(entry?.archiveReason).toBeUndefined();
+    expect(entry?.mainRestartRecovery).toBeUndefined();
+    expect(
+      loadSessionEntry({ ...scope, sessionKey: fixture.successorKey }),
+    ).toBeUndefined();
+    const rolledEvents = await loadTranscriptEvents({ ...scope, sessionId: "rolled-session" });
+    expect(rolledEvents).toHaveLength(4);
+    expect(rolledEvents[0]).toMatchObject({ type: "session", id: "rolled-session", version: 3 });
+    expect(JSON.stringify(rolledEvents)).toContain("preserve the whole transcript");
+    await expect(
+      loadTranscriptEvents({ ...scope, sessionId: fixture.sourceSessionId }),
+    ).resolves.toEqual(sourceEvents);
+
+    // The rolled row is no longer tombstoned, so a stale repeat cannot roll it again.
+    await expect(
+      recoverSessionEntryFromRestartTombstone(
+        inPlaceParams(fixture, { sessionId: "second-roll" }),
+      ),
+    ).resolves.toEqual({ status: "conflict", reason: "not-tombstoned" });
+  });
+
+  it("ignores a linked leaf successor and leaves its row and transcript untouched", async () => {
+    const fixture = await createFixture(mainKey);
+    const scope = { agentId: "main", sessionKey: mainKey, storePath: fixture.storePath };
+    const leafScope = { ...scope, sessionKey: leafKey };
+    const archivedMain = loadSessionEntry(scope) as InternalSessionEntry;
+    await replaceSessionEntry(scope, {
+      ...archivedMain,
+      archivedAt: 50,
+      archiveReason: "restart-recovery",
+      mainRestartRecovery: {
+        ...archivedMain.mainRestartRecovery!,
+        revision: 5,
+        tombstone: {
+          reason: "automatic recovery exhausted",
+          recoveredSessionId: "leaf-session",
+          recoveredSessionKey: leafKey,
+        },
+      },
+    } as InternalSessionEntry);
+    await replaceSessionEntry(leafScope, {
+      sessionId: "leaf-session",
+      updatedAt: 40,
+      label: "Unrelated leaf chat",
+      previousSessionId: fixture.sourceSessionId,
+    });
+    await replaceTranscriptEvents({ ...leafScope, sessionId: "leaf-session" }, [
+      { type: "session", version: 3, id: "leaf-session", timestamp: "2026-08-12T00:01:00.000Z" },
+      {
+        type: "message",
+        id: "leaf-user",
+        parentId: null,
+        timestamp: "2026-08-12T00:01:01.000Z",
+        message: { role: "user", content: "an unrelated conversation" },
+      },
+    ]);
+    const leafBefore = JSON.stringify(loadSessionEntry(leafScope));
+    const leafEventsBefore = JSON.stringify(
+      await loadTranscriptEvents({ ...leafScope, sessionId: "leaf-session" }),
+    );
+
+    // The linked tombstone advanced its revision; the caller's earlier read still applies.
+    const rolled = await recoverSessionEntryFromRestartTombstone(inPlaceParams(fixture));
+
+    expect(rolled).toMatchObject({ status: "rolled", successorKey: mainKey });
+    expect(JSON.stringify(loadSessionEntry(leafScope))).toBe(leafBefore);
+    expect(
+      JSON.stringify(await loadTranscriptEvents({ ...leafScope, sessionId: "leaf-session" })),
+    ).toBe(leafEventsBefore);
+    const entry = loadSessionEntry(scope);
+    expect(entry).toMatchObject({ sessionId: "rolled-session" });
+    expect(entry?.archivedAt).toBeUndefined();
+    expect(entry?.mainRestartRecovery).toBeUndefined();
+  });
+
+  it("refuses an unlinked roll whose recovery revision changed", async () => {
+    const fixture = await createFixture(mainKey);
+    const scope = { agentId: "main", sessionKey: mainKey, storePath: fixture.storePath };
+    await expect(
+      recoverSessionEntryFromRestartTombstone(inPlaceParams(fixture, { revision: 3 })),
+    ).resolves.toEqual({ status: "conflict", reason: "source-changed" });
+    expect(loadSessionEntry(scope)).toMatchObject({
+      sessionId: fixture.sourceSessionId,
+      mainRestartRecovery: { revision: 4, tombstone: { reason: "automatic recovery exhausted" } },
+    });
+    await expect(loadTranscriptEvents({ ...scope, sessionId: "rolled-session" })).resolves.toEqual(
+      [],
+    );
   });
 });

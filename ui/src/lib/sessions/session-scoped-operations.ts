@@ -59,7 +59,10 @@ export function createSessionScopedOperations(host: SessionScopedOperationsHost)
       if (!host.connection.isCurrent(scope)) {
         return null;
       }
-      host.notifyCreated(result.key);
+      // Main recovers under its own key; only a separate successor is a new session.
+      if (!areUiSessionKeysEquivalent(result.key, params.key)) {
+        host.notifyCreated(result.key);
+      }
       await host.reconcileMutation(params.agentId);
       return host.connection.isCurrent(scope) ? result : null;
     } catch (error) {
