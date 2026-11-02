@@ -9,6 +9,7 @@ import {
 } from "../../../infra/agent-events.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
+import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
@@ -28,6 +29,7 @@ import {
 } from "./subagent-control-scope.js";
 import {
   prepareSubagentKillSession,
+  SubagentKillIncarnationUnavailableError,
   type SubagentKillSession,
 } from "./subagent-control-session.js";
 import type {
@@ -47,6 +49,23 @@ import { listRunsForControllerFromRuns } from "./subagent-registry-queries.js";
 import { withSubagentRunReadSnapshot } from "./subagent-registry-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration, isSameSubagentRunOwner } from "./subagent-run-generation.js";
+
+const log = createSubsystemLogger("agents/subagent-control");
+
+/**
+ * An ended run with no settle wake, no yield pause, and no unfinished captured
+ * descendant has nothing left to cancel, even when its incarnation is unprovable.
+ */
+function hasNothingToCancel(tree: KillTree): boolean {
+  const { execution, requesterSettleWake, pauseReason } = tree.entry;
+  return (
+    execution.status === "terminal" &&
+    execution.endedAt !== undefined &&
+    !requesterSettleWake &&
+    pauseReason !== "sessions_yield" &&
+    tree.children.every(hasNothingToCancel)
+  );
+}
 
 type KillBinding = {
   entry: SubagentRunRecord;
@@ -287,6 +306,14 @@ export async function withSubagentKillScope<T>(
             const selectedRun = tree.entry;
             const authority = params.incarnationAuthority ?? "run";
             const runTarget = resolveRunOwnedKillTarget(selectedRun);
+            if (authority === "run" && !runTarget && hasNothingToCancel(tree)) {
+              // Rows recorded before incarnation binding cannot be fenced, and an
+              // ended one has no work left. Skip it rather than fail the selection.
+              log.warn(
+                `skipped ended run ${selectedRun.runId} (${selectedRun.childSessionKey}): no recorded child incarnation`,
+              );
+              return;
+            }
             session = await prepareSubagentKillSession(
               params.cfg,
               selectedRun.childSessionKey,
@@ -324,6 +351,18 @@ export async function withSubagentKillScope<T>(
           } catch (error) {
             if (hasSqliteWorkerOutcomeUnknown(error)) {
               throw error;
+            }
+            if (
+              error instanceof SubagentKillIncarnationUnavailableError &&
+              (params.incarnationAuthority ?? "run") === "run" &&
+              hasNothingToCancel(tree)
+            ) {
+              // A replaced child session cannot hold this ended run's work either.
+              session = undefined;
+              log.warn(
+                `skipped ended run ${tree.entry.runId} (${tree.entry.childSessionKey}): ${error.message}`,
+              );
+              return;
             }
             errors.add(formatErrorMessage(error));
             tree.discoveryFailed = true;

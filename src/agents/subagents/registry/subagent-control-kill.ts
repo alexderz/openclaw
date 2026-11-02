@@ -6,6 +6,7 @@ import type { ChatAbortControllerEntry } from "../../../gateway/chat-abort.types
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { captureSubagentCommands } from "./subagent-control-commands.js";
 import { mutateSubagentRunForKill } from "./subagent-control-kill-runtime.js";
@@ -535,10 +536,14 @@ export async function killSessionSubagentRuns(params: {
   assertCurrent?: () => void;
 }) {
   const controller = { controllerSessionKey: params.sessionKey, controllerAgentId: params.agentId };
+  // A dashboard child is a durable session in its own right, like a promoted one:
+  // the parent's lifecycle boundary neither retires its turns nor walks its own work.
+  const isDurableChild = (entry: SubagentRunRecord) =>
+    parseAgentSessionKey(entry.childSessionKey)?.rest.startsWith("dashboard:") === true;
   const runs = [
     ...listSubagentRunsForRequester(params.sessionKey, { requesterAgentId: params.agentId }),
     ...listRunsForControllerFromRuns(subagentRuns, params.sessionKey, params.agentId),
-  ];
+  ].filter((entry) => !isDurableChild(entry));
   const proofs = new Map<string, RetainedChildRootProof>();
   try {
     for (const entry of runs) {
