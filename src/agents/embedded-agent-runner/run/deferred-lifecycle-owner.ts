@@ -5,6 +5,7 @@ import {
   createDiagnosticEmbeddedRunOwner,
   type DiagnosticEmbeddedRunOwner,
 } from "../../../logging/diagnostic-run-activity.js";
+import { createCliHandoffMessageInjection } from "../../cli-runner/cli-run-message-injection.js";
 import {
   createAgentRunDirectAbortError,
   createAgentRunRestartAbortError,
@@ -183,6 +184,11 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
       ),
     handoffToCli: () => {
       const diagnosticOwner = createDiagnosticEmbeddedRunOwner(params);
+      const cliInjection = createCliHandoffMessageInjection({
+        runId: params.runId,
+        sessionId: params.sessionId,
+        isStopped: () => signal.aborted,
+      });
       // Each handoff gets a fresh owner; retained callbacks from a prior CLI
       // attempt must not publish progress after replacement or lifecycle rotation.
       cliOwner = {
@@ -193,6 +199,10 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
         closeDiagnostics: () => closeDiagnosticEmbeddedRunOwner(diagnosticOwner),
         queueMessage: async () => {
           throw new Error("active run is switching runtimes");
+        },
+        // Guarded steering reaches the CLI run while its turn takes input.
+        get messageInjectionV2() {
+          return cliInjection.current();
         },
         isStreaming: () => false,
         isStopped: () => signal.aborted,

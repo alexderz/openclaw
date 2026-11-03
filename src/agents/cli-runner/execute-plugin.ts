@@ -41,6 +41,7 @@ import {
   requestCliNativeToolApproval,
   resolveCliNativeToolApprovalPlan,
 } from "./cli-native-tool-approval.js";
+import { registerCliRunMessageInjection } from "./cli-run-message-injection.js";
 import { createCliAbortError } from "./execute-node-claude.js";
 import { createCliPluginWatchdog, type CliWatchdogClock } from "./execute-plugin-watchdog.js";
 import { createSteeredCliMessageInjection } from "./execute-plugin.steered-transcript.js";
@@ -527,21 +528,26 @@ export async function executePluginOwnedProcess(params: {
   );
 
   let messageInjection: CliBackendMessageInjection | undefined;
+  const messageInjectionV2 = createSteeredCliMessageInjection({
+    getInjection: () => messageInjection,
+    signal,
+    assertCurrent,
+    cwd: run.cwd ?? run.workspaceDir,
+  });
   const detachReplyBackend = attachCliReplyBackend(
     run,
     () => {
       termination.reason = "manual-cancel";
       controller.abort(createCliAbortError());
     },
-    {
-      messageInjectionV2: createSteeredCliMessageInjection({
-        getInjection: () => messageInjection,
-        signal,
-        assertCurrent,
-        cwd: run.cwd ?? run.workspaceDir,
-      }),
-    },
+    { messageInjectionV2 },
   );
+  // Steering that targets this run's native owner placeholder reaches the same sink.
+  const unregisterRunMessageInjection = registerCliRunMessageInjection({
+    runId: run.runId,
+    sessionId: run.sessionId,
+    injection: messageInjectionV2,
+  });
 
   let iterator: AsyncIterator<Record<string, unknown>> | undefined;
   let liveSession: ReturnType<typeof createCliLiveSessionCapability> | undefined;
@@ -595,13 +601,9 @@ export async function executePluginOwnedProcess(params: {
       ...(run.executionMode ? { executionMode: run.executionMode } : {}),
       ...(run.cliToolAvailability ? { toolAvailability: run.cliToolAvailability } : {}),
       ...(liveSession ? { liveSession } : {}),
-      ...(detachReplyBackend
-        ? {
-            registerMessageInjection: (injection: CliBackendMessageInjection) => {
-              messageInjection = injection;
-            },
-          }
-        : {}),
+      registerMessageInjection: (injection: CliBackendMessageInjection) => {
+        messageInjection = injection;
+      },
       // Warm transports retain their first turn's async context across plugin refreshes.
       requestToolPermission: AsyncLocalStorage.bind(
         createPluginToolPermissionHandler({
@@ -697,6 +699,7 @@ export async function executePluginOwnedProcess(params: {
       controller.abort(new Error("CLI plugin runtime turn is no longer active."));
     }
     detachReplyBackend?.();
+    unregisterRunMessageInjection();
     await closePluginIterator(iterator);
   }
 

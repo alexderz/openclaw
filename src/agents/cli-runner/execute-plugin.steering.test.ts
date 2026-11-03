@@ -35,6 +35,8 @@ import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-trans
 import { readTranscriptMessages } from "../../sessions/user-turn-transcript.test-support.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { createDeferredEmbeddedRunLifecycleManager } from "../embedded-agent-runner/run/deferred-lifecycle-owner.js";
+import { queueGuardedEmbeddedAgentMessageWithOutcomeAsync } from "../embedded-agent-runner/runs.js";
 import {
   bindWorkerToolPreparation,
   prepareReplyToolAuthorityCallerRead,
@@ -375,6 +377,98 @@ it("steers configured, session and explicit inputs through current authority int
       operation.complete();
       clearFollowupQueue(sessionKey);
       clearFollowupDrainCallback(sessionKey);
+      await prepared.cleanup?.();
+    }
+  });
+});
+
+it("steers a running Claude child through its native owner placeholder", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const root = state.workspaceDir;
+    const childKey = "agent:main:subagent:claude-child";
+    const config: OpenClawConfig = { tools: { exec: { security: "full", ask: "off" } } };
+    const { context } = await createExecution({ config, timeoutMs: 30_000 });
+    const { runId, sessionId } = context.params;
+    // Agent commands give a spawned child no reply operation; steering targets the placeholder.
+    Object.assign(context.params, { sessionKey: childKey, workspaceDir: root, cwd: root });
+    context.workspaceDir = root;
+    context.cwd = root;
+    const lifecycle = createDeferredEmbeddedRunLifecycleManager({
+      runId,
+      sessionId,
+      sessionKey: childKey,
+    });
+    lifecycle.handoffToCli();
+    const fixture = path.join(root, "claude-child.mjs");
+    await writeFile(fixture, CLI);
+    const prepared = await buildAnthropicCliBackend().prepareExecution?.({
+      workspaceDir: root,
+      provider: "claude-cli",
+      modelId: context.normalizedModel,
+      executionMode: "agent",
+      config,
+    });
+    if (!prepared?.execute) {
+      throw new Error("Claude provider did not prepare its native transport");
+    }
+    const ready = createDeferred();
+    const run = executePluginOwnedProcess({
+      context,
+      execute: prepared.execute,
+      executionCommand: process.execPath,
+      executionArgs: [fixture],
+      env: { PATH: process.env.PATH ?? "", HOME: root, CLAUDE_CONFIG_DIR: root },
+      prompt: "initial",
+      useResume: false,
+      noOutputTimeoutMs: 30_000,
+      consumeStdout: (chunk) => {
+        const record = JSON.parse(chunk);
+        if (record.subtype === "fixture_input" && record.text === "initial") {
+          ready.resolve();
+        }
+      },
+    });
+    const settled = run.catch((error: unknown) => error);
+    const readInputs = async () =>
+      (await readFile(path.join(root, "received.ndjson"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    // The sessions_send steering request, as its delivery owner builds it.
+    const steer = (text: string, canInject: () => boolean = () => true) =>
+      queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
+        sessionId,
+        text,
+        { steeringMode: "all", debounceMs: 0, waitForTranscriptCommit: false },
+        canInject,
+      );
+    try {
+      await Promise.race([
+        ready.promise,
+        run.then(() => {
+          throw new Error("Native turn ended before readiness");
+        }),
+      ]);
+      await expect(steer("guidance")).resolves.toMatchObject({ queued: true });
+      expect(await readInputs()).toEqual(["initial", "guidance"]);
+      await expect(
+        steer("revoked source", () => {
+          throw new Error("sender authority revoked");
+        }),
+      ).resolves.toMatchObject({ queued: false });
+      expect(await readInputs()).toEqual(["initial", "guidance"]);
+      await expect(steer("finish")).resolves.toMatchObject({ queued: true });
+      await run;
+      // A finished turn offers no guarded input, so callers keep their unguarded fallback.
+      await expect(steer("after turn")).resolves.toMatchObject({
+        queued: false,
+        reason: "guarded_injection_unsupported",
+      });
+      expect(await readInputs()).toEqual(["initial", "guidance", "finish"]);
+    } finally {
+      lifecycle.abort();
+      await settled;
+      await lifecycle.complete();
       await prepared.cleanup?.();
     }
   });
