@@ -212,6 +212,7 @@ export function bindPreparedSessionSourceAssertion(
 export async function runWithSessionSourceScope<T>(
   assertion: SessionSourceAssertion | undefined,
   run: () => Promise<T>,
+  options: { checkAfter?: boolean } = {},
 ): Promise<T> {
   const prepared = assertion?.prepareSessionSourceScope
     ? await prepareSessionSourceScope(assertion)
@@ -219,7 +220,9 @@ export async function runWithSessionSourceScope<T>(
   if (!assertion || !prepared) {
     assertion?.assertScopeCurrent?.();
     const result = await run();
-    assertion?.assertScopeCurrent?.();
+    if (options.checkAfter !== false) {
+      assertion?.assertScopeCurrent?.();
+    }
     return result;
   }
   const scopes = new Map([
@@ -232,7 +235,9 @@ export async function runWithSessionSourceScope<T>(
     return await sessionSourceScopes.run(scopes, async () => {
       (prepared.assertPreparedCurrent ?? prepared.assertCurrent)();
       const result = await run();
-      (prepared.assertPreparedCurrent ?? prepared.assertCurrent)();
+      if (options.checkAfter !== false) {
+        (prepared.assertPreparedCurrent ?? prepared.assertCurrent)();
+      }
       return result;
     });
   } catch (error) {

@@ -9,6 +9,7 @@ import {
 } from "../agents/worktrees/service.test-support.js";
 import { getRuntimeConfig } from "../config/io.js";
 import {
+  listSessionEntriesReadOnly,
   loadSessionEntry,
   loadTranscriptEvents,
   replaceSessionEntry,
@@ -619,6 +620,164 @@ test("sessions.recover rolls over one tombstone and returns its continuation out
       continuation: { status: "started" },
     },
   });
+});
+
+type MainRecoveryPayload = {
+  key: string;
+  sessionId: string;
+  continuation: { status: string; runId?: string };
+};
+
+function storedSessionKeys(storePath: string) {
+  return listSessionEntriesReadOnly({ agentId: "main", storePath })
+    .map((summary) => summary.sessionKey)
+    .toSorted();
+}
+
+test.each([
+  { label: "default Main", key: "agent:main:main", mainKey: undefined },
+  { label: "configured Main", key: "agent:main:inbox", mainKey: "inbox" },
+])("sessions.recover rolls $label in place instead of creating a leaf", async ({ key, mainKey }) => {
+  const { storePath } = await createSessionStoreDir();
+  testState.sessionConfig = mainKey ? { mainKey } : undefined;
+  const sourceSessionId = "main-tombstoned-session";
+  await seedRecoverableSession({
+    sourceKey: key,
+    sourceSessionId,
+    storePath,
+    overrides: {
+      label: "Home",
+      pinnedAt: 7,
+      providerOverride: "openai",
+      modelOverride: "gpt-5.6-sol",
+      delivery: { kind: "internal" },
+    },
+  });
+  const scope = { agentId: "main", sessionKey: key, storePath };
+  const sourceTranscriptBefore = await loadTranscriptEvents({ ...scope, sessionId: sourceSessionId });
+
+  const recovered = await directSessionReq<MainRecoveryPayload>("sessions.recover", {
+    agentId: "main",
+    key,
+  });
+
+  expect(recovered.ok, JSON.stringify(recovered.error)).toBe(true);
+  expect(recovered.payload).toMatchObject({
+    key,
+    sessionId: expect.any(String),
+    continuation: { status: "started", runId: expect.any(String) },
+  });
+  const rolledSessionId = recovered.payload?.sessionId ?? "";
+  expect(rolledSessionId).not.toBe(sourceSessionId);
+  expect(storedSessionKeys(storePath)).toEqual([key]);
+  const rolled = loadSessionEntry(scope);
+  expect(rolled).toMatchObject({
+    sessionId: rolledSessionId,
+    previousSessionId: sourceSessionId,
+    label: "Home",
+    pinnedAt: 7,
+    providerOverride: "openai",
+    modelOverride: "gpt-5.6-sol",
+    delivery: { kind: "internal" },
+  });
+  expect(rolled?.archivedAt).toBeUndefined();
+  expect(rolled?.archiveReason).toBeUndefined();
+  expect(rolled?.mainRestartRecovery).toBeUndefined();
+  expect(rolled?.abortedLastRun).toBe(false);
+  expect(
+    JSON.stringify(await loadTranscriptEvents({ ...scope, sessionId: rolledSessionId })),
+  ).toContain("recover the interrupted cloud workspace");
+  await expect(loadTranscriptEvents({ ...scope, sessionId: sourceSessionId })).resolves.toEqual(
+    sourceTranscriptBefore,
+  );
+
+  // Main is live again: a later recovery request is refused rather than minting a leaf.
+  const repeated = await directSessionReq("sessions.recover", { agentId: "main", key });
+  expect(repeated).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+  expect(storedSessionKeys(storePath)).toEqual([key]);
+  expect(loadSessionEntry(scope)?.sessionId).toBe(rolledSessionId);
+});
+
+test("sessions.recover rolls an already-recovered Main in place and leaves its leaf untouched", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const mainKey = "agent:main:main";
+  const leafKey = "agent:main:dashboard:7ffb817f-leaf";
+  const sourceSessionId = "archived-main-session";
+  const leafSessionId = "leaf-successor-session";
+  await seedRecoverableSession({
+    sourceKey: mainKey,
+    sourceSessionId,
+    storePath,
+    overrides: {
+      label: "Home",
+      archivedAt: 1_000,
+      archiveReason: "restart-recovery",
+      mainRestartRecovery: {
+        cycleId: "cycle-archived-main",
+        revision: 5,
+        chargedAttempts: 3,
+        tombstone: {
+          reason: "automatic recovery exhausted",
+          recoveredSessionId: leafSessionId,
+          recoveredSessionKey: leafKey,
+        },
+      },
+    },
+  });
+  const leafScope = { agentId: "main", sessionKey: leafKey, storePath };
+  await replaceSessionEntry(
+    leafScope,
+    sessionStoreEntry(leafSessionId, {
+      label: "Unrelated leaf chat",
+      previousSessionId: sourceSessionId,
+      updatedAt: 2_000,
+    }),
+  );
+  await seedSessionTranscript({
+    agentId: "main",
+    sessionId: leafSessionId,
+    sessionKey: leafKey,
+    storePath,
+    messages: [{ role: "user", content: "an unrelated conversation in the leaf" }],
+  });
+  const leafEntryBefore = JSON.stringify(loadSessionEntry(leafScope));
+  const leafTranscriptBefore = JSON.stringify(
+    await loadTranscriptEvents({ ...leafScope, sessionId: leafSessionId }),
+  );
+
+  const recovered = await directSessionReq<MainRecoveryPayload>("sessions.recover", {
+    agentId: "main",
+    key: mainKey,
+  });
+
+  expect(recovered.ok, JSON.stringify(recovered.error)).toBe(true);
+  expect(recovered.payload).toMatchObject({ key: mainKey, continuation: { status: "started" } });
+  const rolledSessionId = recovered.payload?.sessionId ?? "";
+  expect([sourceSessionId, leafSessionId]).not.toContain(rolledSessionId);
+  expect(JSON.stringify(loadSessionEntry(leafScope))).toBe(leafEntryBefore);
+  expect(
+    JSON.stringify(await loadTranscriptEvents({ ...leafScope, sessionId: leafSessionId })),
+  ).toBe(leafTranscriptBefore);
+  expect(storedSessionKeys(storePath)).toEqual([leafKey, mainKey].toSorted());
+  const rolled = loadSessionEntry({ agentId: "main", sessionKey: mainKey, storePath });
+  expect(rolled).toMatchObject({
+    sessionId: rolledSessionId,
+    previousSessionId: sourceSessionId,
+    label: "Home",
+  });
+  expect(rolled?.archivedAt).toBeUndefined();
+  expect(rolled?.archiveReason).toBeUndefined();
+  expect(rolled?.mainRestartRecovery).toBeUndefined();
+  expect(
+    JSON.stringify(
+      await loadTranscriptEvents({
+        agentId: "main",
+        sessionId: rolledSessionId,
+        sessionKey: mainKey,
+        storePath,
+      }),
+    ),
+  ).toContain("recover the interrupted cloud workspace");
 });
 
 test.each([

@@ -3,11 +3,13 @@ import { killSessionSubagentRuns } from "../../agents/subagents/registry/subagen
 import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { captureIncognitoSessionOperation } from "../../config/sessions/session-incognito-binding.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import {
   consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
 } from "../../infra/system-events.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   agentSessionKeysMatchByRequestKey,
   normalizeAgentId,
@@ -19,6 +21,11 @@ import {
   clearReplyRunForResetBySessionId,
   resolveActiveReplyOperationForSessionId,
 } from "./reply-run-registry.js";
+
+const log = createSubsystemLogger("auto-reply/session-reset");
+
+/** Bounds the kill diagnostics a reset error carries; a large tree can name hundreds of runs. */
+const RESET_CLEANUP_DETAIL_MAX_CHARS = 4000;
 
 export class SessionResetCleanupError extends Error {}
 
@@ -66,8 +73,15 @@ export async function stopSessionResetSubagents(
     if (cause instanceof SessionResetCleanupError) {
       throw cause;
     }
+    // Name the failing runs: the wrapped cause is not otherwise reported or logged.
+    const detail = formatErrorMessage(cause);
+    log.warn(`reset of ${params.sessionKey} could not stop subagent tasks: ${detail}`);
+    const shown =
+      detail.length > RESET_CLEANUP_DETAIL_MAX_CHARS
+        ? `${detail.slice(0, RESET_CLEANUP_DETAIL_MAX_CHARS)}…`
+        : detail;
     throw new SessionResetCleanupError(
-      "Reset did not complete because some subagent tasks could not be stopped. Inspect the remaining tasks and retry /reset.",
+      `Reset did not complete because some subagent tasks could not be stopped. Inspect the remaining tasks and retry /reset. Cause: ${shown}`,
       { cause },
     );
   }

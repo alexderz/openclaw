@@ -210,6 +210,21 @@ export type CliBackendLiveSessionCapability = {
   remove(handle: CliBackendLiveSessionHandle): void;
 };
 
+/** Plugin-owned input sink for the admitted turn; the host revalidates authority at each effect. */
+export type CliBackendMessageInjection = {
+  isAvailable(): boolean;
+  /**
+   * Ask the host to prepare current authority and invoke the synchronous native write.
+   * Resolve only after the runtime acknowledges consumption, not after the write.
+   */
+  queueMessage(
+    text: string,
+    withCurrent: (submit: () => void) => Promise<void>,
+    /** Per-input attribution and private context; never inherit the initial turn's. */
+    options?: Pick<CliBackendExecuteContext, "promptOrigin" | "promptContext">,
+  ): Promise<void>;
+};
+
 /** Turn-only context that must not become an operator-authored native transcript row. */
 export type CliBackendPromptContext = {
   prependContext?: string;
@@ -226,6 +241,13 @@ export type CliBackendExecuteContext = {
   env: Record<string, string>;
   prompt: string;
   promptContext?: CliBackendPromptContext;
+  /**
+   * `host`: OpenClaw generated or forwarded this input, rather than a person
+   * typing it in this session. Apply the native non-user input marker when available.
+   * Canonical transcript provenance owns its visibility and sender attribution.
+   * Fork: only injected (steered) inputs set this; initial prompts keep their prior shape.
+   */
+  promptOrigin?: "host";
   modelId: string;
   systemPrompt: string;
   sessionId?: string;
@@ -238,6 +260,8 @@ export type CliBackendExecuteContext = {
   toolAvailability?: CliBackendToolAvailability;
   /** Exact host-owned reusable process lifecycle and current-turn admission. */
   liveSession?: CliBackendLiveSessionCapability;
+  /** Offers same-turn input for this run; the host drops it when the run closes. */
+  registerMessageInjection?: (injection: CliBackendMessageInjection) => void;
   /** Closure-bound approval capability; retained copies fail after the run closes. */
   requestToolPermission: (
     request: CliBackendToolPermissionRequest,

@@ -1260,10 +1260,13 @@
 
 /* Typing stays inside the composer on a keyboard-sized conversation, with or
    without an attachment. min-height:0 on .chat-footer would let the transcript
-   crush the draft, and a content-sized textarea then paints the wrapped line
-   below the pane with scrollTop still 0. This slot keeps a transcript reserve
-   and makes the textarea the scrollport. The custom property survives
-   minification. A taller pane only refuses to crush an attached draft. */
+   crush the draft, and a textarea that cannot shrink then paints the wrapped
+   line below the pane with scrollTop still 0. The slot is a cap, not a size:
+   the composer grows with the draft up to it, and every box down to the
+   textarea can shrink, so the textarea becomes the scrollport at the cap.
+   A fixed-height slot spent most of a keyboard-open phone on a one-line draft.
+   The custom properties survive minification. A taller pane only refuses to
+   crush an attached draft. */
 .chat-footer:has(.chat-attachments-preview) {
   flex-shrink: 0;
   min-height: min-content;
@@ -1272,51 +1275,52 @@
 @container chat-conversation (height <= 520px) {
   .chat-main__conversation > .chat-footer {
     --openclaw-composer-caret-visible: 1;
+    --openclaw-composer-fit: 1;
     --chat-footer-max-height: calc(100cqh - clamp(56px, 28cqh, 120px));
 
     flex-shrink: 0;
-    height: var(--chat-footer-max-height);
+    max-height: var(--chat-footer-max-height);
     min-height: 0;
     overflow: hidden;
   }
 
   .chat-main__conversation > .chat-footer .agent-chat__composer-shell {
-    flex: 1 1 auto;
-    height: 100%;
+    flex: 0 1 auto;
     min-height: 0;
     max-height: 100%;
     overflow: hidden;
   }
 
   .chat-main__conversation > .chat-footer .agent-chat__composer-shell > .agent-chat__input {
-    flex: 1 1 auto;
-    height: 100%;
+    flex: 0 1 auto;
     min-height: 0;
     max-height: 100%;
     overflow: hidden;
   }
 
   .chat-main__conversation > .chat-footer .agent-chat__input .agent-chat__composer-input-row {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     align-items: stretch;
     min-height: 0;
   }
 
   .chat-main__conversation > .chat-footer .agent-chat__composer-combobox {
-    flex: 1 1 auto;
-    height: 100%;
+    display: flex;
+    flex: 0 1 auto;
+    flex-direction: column;
     min-height: 0;
     overflow: hidden;
   }
 
-  /* Beats the short-pane one-line lock and the installed six-line grow cap,
-     both of which can otherwise spend the whole pane on the footer. */
+  /* Beats the short-pane one-line lock and the installed six-line grow cap;
+     the slot above is the only cap here. */
   .chat-main__conversation > .chat-footer .agent-chat__composer-combobox > textarea {
-    height: 100% !important;
+    flex: 0 1 auto;
+    height: auto !important;
     min-height: 0 !important;
-    max-height: 100% !important;
+    max-height: none !important;
     overflow-y: auto !important;
-    field-sizing: fixed !important;
+    field-sizing: content !important;
   }
 
   .chat-main__conversation > .chat-footer .agent-chat__composer-footer {

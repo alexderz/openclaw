@@ -14,7 +14,7 @@ import {
   resolveUiSessionNavigationParentKey,
 } from "../../lib/sessions/session-key.ts";
 import { cloneChatAttachmentsForIndependentOwner } from "./attachment-payload-store.ts";
-import { clearChatHistory } from "./chat-history-actions.ts";
+import { clearChatHistory, reloadContinuedChatHistory } from "./chat-history-actions.ts";
 import { isExpiredIncognitoSession, setChatError } from "./chat-history-state.ts";
 import { createChatModelSetupBanner } from "./chat-model-setup.ts";
 import { ChatPaneRetainedPresentation } from "./chat-pane-retained-presentation.ts";
@@ -199,6 +199,10 @@ export abstract class ChatPaneSessionCreation extends ChatPaneRetainedPresentati
         return false;
       }
       const nextSessionKey = recovery.key;
+      if (areUiSessionKeysEquivalent(nextSessionKey, sourceSessionKey)) {
+        // Main recovers in place: stay on it and read the continued transcript.
+        return await reloadContinuedChatHistory(state);
+      }
       if (this.onPaneSessionChange?.(this.paneId, nextSessionKey) === false) {
         return false;
       }

@@ -27,6 +27,17 @@ import { resolveSubagentChildSessionOwner } from "./subagent-child-session-owner
 export const SUBAGENT_KILL_INCARNATION_REQUIRED =
   "Subagent cancellation requires the bound session incarnation.";
 
+export const SUBAGENT_KILL_SESSION_CHANGED =
+  "Subagent session changed during cancellation preparation";
+
+/** The run's recorded child incarnation is missing or no longer occupies its key. */
+export class SubagentKillIncarnationUnavailableError extends Error {
+  constructor(readonly reason: "unbound" | "changed") {
+    super(reason === "unbound" ? SUBAGENT_KILL_INCARNATION_REQUIRED : SUBAGENT_KILL_SESSION_CHANGED);
+    this.name = "SubagentKillIncarnationUnavailableError";
+  }
+}
+
 export type SubagentKillAuthority = "run" | "administrative";
 
 export type SubagentKillSession = {
@@ -84,7 +95,7 @@ export async function prepareSubagentKillSession(
           // A supplied partial target is not a fence, and a missing target must not
           // adopt whatever session now occupies the key.
           if (!selected?.sessionId || !selected.expectedLifecycleRevision) {
-            throw new Error(SUBAGENT_KILL_INCARNATION_REQUIRED);
+            throw new SubagentKillIncarnationUnavailableError("unbound");
           }
         }
         if (
@@ -92,7 +103,7 @@ export async function prepareSubagentKillSession(
           (selected?.expectedLifecycleRevision !== undefined &&
             entry?.lifecycleRevision !== selected.expectedLifecycleRevision)
         ) {
-          throw new Error("Subagent session changed during cancellation preparation");
+          throw new SubagentKillIncarnationUnavailableError("changed");
         }
         const generationStorePath = isIncognitoSessionKey(sessionKey)
           ? resolveIncognitoOpenClawAgentSqlitePath({ agentId, env })

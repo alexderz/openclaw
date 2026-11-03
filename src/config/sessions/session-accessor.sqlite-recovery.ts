@@ -75,7 +75,9 @@ export async function recoverSessionEntryFromRestartTombstone(
             receipt = facts as SessionEntryReplacementPublication;
           }
           const unchanged =
-            (outcome.ok && outcome.value.result.status !== "created") ||
+            (outcome.ok &&
+              outcome.value.result.status !== "created" &&
+              outcome.value.result.status !== "rolled") ||
             (isRecord(facts) && facts.kind === "session-restart-recovery-unchanged");
           const unknown =
             admitted.admission.settlement?.kind !== "completed" || (!receipt && !unchanged);

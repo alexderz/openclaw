@@ -8,6 +8,7 @@ import type {
   CliBackendToolPermissionResult,
 } from "openclaw/plugin-sdk/cli-backend";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { hasClaudeRawToolInvocation } from "./cli-output.js";
 import type { ClaudeCliSecretInput } from "./cli-process.js";
@@ -24,12 +25,32 @@ type ClaudeCliTurn = {
   userInput: ReturnType<typeof createClaudeCliUserInputAuthorizer>;
   events: PassThrough;
   inputUuid: string;
+  /** Replayed user text is never a task receipt, even after its input lifecycle ends. */
+  submittedInputUuids: Set<string>;
   inputStarted: boolean;
+  promptSubmitted: boolean;
+  /** Hook reruns carry no input UUID and may rewrite text; retain their native input owner. */
+  promptInputUuid: string;
   sawTerminalResult: boolean;
   foregroundTaskIds: Set<NativeTaskOccurrence>;
   foregroundBashToolUseIds: Set<string>;
   pendingBackgroundTaskIds: Set<NativeTaskOccurrence>;
   taskNotifications: Map<NativeTaskOccurrence, "queued" | "replayed">;
+  /** Same-turn inputs written to native, keyed by UUID until their lifecycle completes. */
+  injectedInputs: Map<
+    string,
+    {
+      text: string;
+      promptContext?: CliBackendExecuteContext["promptContext"];
+      started: ReturnType<typeof createDeferred<void>>;
+    }
+  >;
+  /**
+   * A successful result withheld until every injected input has completed. It is
+   * released as terminal on completion, or as interim when native opens another
+   * turn for the input first.
+   */
+  heldResult?: Record<string, unknown>;
   error?: Error;
 };
 type ClaudeCliSession = {
@@ -113,6 +134,20 @@ async function authorizeTool(
   }
 }
 
+function resolvePromptContext(turn: ClaudeCliTurn, prompt: unknown) {
+  if (turn.promptInputUuid !== turn.inputUuid) {
+    return turn.injectedInputs.get(turn.promptInputUuid)?.promptContext;
+  }
+  // Some native versions submit hooks before the started receipt. Match only the
+  // first pass; subsequent passes belong to that UUID even when text is rewritten.
+  const injected = [...turn.injectedInputs].find(([, input]) => input.text === prompt);
+  if (!injected) {
+    return turn.context.promptContext;
+  }
+  turn.promptInputUuid = injected[0];
+  return injected[1].promptContext;
+}
+
 async function handleRequest(
   session: ClaudeCliSession,
   request: Record<string, unknown>,
@@ -130,10 +165,9 @@ async function handleRequest(
     if (!turn || signal.aborted) {
       return {};
     }
-    const additionalContext = [
-      turn.context.promptContext?.prependContext,
-      turn.context.promptContext?.appendContext,
-    ]
+    turn.promptSubmitted = true;
+    const promptContext = resolvePromptContext(turn, input.prompt);
+    const additionalContext = [promptContext?.prependContext, promptContext?.appendContext]
       .filter(Boolean)
       .join("\n\n");
     // Native can rewrite the prompt and rerun hooks; only its final pass is persisted.
@@ -174,6 +208,70 @@ async function handleRequest(
   throw new Error("Unknown Claude CLI hook callback.");
 }
 
+function createUserInput(
+  context: CliBackendExecuteContext,
+  text: string,
+  uuid: string,
+  hostGenerated = false,
+) {
+  return {
+    type: "user",
+    message: { role: "user", content: text },
+    parent_tool_use_id: null,
+    uuid,
+    // Claude saves synthetic input as a meta row: the model reads it, history never shows it.
+    ...(hostGenerated ? { isSynthetic: true } : {}),
+    ...(context.sessionId ? { session_id: context.sessionId } : {}),
+  };
+}
+
+function rejectInjectedInputs(turn: ClaudeCliTurn, error: Error) {
+  for (const input of turn.injectedInputs.values()) {
+    input.started.reject(error);
+  }
+}
+
+function canInjectInput(session: ClaudeCliSession, turn: ClaudeCliTurn): boolean {
+  return session.hasInputLifecycle && turn.promptSubmitted && activeTurn(session) === turn;
+}
+
+async function injectInput(
+  session: ClaudeCliSession,
+  turn: ClaudeCliTurn,
+  text: string,
+  withCurrent: (submit: () => void) => Promise<void>,
+  options?: Pick<CliBackendExecuteContext, "promptOrigin" | "promptContext">,
+): Promise<void> {
+  const uuid = randomUUID();
+  const started = createDeferred<void>();
+  // Closing can reject the receipt while the write is still pending.
+  void started.promise.catch(() => {});
+  let written: Promise<void> | undefined;
+  await withCurrent(() => {
+    // Native lifecycle is the receipt; recheck availability after host preparation.
+    if (!session.transport || !canInjectInput(session, turn)) {
+      throw new Error("The Claude CLI turn cannot accept more input.");
+    }
+    turn.injectedInputs.set(uuid, { text, started, promptContext: options?.promptContext });
+    turn.submittedInputUuids.add(uuid);
+    written = session.transport.send(
+      createUserInput(turn.context, text, uuid, options?.promptOrigin === "host"),
+    );
+    // Host admission cleanup may await after the synchronous write.
+    void written.catch(() => {});
+  });
+  if (!written) {
+    throw new Error("The host did not admit Claude CLI input.");
+  }
+  try {
+    await written;
+  } catch (error) {
+    turn.injectedInputs.delete(uuid);
+    throw error;
+  }
+  await started.promise;
+}
+
 function closeSession(session: ClaudeCliSession, error?: unknown) {
   if (session.closed) {
     return;
@@ -185,6 +283,7 @@ function closeSession(session: ClaudeCliSession, error?: unknown) {
   session.currentTurn = undefined;
   if (turn) {
     turn.error = toErrorObject(error, "Claude CLI live session closed.");
+    rejectInjectedInputs(turn, turn.error);
     turn.controller.abort();
     turn.events.end();
   }
@@ -197,14 +296,32 @@ function completeTurn(session: ClaudeCliSession, turn: ClaudeCliTurn) {
   const holdsBackgroundTasks =
     turn.pendingBackgroundTaskIds.size > 0 || session.runningDescendants.size > 0;
   session.currentTurn = undefined;
+  // Unfinished injected input would run as an orphan native turn; the host replays it instead.
+  const orphanedInput = turn.injectedInputs.size > 0;
+  rejectInjectedInputs(
+    turn,
+    new Error("Claude CLI turn ended before its injected input completed."),
+  );
   turn.controller.abort();
   turn.events.end();
-  if (!session.capability || holdsBackgroundTasks) {
+  if (!session.capability || holdsBackgroundTasks || orphanedInput) {
     // A failed parent does not stop native background continuations. Never lend them a new turn.
-    session.handle.close(holdsBackgroundTasks ? "abort" : "idle");
+    // Input written into a turn that ended unanswered is the same kind of debt.
+    session.handle.close(holdsBackgroundTasks || orphanedInput ? "abort" : "idle");
   } else {
     session.idleTimer = setTimeout(() => session.handle.close("idle"), IDLE_TIMEOUT_MS);
     session.idleTimer.unref();
+  }
+}
+
+async function emitHeldInterimResult(turn: ClaudeCliTurn) {
+  const heldResult = turn.heldResult;
+  if (!heldResult) {
+    return;
+  }
+  turn.heldResult = undefined;
+  if (!turn.events.write({ ...heldResult, openclaw_interim_result: true })) {
+    await once(turn.events, "drain", { signal: turn.controller.signal });
   }
 }
 
@@ -246,6 +363,48 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
   if (!turn) return;
   if (message.type === "command_lifecycle") {
     if (message.state === "started" && message.command_uuid === turn.inputUuid) turn.inputStarted = true;
+    const injectedUuid =
+      typeof message.command_uuid === "string" ? message.command_uuid : undefined;
+    const injected = injectedUuid ? turn.injectedInputs.get(injectedUuid) : undefined;
+    if (injected && injectedUuid && message.state === "started") {
+      turn.promptInputUuid = injectedUuid;
+      injected.started.resolve();
+      await emitHeldInterimResult(turn);
+    } else if (
+      injected &&
+      injectedUuid &&
+      (message.state === "completed" ||
+        message.state === "cancelled" ||
+        message.state === "discarded" ||
+        message.state === "refused")
+    ) {
+      // Discarded/refused inputs never run; cancellation can also precede start.
+      // Already-started receipts stay accepted, so terminal cleanup never replays them.
+      if (message.state === "completed") {
+        // Native may omit started on a terminal receipt; completion still proves consumption.
+        injected.started.resolve();
+      } else {
+        injected.started.reject(new Error(`Claude CLI ${message.state} the injected input.`));
+      }
+      turn.injectedInputs.delete(injectedUuid);
+      if (turn.promptInputUuid === injectedUuid) {
+        turn.promptInputUuid = turn.inputUuid;
+      }
+      const heldResult = turn.heldResult;
+      // Same completion rule as a result: no held background work or queued notification.
+      if (
+        heldResult &&
+        turn.injectedInputs.size === 0 &&
+        turn.pendingBackgroundTaskIds.size === 0 &&
+        turn.taskNotifications.size === 0
+      ) {
+        turn.heldResult = undefined;
+        if (!turn.events.write(heldResult)) {
+          await once(turn.events, "drain", { signal: turn.controller.signal });
+        }
+        completeTurn(session, turn);
+      }
+    }
     return;
   }
   if (session.hasInputLifecycle && !turn.inputStarted &&
@@ -257,7 +416,7 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
       turn.foregroundBashToolUseIds.delete(message.tool_use_id);
     if (foregroundBash && message.is_backgrounded === true) turn.pendingBackgroundTaskIds.add(occurrence);
   }
-  const replayedTaskId = readReplayedTaskId(message, turn.inputUuid);
+  const replayedTaskId = readReplayedTaskId(message, turn.submittedInputUuids);
   if (replayedTaskId) {
     const origin = isRecord(message.origin) ? message.origin : undefined;
     const explicitRun = typeof origin?.runId === "string" ? origin.runId : undefined;
@@ -286,6 +445,7 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     }
   }
   let completesTurn = false;
+  let holdsForInput = false;
   if (message.type === "result") {
     const failed = message.is_error === true ||
       (typeof message.subtype === "string" && message.subtype.startsWith("error")) ||
@@ -298,6 +458,9 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     // Explicit identities are never allowed to fall through to an unrelated FIFO slot.
     if (explicitRun && (!notified || notified.ownerInputUuid !== turn.inputUuid ||
       notified.phase !== "notified" || !turn.taskNotifications.has(notified))) return;
+    // Only another input start or answer supersedes a held result. Idle/status
+    // trailers are bookkeeping, and a prior input's continuation returned above.
+    await emitHeldInterimResult(turn);
     if (taskNotification && message.subtype === "success" && !failed && notified) {
       notified.phase = "acknowledged";
       turn.taskNotifications.delete(notified);
@@ -316,6 +479,12 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     }
     turn.sawTerminalResult = true;
     completesTurn = (turn.pendingBackgroundTaskIds.size === 0 && turn.taskNotifications.size === 0 && !queuedContinuation) || failed;
+    // Injected input holds a successful result until its lifecycle says whether it was the last.
+    holdsForInput = completesTurn && !failed && turn.injectedInputs.size > 0;
+  }
+  if (holdsForInput) {
+    turn.heldResult = message;
+    return;
   }
 
   // The transport owns continuation lifetime; the completed answer can be
@@ -381,17 +550,22 @@ export async function* executeClaudeCli(
     throw new Error("Claude CLI live session is closed or already handling another turn.");
   }
   clearTimeout(session.idleTimer);
+  const inputUuid = randomUUID();
   const turn: ClaudeCliTurn = {
     context,
     controller: new AbortController(),
     userInput: createClaudeCliUserInputAuthorizer(context),
     events: new PassThrough({ objectMode: true }),
-    inputUuid: randomUUID(),
+    inputUuid,
+    submittedInputUuids: new Set([inputUuid]),
     inputStarted: false,
+    promptSubmitted: false,
+    promptInputUuid: inputUuid,
     sawTerminalResult: false,
     foregroundTaskIds: new Set(),
     foregroundBashToolUseIds: new Set(),
     pendingBackgroundTaskIds: new Set(),
+    injectedInputs: new Map(),
     taskNotifications: new Map(),
   };
   session.currentTurn = turn;
@@ -457,12 +631,11 @@ export async function* executeClaudeCli(
       if (session.closed || session.currentTurn !== turn) {
         throw turn.error ?? new Error("Claude CLI closed before its prompt was accepted.");
       }
-      await session.transport.send({
-        type: "user",
-        message: { role: "user", content: context.prompt },
-        parent_tool_use_id: null,
-        uuid: turn.inputUuid,
-        ...(context.sessionId ? { session_id: context.sessionId } : {}),
+      await session.transport.send(createUserInput(context, context.prompt, turn.inputUuid));
+      context.registerMessageInjection?.({
+        isAvailable: () => canInjectInput(session, turn),
+        queueMessage: (text, withCurrent, options) =>
+          injectInput(session, turn, text, withCurrent, options),
       });
     })().catch((error: unknown) => session.handle.close("abort", error));
     for await (const record of turn.events) {

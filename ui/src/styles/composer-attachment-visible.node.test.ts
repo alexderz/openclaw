@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 const stylesDir = path.dirname(fileURLToPath(import.meta.url));
 const MARKER = "--openclaw-composer-attachment-visible";
 const CARET = "--openclaw-composer-caret-visible";
+const FIT = "--openclaw-composer-fit";
 
 describe("composer attachment visibility", () => {
   const css = fs.readFileSync(path.join(stylesDir, "chat/composer-surface.css"), "utf8");
@@ -25,12 +26,22 @@ describe("composer attachment visibility", () => {
   it("reserves a transcript and scrolls every composer, not only an attachment", () => {
     const block = css.slice(start);
     expect(block).toContain("clamp(56px, 28cqh, 120px)");
-    expect(block).toContain("height: var(--chat-footer-max-height)");
-    expect(block).toContain("field-sizing: fixed !important");
+    expect(block).toContain("max-height: var(--chat-footer-max-height)");
+    expect(block).toContain("overflow-y: auto !important");
     expect(block).toContain(
       ".chat-main__conversation > .chat-footer .agent-chat__composer-combobox > textarea",
     );
     expect(block).toMatch(/\.chat-attachment-thumb\s*\{\s*width: 36px;\s*height: 36px;/);
     expect(block).not.toMatch(/22dvh/);
+  });
+
+  it("sizes a short draft to its content instead of filling the slot", () => {
+    const block = css.slice(start);
+    expect(block.indexOf(FIT)).toBeGreaterThan(-1);
+    // A fixed slot height spent most of a keyboard-open phone on a one-line draft.
+    expect(block).not.toMatch(/[^-]height: var\(--chat-footer-max-height\)/);
+    expect(block).not.toContain("field-sizing: fixed");
+    expect(block).toContain("field-sizing: content !important");
+    expect(block).toContain("height: auto !important");
   });
 });
